@@ -1,0 +1,96 @@
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT = _{ "//" ~ (!NEWLINE ~ ANY)* }
+
+program = { SOI ~ stmt* ~ EOI }
+
+stmt = { decl | expr_stmt }
+expr_stmt = { expr ~ ";"? }
+
+// Declarations
+decl = { let_decl | const_decl | fn_decl | type_decl | macro_decl }
+
+let_decl = { "let" ~ assignments ~ ";" }
+const_decl = { "const" ~ assignments ~ ";" }
+assignments = { assignment ~ ("," ~ assignment)* }
+assignment = { identifier ~ "=" ~ expr }
+
+fn_decl = { "fn" ~ fn_name ~ fn_signature ~ (block | ";") }
+fn_name = { identifier ~ ("." ~ identifier)? }
+// Func signature: (args) -> Ret
+fn_signature = { "(" ~ param_list? ~ ")" ~ ("->" ~ type_expr)? }
+param_list = { param ~ ("," ~ param)* }
+param = { (identifier ~ identifier) | (identifier ~ ":" ~ type_expr) | identifier } 
+
+type_decl = { "type" ~ identifier ~ type_params? ~ tuple_type? ~ ";" }
+type_params = { "[" ~ identifier ~ ("," ~ identifier)* ~ "]" }
+tuple_type = { "(" ~ type_expr ~ ("," ~ type_expr)* ~ ")" }
+
+macro_decl = { "macro" ~ identifier ~ type_params? ~ "(" ~ param_list? ~ ")" ~ "->" ~ type_expr }
+
+// Expressions
+expr = { prefix* ~ primary ~ postfix* ~ (infix ~ prefix* ~ primary ~ postfix*)* }
+
+primary = {
+    literal
+    | block // { ... } can be a closure
+    | list_literal
+    | tuple_literal // ( ... )
+    | identifier
+    | dot_identifier
+}
+dot_identifier = { "." ~ identifier }
+
+// Literals
+literal = { float | int | bool | string | null }
+int = @{ ASCII_DIGIT+ }
+float = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+bool = { "true" | "false" }
+null = { "null" }
+string = ${ "\"" ~ string_inner ~ "\"" }
+string_inner = @{ ( !("\"" | "$") ~ ANY )* ~ (interpolation ~ string_inner)? }
+interpolation = { "$(" ~ expr ~ ")" }
+
+// Composite literals
+list_literal = { "[" ~ list_items? ~ "]" }
+list_items = { list_item ~ ("," ~ list_item)* ~ ","? }
+list_item = { (decl | (expr ~ ";"))* ~ expr }
+
+tuple_literal = { "(" ~ list_items? ~ ")" } 
+
+// Blocks / Closures
+block = { "{" ~ (closure_params ~ "->")? ~ block_body ~ "}" }
+closure_params = { pattern ~ ("," ~ pattern)* }
+pattern = { identifier | tuple_pattern } 
+tuple_pattern = { "(" ~ pattern ~ ("," ~ pattern)* ~ ")" }
+block_body = { stmt* ~ expr? }
+
+// Operators
+prefix = { "-" | "!" }
+infix = { "+" | "-" | "*" | "/" | "==" | "!=" | "<=" | ">=" | "<" | ">" | "&&" | "||" | "=" } 
+
+postfix = { 
+    call_args 
+    | method_call 
+    | index_access 
+    | trailing_lambda
+    | safe_nav
+    | force_unwrap
+}
+
+call_args = { "(" ~ arg_list? ~ ")" }
+arg_list = { arg ~ ("," ~ arg)* }
+arg = { (identifier ~ "=")? ~ expr } // Named args
+
+method_call = { "." ~ identifier }
+index_access = { "[" ~ expr ~ "]" }
+trailing_lambda = { (identifier)? ~ block } 
+safe_nav = { "?." ~ identifier }
+force_unwrap = { "!!" }
+
+// Types
+type_expr = { type_term ~ ("|" ~ type_term)* } // Union types?
+type_term = { identifier ~ type_args? }
+type_args = { "[" ~ type_expr ~ ("," ~ type_expr)* ~ "]" }
+
+identifier = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+keyword = { "let" | "const" | "fn" | "type" | "macro" | "true" | "false" | "null" }
