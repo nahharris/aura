@@ -1,13 +1,112 @@
-pub mod ast;
-pub mod parser;
+//! The Aura language compiler and runtime library.
+//!
+//! This crate provides the complete Aura language pipeline:
+//!
+//! 1. **Lexer** (`lexer`) — tokenises source text into a flat `Vec<Token>`.
+//! 2. **Parser** (`parser`) — builds a typed [`ast::Program`] from the token stream.
+//! 3. **Bytecode** (`bytecode`) — `OpCode` definitions and `Chunk` (bytecode + constants).
+//! 4. **Values** (`value`) — runtime `Value` enum, heap `Object` variants.
+//! 5. **GC** (`gc`) — mark-and-sweep garbage collector with `GcHeap` / `GcPtr<T>`.
+//! 6. **Compiler** (`compiler`) — lowers AST to bytecode `Chunk`s.
+//! 7. **Builtins** (`builtins`) — native Rust functions exposed to Aura programs.
+//! 8. **VM** (`vm`) — stack-based interpreter that executes `Chunk`s.
+//!
+//! # Entry point
+//!
+//! The simplest way to run an Aura program from Rust is:
+//!
+//! ```rust,ignore
+//! use aura::run_source;
+//! run_source(source_code, file_path).unwrap();
+//! ```
 
-#[derive(thiserror::Error, Debug)]
+// ─────────────────────────────────────────────────────────────────────────────
+// Modules
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub mod ast;
+pub mod builtins;
+pub mod bytecode;
+pub mod compiler;
+pub mod gc;
+pub mod lexer;
+pub mod parser;
+pub mod token;
+pub mod value;
+pub mod vm;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unified error type
+// ─────────────────────────────────────────────────────────────────────────────
+
+use crate::lexer::LexError;
+use crate::parser::ParseError;
+
+/// The unified error type for all Aura pipeline stages.
+///
+/// Each variant wraps errors from the corresponding compiler stage so that
+/// callers can handle them uniformly or match on the specific stage.
+#[derive(Debug, thiserror::Error)]
 pub enum AuraError {
-    #[error("Parse error: {0}")]
-    ParseError(#[from] pest::error::Error<parser::Rule>),
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
+    /// One or more lexical errors.
+    #[error("Lex error at {}: {}", .0.first().map(|e| e.span.to_string()).unwrap_or_default(), .0.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; "))]
+    Lex(Vec<LexError>),
+
+    /// One or more parse errors.
+    #[error("Parse error at {}: {}", .0.first().map(|e| e.span.to_string()).unwrap_or_default(), .0.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; "))]
+    Parse(Vec<ParseError>),
+
+    /// A compile-time error (name resolution, scope, etc.).
+    #[error("Compile error: {0}")]
+    Compile(String),
+
+    /// A runtime error raised by the VM.
+    #[error("Runtime error: {0}")]
+    Runtime(String),
+
+    /// An I/O error (file reading, module loading, etc.).
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
+/// Shorthand result type for all Aura operations.
 pub type AuraResult<T> = Result<T, AuraError>;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Pipeline helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Lex and parse an Aura source string, returning a typed [`ast::Program`].
+///
+/// Both lex errors and parse errors are promoted to [`AuraError`] if non-empty.
+/// The function returns the *last* error list that was non-empty, preferring
+/// lex errors over parse errors if both appear.
+pub fn parse_source(src: &str) -> AuraResult<ast::Program> {
+    let (tokens, lex_errors) = lexer::lex(src);
+    if !lex_errors.is_empty() {
+        return Err(AuraError::Lex(lex_errors));
+    }
+    let (program, parse_errors) = parser::parse_tokens(tokens);
+    if !parse_errors.is_empty() {
+        return Err(AuraError::Parse(parse_errors));
+    }
+    Ok(program)
+}
+
+/// Compile an [`ast::Program`] to a bytecode [`bytecode::Chunk`].
+pub fn compile_program(program: ast::Program) -> AuraResult<bytecode::Chunk> {
+    compiler::compile(program).map_err(|e| AuraError::Compile(e.to_string()))
+}
+
+/// Full pipeline: lex → parse → compile → run.
+///
+/// `file_path` is used only for error messages and module resolution.
+pub fn run_source(src: &str, file_path: &str) -> AuraResult<()> {
+    let program = parse_source(src)?;
+    let chunk = compile_program(program)?;
+    let mut heap = gc::GcHeap::new();
+    let mut machine = vm::Vm::new(&mut heap, file_path);
+    machine
+        .run(chunk)
+        .map_err(|e| AuraError::Runtime(e.to_string()))
+}
