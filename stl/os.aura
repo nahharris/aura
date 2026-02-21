@@ -1,0 +1,226 @@
+// stl/os.aura — Operating system interface for Aura.
+//
+// Wraps the native OS primitives.  All I/O operations that can fail return
+// Result variants so callers can handle errors explicitly:
+//   .ok(value)   | .error(msg)
+// Optional lookups use Option:
+//   .some(value) | .null
+//
+// Native primitives used:
+//   os_args, os_env, os_exit, os_read_file, os_write_file, os_append_file,
+//   os_delete_file, os_exists, os_is_file, os_is_dir, os_mkdir, os_ls,
+//   os_cwd, os_now, os_sleep, is_null
+
+// ── Process ───────────────────────────────────────────────────────────────────
+
+// Return the command-line arguments as a list of strings (argv).
+// The first element is conventionally the program name.
+pub defn args() -> List[String] {
+    os_args()
+}
+
+// Look up an environment variable by name.
+// Returns .some(value) if found, .null if the variable is not set.
+pub defn env(name: String) -> Option[String] {
+    let v: String = os_env(name);
+    if (is_null(v)) {
+        .null
+    } else {
+        .some(v)
+    }
+}
+
+// Look up an environment variable, returning `default` if not set.
+pub defn env_or(name: String, default: String) -> String {
+    let v: String = os_env(name);
+    if (is_null(v)) {
+        default
+    } else {
+        v
+    }
+}
+
+// Terminate the process with the given exit code.
+pub defn exit(code: Int) -> Void {
+    os_exit(code)
+}
+
+// ── Time ──────────────────────────────────────────────────────────────────────
+
+// Return the current time as milliseconds since the Unix epoch.
+pub defn now() -> Int {
+    os_now()
+}
+
+// Sleep for `ms` milliseconds.
+pub defn sleep(ms: Int) -> Void {
+    os_sleep(ms)
+}
+
+// ── File system — inspection ──────────────────────────────────────────────────
+
+// Return true if a path exists (as either a file or directory).
+pub defn exists(path: String) -> Bool {
+    os_exists(path)
+}
+
+// Return true if `path` is a regular file.
+pub defn is_file(path: String) -> Bool {
+    os_is_file(path)
+}
+
+// Return true if `path` is a directory.
+pub defn is_dir(path: String) -> Bool {
+    os_is_dir(path)
+}
+
+// Return the current working directory.
+// Returns .ok(path) on success, .error(msg) on failure.
+pub defn cwd() -> Result[String, String] {
+    let path: String = os_cwd();
+    if (is_null(path)) {
+        .error("failed to get current working directory")
+    } else {
+        .ok(path)
+    }
+}
+
+// List the entries of a directory.
+// Returns .ok(names) on success, .error(msg) if the path is not a valid directory.
+pub defn ls(path: String) -> Result[List[String], String] {
+    if (!os_is_dir(path)) {
+        .error("not a directory: $(path)")
+    } else {
+        let entries: List[String] = os_ls(path);
+        if (is_null(entries)) {
+            .error("failed to list directory: $(path)")
+        } else {
+            .ok(entries)
+        }
+    }
+}
+
+// ── File system — creation ────────────────────────────────────────────────────
+
+// Create a directory (and all necessary parent directories).
+// Returns .ok(Void) on success, .error(msg) on failure.
+pub defn mkdir(path: String) -> Result[Void, String] {
+    let ok: Bool = os_mkdir(path);
+    if (ok) {
+        .ok(null)
+    } else {
+        .error("failed to create directory: $(path)")
+    }
+}
+
+// ── File I/O ──────────────────────────────────────────────────────────────────
+
+// Read the entire contents of a file as a string.
+// Returns .ok(contents) on success, .error(msg) on failure.
+pub defn read_file(path: String) -> Result[String, String] {
+    let contents: String = os_read_file(path);
+    if (is_null(contents)) {
+        .error("failed to read file: $(path)")
+    } else {
+        .ok(contents)
+    }
+}
+
+// Write `contents` to a file, replacing any existing content.
+// Returns .ok(Void) on success, .error(msg) on failure.
+pub defn write_file(path: String, contents: String) -> Result[Void, String] {
+    let ok: Bool = os_write_file(path, contents);
+    if (ok) {
+        .ok(null)
+    } else {
+        .error("failed to write file: $(path)")
+    }
+}
+
+// Append `contents` to a file (creates the file if it does not exist).
+// Returns .ok(Void) on success, .error(msg) on failure.
+pub defn append_file(path: String, contents: String) -> Result[Void, String] {
+    let ok: Bool = os_append_file(path, contents);
+    if (ok) {
+        .ok(null)
+    } else {
+        .error("failed to append to file: $(path)")
+    }
+}
+
+// Delete a file.
+// Returns .ok(Void) on success, .error(msg) if the file does not exist or
+// deletion fails.
+pub defn delete_file(path: String) -> Result[Void, String] {
+    if (!os_exists(path)) {
+        .error("file not found: $(path)")
+    } else {
+        let ok: Bool = os_delete_file(path);
+        if (ok) {
+            .ok(null)
+        } else {
+            .error("failed to delete file: $(path)")
+        }
+    }
+}
+
+// ── Path utilities ────────────────────────────────────────────────────────────
+
+// Join two path components with the OS path separator.
+pub defn path_join(base: String, part: String) -> String {
+    if (str_ends_with(base, "/") || str_ends_with(base, "\\")) {
+        base + part
+    } else {
+        base + "/" + part
+    }
+}
+
+// Return the file extension of `path` (including the leading dot),
+// or .null if no extension is present.
+pub defn extension(path: String) -> Option[String] {
+    let idx: Int = str_find(path, ".");
+    if (is_null(idx)) {
+        .null
+    } else {
+        let last_dot: Int = idx;
+        let i: Int = idx + 1;
+        let n: Int = str_len(path);
+        loop while { i < n } do {
+            let ch: String = str_slice(path, i, i + 1);
+            if (ch == ".") {
+                last_dot = i;
+            }
+            i++;
+        }
+        .some(str_slice(path, last_dot, n))
+    }
+}
+
+// Return the base name of a path (the last component after the final slash).
+pub defn basename(path: String) -> String {
+    let n: Int = str_len(path);
+    let i: Int = n - 1;
+    loop while { i >= 0 } do {
+        let ch: String = str_slice(path, i, i + 1);
+        if (ch == "/" || ch == "\\") {
+            return str_slice(path, i + 1, n)
+        }
+        i--;
+    }
+    path
+}
+
+// Return the directory component of a path (everything before the final slash).
+// Returns "." if there is no directory component.
+pub defn dirname(path: String) -> String {
+    let n: Int = str_len(path);
+    let i: Int = n - 1;
+    loop while { i >= 0 } do {
+        let ch: String = str_slice(path, i, i + 1);
+        if (ch == "/" || ch == "\\") {
+            return if (i == 0) { "/" } else { str_slice(path, 0, i) }
+        }
+        i--;
+    }
+    "."
+}

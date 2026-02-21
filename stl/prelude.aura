@@ -1,0 +1,641 @@
+// stl/prelude.aura — Convenience re-export of the Aura standard library.
+//
+// Importing this single module brings the most commonly used symbols from all
+// STL modules into scope under their original names.  It is the recommended
+// starting point for Aura programs that need broad standard-library access.
+//
+// Usage (namespace import — recommended):
+//   use prelude = "@stl/prelude";
+//   prelude.println("hello");         // io
+//   prelude.map([1,2,3], { x -> x * 2 });  // list
+//
+// Usage (destructuring import):
+//   use (println, map, filter, split, path_join) = "@stl/prelude";
+//
+// Individual modules can still be imported directly for full access or to
+// avoid name collisions:
+//   use list  = "@stl/list";
+//   use math  = "@stl/math";
+//   use os    = "@stl/os";
+//
+// What is re-exported here:
+//   io      — write, writeln, writeln_sep, write_err, writeln_err,
+//             printf, printfln, read, prompt, read_int, read_float, read_trimmed
+//   string  — len (str_len), is_empty, starts_with, ends_with, contains, find,
+//             upper, lower, trim, trim_start, trim_end, replace, repeat,
+//             slice (str_slice), take (str_take), drop (str_drop),
+//             split, join, chars, bytes, from_chars, parse_int, parse_float,
+//             pad_left, pad_right, str_from
+//   list    — len (list_len), is_empty, contains, index_of, first, last, get,
+//             slice (list_slice), take (list_take), drop (list_drop),
+//             range, repeat (list_repeat), zip, enumerate,
+//             unique, intersect, difference,
+//             map, filter, reduce, find (list_find), any, all, each,
+//             each_with_index, sum, sum_float, product, min, max,
+//             reverse, sort, concat, flatten, flat_map
+//   dict    — len (dict_len), is_empty, has, keys, values, entries,
+//             get (dict_get), get_or, remove, merge,
+//             each (dict_each), map_values, filter (dict_filter),
+//             reduce (dict_reduce), any (dict_any), all (dict_all),
+//             from_entries, from_lists
+//   math    — PI, E, INF,
+//             abs, floor, ceil, round, trunc, fract, sign,
+//             is_nan, is_inf, is_finite,
+//             pow, sqrt, sqrt_unsafe,
+//             ln, log2, log10, log,
+//             sin, cos, tan, asin, acos, atan, atan2,
+//             to_radians, to_degrees,
+//             min (math_min), max (math_max), clamp, lerp, inv_lerp,
+//             gcd, lcm, is_even, is_odd,
+//             random, random_range, random_int
+//   os      — args, env, env_or, exit,
+//             now, sleep,
+//             exists, is_file, is_dir, cwd, ls, mkdir,
+//             read_file, write_file, append_file, delete_file,
+//             path_join, extension, basename, dirname
+
+// Pull in each sub-module so this file's pub definitions may delegate to them.
+// (When the module system is implemented these `use` statements will make the
+// imported namespaces available; for now they serve as documentation.)
+use io     = "@stl/io";
+use string = "@stl/string";
+use list   = "@stl/list";
+use dict   = "@stl/dict";
+use math   = "@stl/math";
+use os     = "@stl/os";
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// I/O  (stl/io)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Write a value to stdout without a trailing newline.
+pub defn write(value: String) -> Void { io.write(value) }
+
+// Write a value to stdout followed by a newline.
+pub defn writeln(value: String) -> Void { io.writeln(value) }
+
+// Write multiple values separated by `sep` then a newline.
+pub defn writeln_sep(sep: String, values: List[String]) -> Void {
+    io.writeln_sep(sep, values)
+}
+
+// Write a value to stderr without a trailing newline.
+pub defn write_err(value: String) -> Void { io.write_err(value) }
+
+// Write a value to stderr followed by a newline.
+pub defn writeln_err(value: String) -> Void { io.writeln_err(value) }
+
+// Print a formatted string (replaces each "{}" with the next arg).
+pub defn printf(fmt: String, args: List[String]) -> Void {
+    io.printf(fmt, args)
+}
+
+// Like printf but appends a newline.
+pub defn printfln(fmt: String, args: List[String]) -> Void {
+    io.printfln(fmt, args)
+}
+
+// Read a raw line from stdin.  Returns .some(line) or .null on EOF.
+pub defn read() -> Option[String] { io.read() }
+
+// Print a prompt then read a line.  Returns .some(trimmed) or .null on EOF.
+pub defn prompt(message: String) -> Option[String] { io.prompt(message) }
+
+// Read a line and parse it as an Int.  Returns .ok(n) or .error(msg).
+pub defn read_int() -> Result[Int, String] { io.read_int() }
+
+// Read a line and parse it as a Float.  Returns .ok(f) or .error(msg).
+pub defn read_float() -> Result[Float, String] { io.read_float() }
+
+// Read a line and return it trimmed.  Returns .some(s) or .null on EOF.
+pub defn read_trimmed() -> Option[String] { io.read_trimmed() }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// String  (stl/string)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Return the number of UTF-8 characters in `s`.
+pub defn str_len(s: String) -> Int { string.len(s) }
+
+// Return true if `s` is empty.
+pub defn str_is_empty(s: String) -> Bool { string.is_empty(s) }
+
+// Return true if `s` starts with `prefix`.
+pub defn starts_with(s: String, prefix: String) -> Bool {
+    string.starts_with(s, prefix)
+}
+
+// Return true if `s` ends with `suffix`.
+pub defn ends_with(s: String, suffix: String) -> Bool {
+    string.ends_with(s, suffix)
+}
+
+// Return true if `s` contains `needle`.
+pub defn contains(s: String, needle: String) -> Bool {
+    string.contains(s, needle)
+}
+
+// Return the index of the first occurrence of `needle`, or .null.
+pub defn find(s: String, needle: String) -> Option[Int] {
+    string.find(s, needle)
+}
+
+// Convert `s` to uppercase.
+pub defn upper(s: String) -> String { string.upper(s) }
+
+// Convert `s` to lowercase.
+pub defn lower(s: String) -> String { string.lower(s) }
+
+// Strip leading and trailing whitespace from `s`.
+pub defn trim(s: String) -> String { string.trim(s) }
+
+// Strip leading whitespace from `s`.
+pub defn trim_start(s: String) -> String { string.trim_start(s) }
+
+// Strip trailing whitespace from `s`.
+pub defn trim_end(s: String) -> String { string.trim_end(s) }
+
+// Replace every occurrence of `from` with `to` in `s`.
+pub defn replace(s: String, from: String, to: String) -> String {
+    string.replace(s, from, to)
+}
+
+// Return `s` repeated `n` times.  Returns .ok(result) or .error(msg).
+pub defn str_repeat(s: String, n: Int) -> Result[String, String] {
+    string.repeat(s, n)
+}
+
+// Return the substring `s[start..end]`.  Returns .ok(slice) or .error(msg).
+pub defn str_slice(s: String, start: Int, end: Int) -> Result[String, String] {
+    string.slice(s, start, end)
+}
+
+// Return the first `n` characters.  Returns .ok(result) or .error(msg).
+pub defn str_take(s: String, n: Int) -> Result[String, String] {
+    string.take(s, n)
+}
+
+// Return `s` with the first `n` characters removed.  Returns .ok or .error.
+pub defn str_drop(s: String, n: Int) -> Result[String, String] {
+    string.drop(s, n)
+}
+
+// Split `s` on `sep`.
+pub defn split(s: String, sep: String) -> List[String] {
+    string.split(s, sep)
+}
+
+// Join a list of strings with `sep`.
+pub defn join(sep: String, parts: List[String]) -> String {
+    string.join(sep, parts)
+}
+
+// Split `s` into individual characters.
+pub defn chars(s: String) -> List[String] { string.chars(s) }
+
+// Split `s` into UTF-8 byte values.
+pub defn bytes(s: String) -> List[Int] { string.bytes(s) }
+
+// Build a string from a list of single-character strings.
+pub defn from_chars(chars: List[String]) -> String { string.from_chars(chars) }
+
+// Parse `s` as an Int.  Returns .ok(n) or .error(msg).
+pub defn parse_int(s: String) -> Result[Int, String] { string.parse_int(s) }
+
+// Parse `s` as a Float.  Returns .ok(f) or .error(msg).
+pub defn parse_float(s: String) -> Result[Float, String] {
+    string.parse_float(s)
+}
+
+// Left-pad `s` with `char` to at least `width` characters.
+pub defn pad_left(s: String, width: Int, char: String) -> String {
+    string.pad_left(s, width, char)
+}
+
+// Right-pad `s` with `char` to at least `width` characters.
+pub defn pad_right(s: String, width: Int, char: String) -> String {
+    string.pad_right(s, width, char)
+}
+
+// Convert any value to its string representation.
+pub defn str_from(value: String) -> String { string.from(value) }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// List  (stl/list)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Return the number of elements in `lst`.
+pub defn list_len(lst: List[T]) -> Int { list.len(lst) }
+
+// Return true if `lst` is empty.
+pub defn list_is_empty(lst: List[T]) -> Bool { list.is_empty(lst) }
+
+// Return true if `value` is in `lst`.
+pub defn list_contains(lst: List[T], value: T) -> Bool {
+    list.contains(lst, value)
+}
+
+// Return the index of `value`, or .null.
+pub defn index_of(lst: List[T], value: T) -> Option[Int] {
+    list.index_of(lst, value)
+}
+
+// Return the first element wrapped in .some, or .null.
+pub defn first(lst: List[T]) -> Option[T] { list.first(lst) }
+
+// Return the last element wrapped in .some, or .null.
+pub defn last(lst: List[T]) -> Option[T] { list.last(lst) }
+
+// Return the element at index `i` (negative = from end), or .null.
+pub defn list_get(lst: List[T], i: Int) -> Option[T] { list.get(lst, i) }
+
+// Return a slice of `lst`.  Returns .ok(slice) or .error(msg).
+pub defn list_slice(lst: List[T], start: Int, end: Int) -> Result[List[T], String] {
+    list.slice(lst, start, end)
+}
+
+// Return the first `n` elements of `lst`.
+pub defn list_take(lst: List[T], n: Int) -> List[T] { list.take(lst, n) }
+
+// Return `lst` with the first `n` elements removed.
+pub defn list_drop(lst: List[T], n: Int) -> List[T] { list.drop(lst, n) }
+
+// Return a list of integers from `start` (inclusive) to `end` (exclusive).
+pub defn range(start: Int, end: Int) -> List[Int] { list.range(start, end) }
+
+// Return a list of `n` copies of `value`.
+pub defn list_repeat(value: T, n: Int) -> List[T] { list.repeat(value, n) }
+
+// Zip two lists into a list of [a, b] pairs.
+pub defn zip(a: List[A], b: List[B]) -> List[List[T]] { list.zip(a, b) }
+
+// Return [index, value] pairs for each element.
+pub defn enumerate(lst: List[T]) -> List[List[T]] { list.enumerate(lst) }
+
+// Remove duplicate values (first occurrence kept).
+pub defn unique(lst: List[T]) -> List[T] { list.unique(lst) }
+
+// Return elements present in both `a` and `b`.
+pub defn intersect(a: List[T], b: List[T]) -> List[T] { list.intersect(a, b) }
+
+// Return elements in `a` that are not in `b`.
+pub defn difference(a: List[T], b: List[T]) -> List[T] {
+    list.difference(a, b)
+}
+
+// Apply `f` to each element and return a new list.
+pub defn map(lst: List[A], f: Func[A, B]) -> List[B] { list.map(lst, f) }
+
+// Return elements for which `pred` is true.
+pub defn filter(lst: List[T], pred: Func[T, Bool]) -> List[T] {
+    list.filter(lst, pred)
+}
+
+// Reduce the list to a single value.
+pub defn reduce(lst: List[T], init: A, f: Func[(A, T), A]) -> A {
+    list.reduce(lst, init, f)
+}
+
+// Return the first element matching `pred`, or .null.
+pub defn list_find(lst: List[T], pred: Func[T, Bool]) -> Option[T] {
+    list.find(lst, pred)
+}
+
+// Return true if any element matches `pred`.
+pub defn any(lst: List[T], pred: Func[T, Bool]) -> Bool { list.any(lst, pred) }
+
+// Return true if all elements match `pred`.
+pub defn all(lst: List[T], pred: Func[T, Bool]) -> Bool { list.all(lst, pred) }
+
+// Apply `f` to each element for side effects.
+pub defn each(lst: List[T], f: Func[T, Void]) -> Void { list.each(lst, f) }
+
+// Apply `f(index, element)` to each element for side effects.
+pub defn each_with_index(lst: List[T], f: Func[(Int, T), Void]) -> Void {
+    list.each_with_index(lst, f)
+}
+
+// Return the sum of a list of Int.
+pub defn sum(lst: List[Int]) -> Int { list.sum(lst) }
+
+// Return the sum of a list of Float.
+pub defn sum_float(lst: List[Float]) -> Float { list.sum_float(lst) }
+
+// Return the product of a list of Int.
+pub defn product(lst: List[Int]) -> Int { list.product(lst) }
+
+// Return the minimum value, or .null if empty.
+pub defn list_min(lst: List[T]) -> Option[T] { list.min(lst) }
+
+// Return the maximum value, or .null if empty.
+pub defn list_max(lst: List[T]) -> Option[T] { list.max(lst) }
+
+// Return a new list with elements in reverse order.
+pub defn reverse(lst: List[T]) -> List[T] { list.reverse(lst) }
+
+// Return a new sorted list (ascending).
+pub defn sort(lst: List[T]) -> List[T] { list.sort(lst) }
+
+// Concatenate two lists.
+pub defn concat(a: List[T], b: List[T]) -> List[T] { list.concat(a, b) }
+
+// Flatten a list of lists by one level.
+pub defn flatten(lst: List[List[T]]) -> List[T] { list.flatten(lst) }
+
+// Map then flatten (flat_map / bind).
+pub defn flat_map(lst: List[A], f: Func[A, List[B]]) -> List[B] {
+    list.flat_map(lst, f)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Dict  (stl/dict)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Return the number of key-value pairs in `d`.
+pub defn dict_len(d: Dict[String, V]) -> Int { dict.len(d) }
+
+// Return true if `d` is empty.
+pub defn dict_is_empty(d: Dict[String, V]) -> Bool { dict.is_empty(d) }
+
+// Return true if `key` exists in `d`.
+pub defn has(d: Dict[String, V], key: String) -> Bool { dict.has(d, key) }
+
+// Return all keys as a list.
+pub defn keys(d: Dict[String, V]) -> List[String] { dict.keys(d) }
+
+// Return all values as a list.
+pub defn values(d: Dict[String, V]) -> List[V] { dict.values(d) }
+
+// Return all [key, value] pairs as a list.
+pub defn entries(d: Dict[String, V]) -> List[List[T]] { dict.entries(d) }
+
+// Return the value for `key` wrapped in .some, or .null.
+pub defn dict_get(d: Dict[String, V], key: String) -> Option[V] {
+    dict.get(d, key)
+}
+
+// Return the value for `key`, or `default` if not found.
+pub defn get_or(d: Dict[String, V], key: String, default: V) -> V {
+    dict.get_or(d, key, default)
+}
+
+// Delete `key` from `d`.  Returns .ok(Void) or .error(msg).
+pub defn remove(d: Dict[String, V], key: String) -> Result[Void, String] {
+    dict.remove(d, key)
+}
+
+// Merge `other` into `base` (keys in `other` win).
+pub defn merge(base: Dict[String, V], other: Dict[String, V]) -> Dict[String, V] {
+    dict.merge(base, other)
+}
+
+// Apply `f(key, value)` to every entry for side effects.
+pub defn dict_each(d: Dict[String, V], f: Func[(String, V), Void]) -> Void {
+    dict.each(d, f)
+}
+
+// Return a new dict with values transformed by `f(key, value) -> W`.
+pub defn map_values(d: Dict[String, V], f: Func[(String, V), W]) -> Dict[String, W] {
+    dict.map_values(d, f)
+}
+
+// Return a new dict with only entries matching `pred(key, value)`.
+pub defn dict_filter(d: Dict[String, V], pred: Func[(String, V), Bool]) -> Dict[String, V] {
+    dict.filter(d, pred)
+}
+
+// Reduce all entries to a single value.
+pub defn dict_reduce(d: Dict[String, V], init: A, f: Func[(A, String, V), A]) -> A {
+    dict.reduce(d, init, f)
+}
+
+// Return true if `pred(key, value)` holds for at least one entry.
+pub defn dict_any(d: Dict[String, V], pred: Func[(String, V), Bool]) -> Bool {
+    dict.any(d, pred)
+}
+
+// Return true if `pred(key, value)` holds for every entry.
+pub defn dict_all(d: Dict[String, V], pred: Func[(String, V), Bool]) -> Bool {
+    dict.all(d, pred)
+}
+
+// Build a dict from a list of [key, value] pairs.
+pub defn from_entries(entries: List[List[T]]) -> Dict[String, T] {
+    dict.from_entries(entries)
+}
+
+// Build a dict by zipping a list of keys and a list of values.
+pub defn from_lists(keys: List[String], values: List[V]) -> Dict[String, V] {
+    dict.from_lists(keys, values)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Math  (stl/math)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// π ≈ 3.14159…
+pub def PI = math_pi()
+
+// Euler's number e ≈ 2.71828…
+pub def E = math_e()
+
+// Positive infinity.
+pub def INF = math_inf()
+
+// Return the absolute value of `x`.
+pub defn abs(x: Float) -> Float { math.abs(x) }
+
+// Return the largest integer <= `x`.
+pub defn floor(x: Float) -> Float { math.floor(x) }
+
+// Return the smallest integer >= `x`.
+pub defn ceil(x: Float) -> Float { math.ceil(x) }
+
+// Return `x` rounded to the nearest integer.
+pub defn round(x: Float) -> Float { math.round(x) }
+
+// Return the integer part of `x` (truncate toward zero).
+pub defn trunc(x: Float) -> Float { math.trunc(x) }
+
+// Return the fractional part of `x`.
+pub defn fract(x: Float) -> Float { math.fract(x) }
+
+// Return -1.0, 0.0, or 1.0 depending on the sign of `x`.
+pub defn sign(x: Float) -> Float { math.sign(x) }
+
+// Return true if `x` is NaN.
+pub defn is_nan(x: Float) -> Bool { math.is_nan(x) }
+
+// Return true if `x` is positive or negative infinity.
+pub defn is_inf(x: Float) -> Bool { math.is_inf(x) }
+
+// Return true if `x` is a finite, non-NaN value.
+pub defn is_finite(x: Float) -> Bool { math.is_finite(x) }
+
+// Return `base` raised to the power `exp`.
+pub defn pow(base: Float, exp: Float) -> Float { math.pow(base, exp) }
+
+// Return the square root of `x`.  Returns .ok(result) or .error if x < 0.
+pub defn sqrt(x: Float) -> Result[Float, String] { math.sqrt(x) }
+
+// Return the square root of `x` without bounds-checking.
+pub defn sqrt_unsafe(x: Float) -> Float { math.sqrt_unsafe(x) }
+
+// Return the natural logarithm of `x`.  Returns .ok or .error if x <= 0.
+pub defn ln(x: Float) -> Result[Float, String] { math.ln(x) }
+
+// Return the base-2 logarithm of `x`.  Returns .ok or .error if x <= 0.
+pub defn log2(x: Float) -> Result[Float, String] { math.log2(x) }
+
+// Return the base-10 logarithm of `x`.  Returns .ok or .error if x <= 0.
+pub defn log10(x: Float) -> Result[Float, String] { math.log10(x) }
+
+// Return the logarithm of `x` in the given `base`.  Returns .ok or .error.
+pub defn log(x: Float, base: Float) -> Result[Float, String] {
+    math.log(x, base)
+}
+
+// Return the sine of `x` (radians).
+pub defn sin(x: Float) -> Float { math.sin(x) }
+
+// Return the cosine of `x` (radians).
+pub defn cos(x: Float) -> Float { math.cos(x) }
+
+// Return the tangent of `x` (radians).
+pub defn tan(x: Float) -> Float { math.tan(x) }
+
+// Return the arcsine of `x`.  Returns .ok or .error if x outside [-1, 1].
+pub defn asin(x: Float) -> Result[Float, String] { math.asin(x) }
+
+// Return the arccosine of `x`.  Returns .ok or .error if x outside [-1, 1].
+pub defn acos(x: Float) -> Result[Float, String] { math.acos(x) }
+
+// Return the arctangent of `x` (radians).
+pub defn atan(x: Float) -> Float { math.atan(x) }
+
+// Return the four-quadrant arctangent of (y, x) in radians.
+pub defn atan2(y: Float, x: Float) -> Float { math.atan2(y, x) }
+
+// Convert degrees to radians.
+pub defn to_radians(degrees: Float) -> Float { math.to_radians(degrees) }
+
+// Convert radians to degrees.
+pub defn to_degrees(radians: Float) -> Float { math.to_degrees(radians) }
+
+// Return the smaller of two values.
+pub defn math_min(a: Float, b: Float) -> Float { math.min(a, b) }
+
+// Return the larger of two values.
+pub defn math_max(a: Float, b: Float) -> Float { math.max(a, b) }
+
+// Clamp `x` to [lo, hi].
+pub defn clamp(x: Float, lo: Float, hi: Float) -> Float {
+    math.clamp(x, lo, hi)
+}
+
+// Linear interpolation between `a` and `b` by factor `t`.
+pub defn lerp(a: Float, b: Float, t: Float) -> Float { math.lerp(a, b, t) }
+
+// Return the `t` in [0,1] that maps to `v` between `a` and `b`.
+pub defn inv_lerp(a: Float, b: Float, v: Float) -> Result[Float, String] {
+    math.inv_lerp(a, b, v)
+}
+
+// Return the GCD of two integers.
+pub defn gcd(a: Int, b: Int) -> Int { math.gcd(a, b) }
+
+// Return the LCM of two integers.  Returns .ok or .error if both are zero.
+pub defn lcm(a: Int, b: Int) -> Result[Int, String] { math.lcm(a, b) }
+
+// Return true if `n` is even.
+pub defn is_even(n: Int) -> Bool { math.is_even(n) }
+
+// Return true if `n` is odd.
+pub defn is_odd(n: Int) -> Bool { math.is_odd(n) }
+
+// Return a random Float in [0.0, 1.0).
+pub defn random() -> Float { math.random() }
+
+// Return a random Float in [lo, hi).
+pub defn random_range(lo: Float, hi: Float) -> Float {
+    math.random_range(lo, hi)
+}
+
+// Return a random Int in [lo, hi).
+pub defn random_int(lo: Int, hi: Int) -> Int { math.random_int(lo, hi) }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OS  (stl/os)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Return command-line arguments (argv).
+pub defn args() -> List[String] { os.args() }
+
+// Look up an environment variable.  Returns .some(value) or .null.
+pub defn env(name: String) -> Option[String] { os.env(name) }
+
+// Look up an environment variable, returning `default` if not set.
+pub defn env_or(name: String, default: String) -> String {
+    os.env_or(name, default)
+}
+
+// Terminate the process with the given exit code.
+pub defn exit(code: Int) -> Void { os.exit(code) }
+
+// Return the current time as milliseconds since the Unix epoch.
+pub defn now() -> Int { os.now() }
+
+// Sleep for `ms` milliseconds.
+pub defn sleep(ms: Int) -> Void { os.sleep(ms) }
+
+// Return true if `path` exists (file or directory).
+pub defn exists(path: String) -> Bool { os.exists(path) }
+
+// Return true if `path` is a regular file.
+pub defn is_file(path: String) -> Bool { os.is_file(path) }
+
+// Return true if `path` is a directory.
+pub defn is_dir(path: String) -> Bool { os.is_dir(path) }
+
+// Return the current working directory.  Returns .ok(path) or .error(msg).
+pub defn cwd() -> Result[String, String] { os.cwd() }
+
+// List the entries of a directory.  Returns .ok(names) or .error(msg).
+pub defn ls(path: String) -> Result[List[String], String] { os.ls(path) }
+
+// Create a directory (and all parents).  Returns .ok(Void) or .error(msg).
+pub defn mkdir(path: String) -> Result[Void, String] { os.mkdir(path) }
+
+// Read a file as a string.  Returns .ok(contents) or .error(msg).
+pub defn read_file(path: String) -> Result[String, String] {
+    os.read_file(path)
+}
+
+// Write `contents` to a file.  Returns .ok(Void) or .error(msg).
+pub defn write_file(path: String, contents: String) -> Result[Void, String] {
+    os.write_file(path, contents)
+}
+
+// Append `contents` to a file.  Returns .ok(Void) or .error(msg).
+pub defn append_file(path: String, contents: String) -> Result[Void, String] {
+    os.append_file(path, contents)
+}
+
+// Delete a file.  Returns .ok(Void) or .error(msg).
+pub defn delete_file(path: String) -> Result[Void, String] {
+    os.delete_file(path)
+}
+
+// Join two path components with "/".
+pub defn path_join(base: String, part: String) -> String {
+    os.path_join(base, part)
+}
+
+// Return the file extension of `path` (with leading dot), or .null.
+pub defn extension(path: String) -> Option[String] { os.extension(path) }
+
+// Return the last component of `path` (the base name).
+pub defn basename(path: String) -> String { os.basename(path) }
+
+// Return the directory component of `path` (everything before last slash).
+pub defn dirname(path: String) -> String { os.dirname(path) }

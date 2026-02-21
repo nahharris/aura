@@ -1,0 +1,213 @@
+// stl/string.aura — String utilities for Aura.
+//
+// Wraps the native string primitives and adds higher-level helpers.
+// Functions that can fail return Option or Result variants:
+//   .some(value) | .null       — for lookups that may not find anything
+//   .ok(value)   | .error(msg) — for operations that can fail with a reason
+//
+// Native primitives used:
+//   str_len, str_upper, str_lower, str_trim, str_trim_start, str_trim_end,
+//   str_starts_with, str_ends_with, str_contains, str_split, str_join,
+//   str_replace, str_slice, str_find, str_repeat, str_chars, str_bytes,
+//   str_from_chars, str_parse_int, str_parse_float, to_str, is_null
+
+// ── Inspection ────────────────────────────────────────────────────────────────
+
+// Return the number of UTF-8 characters in the string.
+pub defn len(s: String) -> Int {
+    str_len(s)
+}
+
+// Return true if the string has zero characters.
+pub defn is_empty(s: String) -> Bool {
+    str_len(s) == 0
+}
+
+// Return true if `s` starts with `prefix`.
+pub defn starts_with(s: String, prefix: String) -> Bool {
+    str_starts_with(s, prefix)
+}
+
+// Return true if `s` ends with `suffix`.
+pub defn ends_with(s: String, suffix: String) -> Bool {
+    str_ends_with(s, suffix)
+}
+
+// Return true if `s` contains the substring `needle`.
+pub defn contains(s: String, needle: String) -> Bool {
+    str_contains(s, needle)
+}
+
+// Return the index of the first occurrence of `needle` in `s`,
+// or .null if not found.
+pub defn find(s: String, needle: String) -> Option[Int] {
+    let idx: Int = str_find(s, needle);
+    if (is_null(idx)) {
+        .null
+    } else {
+        .some(idx)
+    }
+}
+
+// ── Transformation ────────────────────────────────────────────────────────────
+
+// Return a new string with all characters converted to uppercase.
+pub defn upper(s: String) -> String {
+    str_upper(s)
+}
+
+// Return a new string with all characters converted to lowercase.
+pub defn lower(s: String) -> String {
+    str_lower(s)
+}
+
+// Return a new string with leading and trailing whitespace removed.
+pub defn trim(s: String) -> String {
+    str_trim(s)
+}
+
+// Return a new string with leading whitespace removed.
+pub defn trim_start(s: String) -> String {
+    str_trim_start(s)
+}
+
+// Return a new string with trailing whitespace removed.
+pub defn trim_end(s: String) -> String {
+    str_trim_end(s)
+}
+
+// Return a new string with every occurrence of `from` replaced by `to`.
+pub defn replace(s: String, from: String, to: String) -> String {
+    str_replace(s, from, to)
+}
+
+// Return a new string that is `s` repeated `n` times.
+// Returns .ok(result) on success, .error(msg) if n < 0.
+pub defn repeat(s: String, n: Int) -> Result[String, String] {
+    if (n < 0) {
+        .error("repeat count must be >= 0, got $(n)")
+    } else {
+        .ok(str_repeat(s, n))
+    }
+}
+
+// ── Slicing ───────────────────────────────────────────────────────────────────
+
+// Return the substring of `s` from index `start` (inclusive) to `end`
+// (exclusive). Returns .ok(slice) on success, .error(msg) if bounds are invalid.
+pub defn slice(s: String, start: Int, end: Int) -> Result[String, String] {
+    let slen: Int = str_len(s);
+    if (start < 0 || end < start || end > slen) {
+        .error("slice bounds $(start)..$(end) out of range for string of length $(slen)")
+    } else {
+        .ok(str_slice(s, start, end))
+    }
+}
+
+// Return the first `n` characters of `s`.
+// Returns .ok(result) on success, .error(msg) if n < 0.
+pub defn take(s: String, n: Int) -> Result[String, String] {
+    let slen: Int = str_len(s);
+    if (n < 0) {
+        .error("take count must be >= 0, got $(n)")
+    } else {
+        let end: Int = if (n > slen) { slen } else { n };
+        .ok(str_slice(s, 0, end))
+    }
+}
+
+// Return `s` with the first `n` characters removed.
+// Returns .ok(result) on success, .error(msg) if n < 0.
+pub defn drop(s: String, n: Int) -> Result[String, String] {
+    let slen: Int = str_len(s);
+    if (n < 0) {
+        .error("drop count must be >= 0, got $(n)")
+    } else {
+        let start: Int = if (n > slen) { slen } else { n };
+        .ok(str_slice(s, start, slen))
+    }
+}
+
+// ── Splitting / Joining ───────────────────────────────────────────────────────
+
+// Split `s` by `sep` and return a list of parts.
+pub defn split(s: String, sep: String) -> List[String] {
+    str_split(s, sep)
+}
+
+// Join a list of strings with `sep` between each element.
+pub defn join(sep: String, parts: List[String]) -> String {
+    str_join(sep, parts)
+}
+
+// Split `s` into a list of individual characters.
+pub defn chars(s: String) -> List[String] {
+    str_chars(s)
+}
+
+// Split `s` into a list of UTF-8 byte values (Int).
+pub defn bytes(s: String) -> List[Int] {
+    str_bytes(s)
+}
+
+// Build a string from a list of single-character strings.
+pub defn from_chars(chars: List[String]) -> String {
+    str_from_chars(chars)
+}
+
+// ── Parsing ───────────────────────────────────────────────────────────────────
+
+// Parse the string as an Int.
+// Returns .ok(n) on success, .error(msg) on failure.
+pub defn parse_int(s: String) -> Result[Int, String] {
+    let result: Int = str_parse_int(s);
+    if (is_null(result)) {
+        .error("cannot parse \"$(s)\" as Int")
+    } else {
+        .ok(result)
+    }
+}
+
+// Parse the string as a Float.
+// Returns .ok(f) on success, .error(msg) on failure.
+pub defn parse_float(s: String) -> Result[Float, String] {
+    let result: Float = str_parse_float(s);
+    if (is_null(result)) {
+        .error("cannot parse \"$(s)\" as Float")
+    } else {
+        .ok(result)
+    }
+}
+
+// ── Padding ───────────────────────────────────────────────────────────────────
+
+// Left-pad `s` with `char` until its length is at least `width`.
+// `char` should be a single-character string.
+pub defn pad_left(s: String, width: Int, char: String) -> String {
+    let slen: Int = str_len(s);
+    if (slen >= width) {
+        s
+    } else {
+        let padding: String = str_repeat(char, width - slen);
+        padding + s
+    }
+}
+
+// Right-pad `s` with `char` until its length is at least `width`.
+// `char` should be a single-character string.
+pub defn pad_right(s: String, width: Int, char: String) -> String {
+    let slen: Int = str_len(s);
+    if (slen >= width) {
+        s
+    } else {
+        let padding: String = str_repeat(char, width - slen);
+        s + padding
+    }
+}
+
+// ── Conversion ────────────────────────────────────────────────────────────────
+
+// Convert any value to its string representation.
+pub defn from(value: String) -> String {
+    to_str(value)
+}

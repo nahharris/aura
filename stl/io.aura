@@ -1,0 +1,137 @@
+// stl/io.aura — Standard I/O library for Aura.
+//
+// Wraps the native I/O primitives and adds higher-level helpers.
+// All fallible operations return Result or Option variants so callers
+// can handle failure explicitly instead of panicking.
+//
+// Option variants:  .some(value)  |  .null
+// Result variants:  .ok(value)    |  .error(message)
+//
+// Native primitives used:
+//   print, println, eprint, eprintln, read_line, to_str,
+//   str_trim, str_parse_int, str_parse_float, str_split, str_join,
+//   list_len, is_null
+
+// ── Output ────────────────────────────────────────────────────────────────────
+
+// Write a value to stdout without a trailing newline.
+pub defn write(value: String) -> Void {
+    print(value)
+}
+
+// Write a value to stdout followed by a newline.
+pub defn writeln(value: String) -> Void {
+    println(value)
+}
+
+// Write multiple values to stdout separated by `sep`, followed by a newline.
+pub defn writeln_sep(sep: String, values: List[String]) -> Void {
+    let out: String = str_join(sep, values);
+    println(out)
+}
+
+// Write a value to stderr without a trailing newline.
+pub defn write_err(value: String) -> Void {
+    eprint(value)
+}
+
+// Write a value to stderr followed by a newline.
+pub defn writeln_err(value: String) -> Void {
+    eprintln(value)
+}
+
+// ── Formatted output ──────────────────────────────────────────────────────────
+
+// Print a formatted string built from a template and a list of values.
+// Each occurrence of "{}" in `fmt` is replaced by the next value in `args`.
+//
+// Example:
+//   printf("{} + {} = {}", [1, 2, 3])  =>  prints "1 + 2 = 3"
+pub defn printf(fmt: String, args: List[String]) -> Void {
+    let parts: List[String] = str_split(fmt, "{}");
+    let len: Int = list_len(parts);
+    let args_len: Int = list_len(args);
+    let result: String = "";
+    let i: Int = 0;
+    loop while { i < len } do {
+        result = result + parts[i];
+        if (i < args_len) {
+            result = result + to_str(args[i]);
+        }
+        i++;
+    }
+    print(result)
+}
+
+// Same as printf but appends a newline.
+pub defn printfln(fmt: String, args: List[String]) -> Void {
+    printf(fmt, args);
+    println("")
+}
+
+// ── Input ─────────────────────────────────────────────────────────────────────
+
+// Read a raw line from stdin.
+// Returns .some(line) on success, or .null if stdin is closed / EOF.
+pub defn read() -> Option[String] {
+    let line: String = read_line();
+    if (is_null(line)) {
+        .null
+    } else {
+        .some(line)
+    }
+}
+
+// Print a prompt then read a line.
+// Returns .some(trimmed_line) or .null on EOF.
+pub defn prompt(message: String) -> Option[String] {
+    print(message);
+    let line: String = read_line();
+    if (is_null(line)) {
+        .null
+    } else {
+        .some(str_trim(line))
+    }
+}
+
+// Read a line and parse it as an Int.
+// Returns .ok(n) on success, .error(msg) if the input is not a valid integer.
+pub defn read_int() -> Result[Int, String] {
+    let line: String = read_line();
+    if (is_null(line)) {
+        return .error("EOF: no input available")
+    }
+    let trimmed: String = str_trim(line);
+    let parsed: Int = str_parse_int(trimmed);
+    if (is_null(parsed)) {
+        .error("cannot parse \"$(trimmed)\" as Int")
+    } else {
+        .ok(parsed)
+    }
+}
+
+// Read a line and parse it as a Float.
+// Returns .ok(f) on success, .error(msg) if the input is not a valid float.
+pub defn read_float() -> Result[Float, String] {
+    let line: String = read_line();
+    if (is_null(line)) {
+        return .error("EOF: no input available")
+    }
+    let trimmed: String = str_trim(line);
+    let parsed: Float = str_parse_float(trimmed);
+    if (is_null(parsed)) {
+        .error("cannot parse \"$(trimmed)\" as Float")
+    } else {
+        .ok(parsed)
+    }
+}
+
+// Read a line and return it trimmed, or .null on EOF.
+pub defn read_trimmed() -> Option[String] {
+    let line: String = read_line();
+    if (is_null(line)) {
+        .null
+    } else {
+        .some(str_trim(line))
+    }
+}
