@@ -2,9 +2,12 @@
 name = "aura"
 version = "0.1.0"
 edition = "2021"
+description = "The Aura programming language — a functional language with bytecode VM and garbage collection"
+authors = ["Aura Language Team"]
+
+[[bin]]
+name = "aura"
+path = "src/main.rs"
 
 [dependencies]
-pest = "2.7"
-pest_derive = "2.7"
 thiserror = "1.0"
-lazy_static = "1.4"
