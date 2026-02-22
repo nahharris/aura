@@ -144,6 +144,12 @@ pub enum OpCode {
     /// Tail call optimisation: reuse current call frame.
     /// Operand: u8 — argument count.
     TailCall = 0x73,
+    /// Call a method on the receiver.
+    /// Stack: ... receiver arg0 arg1 ... argN-1
+    /// Operand: u16 — constant pool index of method name string.
+    /// Operand: u8 — argument count (NOT including receiver).
+    /// Resolves to "Type.method" global at runtime based on receiver's type.
+    CallMethod = 0x74,
 
     // ── Closures ──────────────────────────────────────────────────────────────
     /// Create a closure object from a function prototype in the constant pool.
@@ -163,6 +169,9 @@ pub enum OpCode {
     /// Build a struct from the top N*2 stack values (name_idx, val pairs).
     /// Operand: u16 — field count.
     MakeStruct = 0x93,
+    /// Build a typed struct (from deftype) with a type_name.
+    /// Operand: u16 type_name_idx, u16 field_count.
+    MakeTypedStruct = 0x94,
 
     // ── Field / index access ──────────────────────────────────────────────────
     /// Load a named field from the object on top of the stack.
@@ -197,6 +206,9 @@ pub enum OpCode {
     /// Elvis operator: if top of stack is non-null, jump past the RHS.
     /// Operand: u16 — jump-past-RHS offset.
     Elvis = 0xc4,
+    /// Get the variant tag of a struct (its type_name field).
+    /// Pops top of stack, pushes the tag string (or "" for non-structs).
+    GetTag = 0xc5,
 
     /// No-operation (used as a placeholder during patching).
     Nop = 0xff,
@@ -247,11 +259,13 @@ impl TryFrom<u8> for OpCode {
             0x71 => Ok(OpCode::Return),
             0x72 => Ok(OpCode::CallNative),
             0x73 => Ok(OpCode::TailCall),
+            0x74 => Ok(OpCode::CallMethod),
             0x80 => Ok(OpCode::Closure),
             0x90 => Ok(OpCode::MakeList),
             0x91 => Ok(OpCode::MakeDict),
             0x92 => Ok(OpCode::MakeTuple),
             0x93 => Ok(OpCode::MakeStruct),
+            0x94 => Ok(OpCode::MakeTypedStruct),
             0xa0 => Ok(OpCode::GetField),
             0xa1 => Ok(OpCode::SetField),
             0xa2 => Ok(OpCode::GetIndex),
@@ -262,6 +276,7 @@ impl TryFrom<u8> for OpCode {
             0xc2 => Ok(OpCode::PostInc),
             0xc3 => Ok(OpCode::PostDec),
             0xc4 => Ok(OpCode::Elvis),
+            0xc5 => Ok(OpCode::GetTag),
             0xff => Ok(OpCode::Nop),
             other => Err(other),
         }
@@ -400,6 +415,22 @@ impl Chunk {
         self.emit_byte(operand, line);
     }
 
+    /// Emit an opcode followed by a u16 operand and then a u8 operand.
+    #[inline]
+    pub fn emit_op_u16_u8(&mut self, op: OpCode, operand_u16: u16, operand_u8: u8, line: u32) {
+        self.emit_op(op, line);
+        self.emit_u16(operand_u16, line);
+        self.emit_byte(operand_u8, line);
+    }
+
+    /// Emit an opcode followed by two u16 operands.
+    #[inline]
+    pub fn emit_op_u16_u16(&mut self, op: OpCode, operand1: u16, operand2: u16, line: u32) {
+        self.emit_op(op, line);
+        self.emit_u16(operand1, line);
+        self.emit_u16(operand2, line);
+    }
+
     // ── Constant pool ────────────────────────────────────────────────────────
 
     /// Add a constant to the pool and return its index.
@@ -519,6 +550,7 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) 
         | OpCode::Return
         | OpCode::ToBool
         | OpCode::ForceUnwrap
+        | OpCode::GetTag
         | OpCode::GetIndex
         | OpCode::SetIndex
         | OpCode::Nop => (format!("{op:?}"), 1),
@@ -536,6 +568,18 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) 
         | OpCode::PostDec => {
             let operand = chunk.code.get(offset + 1).copied().unwrap_or(0);
             (format!("{op:?} {operand}"), 2)
+        }
+
+        // u16 + u8 operands — CallMethod: method name + arg count
+        OpCode::CallMethod => {
+            let idx = chunk.read_u16(offset + 1);
+            let arg_count = chunk.code.get(offset + 3).copied().unwrap_or(0);
+            let name = chunk
+                .constants
+                .get(idx as usize)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "<oob>".to_string());
+            (format!("{op:?} {name} ({arg_count} args)"), 4)
         }
 
         // u16 operand — generic display
@@ -592,6 +636,18 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) 
         | OpCode::StrConcat => {
             let count = chunk.read_u16(offset + 1);
             (format!("{op:?} count={count}"), 3)
+        }
+
+        // u16 + u16 operands — MakeTypedStruct: type_name_idx + field_count
+        OpCode::MakeTypedStruct => {
+            let type_name_idx = chunk.read_u16(offset + 1);
+            let field_count = chunk.read_u16(offset + 3);
+            let type_name = chunk
+                .constants
+                .get(type_name_idx as usize)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "<oob>".to_string());
+            (format!("{op:?} {type_name} fields={field_count}"), 5)
         }
     }
 }
