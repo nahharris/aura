@@ -1,0 +1,138 @@
+// stl/result.aura — Result type for fallible operations.
+//
+// Provides Result[T, E] type with methods for handling success and error cases.
+// Uses variant pattern matching (multi-arm closures).
+//
+// Usage:
+//   let result = someFallibleOperation();
+//   { .ok(value) -> handleSuccess(value),
+//     .error(msg) -> handleError(msg)
+//   }(result);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Kernel bindings
+// ─────────────────────────────────────────────────────────────────────────────
+
+def _result_to_str = builtin("to_str");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Variant methods (dispatched on .ok and .error structs)
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub defn ok.isOk(self) -> Bool {
+    true
+}
+
+pub defn ok.isErr(self) -> Bool {
+    false
+}
+
+pub defn ok.unwrap(self) {
+    self.value
+}
+
+pub defn ok.unwrapOr(self, default) {
+    self.value
+}
+
+pub defn ok.expect(self, msg: String) {
+    self.value
+}
+
+pub defn ok.map(self, f) {
+    .ok(f(self.value))
+}
+
+pub defn ok.mapErr(self, f) {
+    .ok(self.value)
+}
+
+pub defn ok.andThen(self, f) {
+    f(self.value)
+}
+
+pub defn ok.orElse(self, f) {
+    .ok(self.value)
+}
+
+pub defn error.isOk(self) -> Bool {
+    false
+}
+
+pub defn error.isErr(self) -> Bool {
+    true
+}
+
+pub defn error.unwrap(self) {
+    panic("called unwrap on .error")
+}
+
+pub defn error.unwrapOr(self, default) {
+    default
+}
+
+pub defn error.expect(self, msg: String) {
+    panic(msg)
+}
+
+pub defn error.map(self, f) {
+    .error(self.value)
+}
+
+pub defn error.mapErr(self, f) {
+    .error(f(self.value))
+}
+
+pub defn error.andThen(self, f) {
+    .error(self.value)
+}
+
+pub defn error.orElse(self, f) {
+    f(self.value)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Standalone functions (alternative API)
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub defn isOk(result) -> Bool {
+    { .ok(_) -> true, _ -> false }(result)
+}
+
+pub defn isErr(result) -> Bool {
+    { .error(_) -> true, _ -> false }(result)
+}
+
+pub defn unwrap(result) {
+    result!!
+}
+
+pub defn unwrapOr(result, default) {
+    { .ok(v) -> v, _ -> default }(result)
+}
+
+pub defn unwrapErr(result) {
+    { .ok(_) -> null, .error(e) -> e }(result)
+}
+
+pub defn expect(result, msg: String) {
+    { .ok(v) -> v, .error(_) -> panic(msg) }(result)
+}
+
+pub defn map(result, f) {
+    { .ok(v) -> .ok(f(v)), .error(e) -> .error(e) }(result)
+}
+
+pub defn mapErr(result, f) {
+    { .ok(v) -> .ok(v), .error(e) -> .error(f(e)) }(result)
+}
+
+pub defn andThen(result, f) {
+    { .ok(v) -> f(v), .error(e) -> .error(e) }(result)
+}
+
+pub defn orElse(result, f) {
+    { .ok(v) -> .ok(v), .error(e) -> f(e) }(result)
+}
+
+defn main() {}
