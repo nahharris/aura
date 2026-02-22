@@ -33,7 +33,7 @@ identifier ::= (letter | "_") (letter | digit | "_")*
 
 **Reserved keywords:** `let`, `const`, `fn`, `type`, `macro`, `true`, `false`, `null`
 
-The `def`-family macro names (`def`, `defn`, `defmacro`, `deftype`) are not reserved keywords; they are ordinary identifiers that happen to name built-in macros.
+The `def`-family macro names (`def`, `defn`, `defmacro`) are not reserved keywords; they are ordinary identifiers that happen to name built-in macros.
 
 ### Dot-identifiers
 
@@ -87,6 +87,12 @@ Types are written in `PascalCase`. Generic type arguments use square brackets.
 type_expr ::= identifier type_args?
            |  "(" type_expr ("," type_expr)* ")"
            |  "(" identifier ":" type_expr ("," identifier ":" type_expr)* ","? ")"
+           |  "union" "(" type_expr ("," type_expr)* ","? ")"
+           |  "enum"  "(" enum_variant ("," enum_variant)* ","? ")"
+           |  "interface" "(" (identifier ":" type_expr ("," identifier ":" type_expr)* ","?)? ")"
+
+enum_variant ::= identifier ":" type_expr   // variant with data: `ok: T`
+              |  identifier                  // unit variant:      `null`
 
 type_args  ::= "[" (type_expr | const_expr) ("," (type_expr | const_expr))* ","? "]"
 ```
@@ -106,6 +112,160 @@ Examples of built-in / standard types:
 | `Option[T]` | `enum(some: T, null)` — nullable value |
 | `Result[T, E]` | `enum(ok: T, error: E)` — fallible value |
 | `Iterable[T]` | Any type that can be iterated |
+| `any` | Shorthand for `interface()` — accepts any value |
+
+### Tuples
+
+Tuples are exact positional product types, identical to Rust tuples.
+
+```aura
+let coord: (Int, Int) = (5, 4);
+coord.0 += 2;
+
+let (x, y) = coord;  // destructuring
+
+{                    // pattern matching
+    (_, 0) -> ...,
+    (0, _) -> ...,
+    (x, y) ~ x < y -> ...,
+    _ -> ...,
+}(coord);
+```
+
+A named tuple alias is declared with `def`:
+
+```aura
+def Coord = (Int, Int)
+
+let origin = Coord(0, 0);
+let anon_dest = (4, 5);         // (Int, Int), not Coord
+let dest: Coord = anon_dest;    // cast from anon→named is allowed
+
+let Coord(x, y) = dest;         // constructor-pattern destructuring
+let (x, y)      = dest;         // tuple-pattern destructuring
+```
+
+### Structs
+
+Named-field product types. Casting between tuple and struct types is disallowed; casting between anonymous and named structs is allowed; casting between two distinct named structs is disallowed.
+
+```aura
+let person: (name: String, age: Int) = (name = "John", age = 20);
+person.name = "John Doe";
+
+let (name, age)            = person;          // bind all fields by name
+let (name = some_name, age) = person;         // rename: field `name` → `some_name`
+let (age = some_age)        = person;         // ignore `name`, rename `age`
+```
+
+Named struct alias via `def`:
+
+```aura
+def Person = (name: String, age: Int)
+
+let john = Person(name = "John", age = 20);
+let marie: Person = (name = "Marie", age = 21);
+
+// Destructuring — the type prefix is optional but clarifies intent:
+let Person(age = john_age) = john;   // ignore `name`, get `age` as `john_age`
+let (age = marie_age)       = marie; // same without type prefix
+
+// Pattern matching:
+{
+    (name = "Marie", age = marie_age) ~ marie_age > 18 -> ...,
+    Person(name, 20) -> ...,
+    Person(name, age) ~ age > 18 -> ...,
+}(marie)
+```
+
+### Union Types
+
+A `union` type is an anonymous tagged union. Repeated types are collapsed.
+
+```aura
+let n: union(Int, Float) = 5;
+
+// Fallible destructuring (panics if n is not Int):
+let n2: Int = n;
+
+// Pattern matching:
+{
+    i: Int            -> ...,
+    f: Float ~ f > 0.0 -> ...,
+    _                  -> ...,
+}(n)
+```
+
+Named union alias:
+
+```aura
+def Number = union(Int, Float)
+
+let n: Number = 5;
+let m: Number = 5.0;
+```
+
+Union types automatically support any method that is present on *all* member types (the intersection of their method sets). The dispatch happens at runtime.
+
+### Enum Types
+
+An `enum` is a named-variant sum type, identical to Rust enums but with anonymous support.
+
+```aura
+let res: enum(ok: Int, err: String) = .ok(5);
+
+let .ok(val) = res;   // fallible destructuring — panics if res is .err
+
+{
+    .ok(val)  -> ...,
+    .err(msg) -> ...,
+}(res);
+```
+
+Named enum alias with generic parameters:
+
+```aura
+def[T, E] Result = enum(ok: T, err: E)
+
+let success: Result[Int, String]   = Result.ok(5);
+let failure: Result[Void, String]  = Result[Void, String].err("oops");
+let from_anon: Result[Bool, String] = .ok(false);   // anon→named cast
+
+let .ok(val)  = success;
+let .err(msg) = failure;
+```
+
+### Interface Types
+
+Interfaces specify structural contracts, similar to Go interfaces. Implementation is implicit — any type that provides the required methods satisfies the interface.
+
+```aura
+// Anonymous interface type:
+def any_print(msg: interface(to_string: Func[(), String])) -> Void { ... }
+
+// Named interface alias:
+def ToStr = interface(to_string: Func[(), String])
+```
+
+The empty interface `interface()` is equivalent to the builtin `any` type and accepts any value.
+
+Union types automatically implement the *intersection* of their member types' interfaces:
+
+```aura
+def Number = union(Int, Float)
+// Both Int and Float implement to_string, so Number also implements ToStr.
+```
+
+Pattern matching on interface values works identically to union matching:
+
+```aura
+let x: ToStr = ...;
+{
+    i: Int  -> ...,
+    c: Char -> ...,
+    _       -> ...,
+}(x)
+```
 
 ### Type Annotations and Casts
 
@@ -119,16 +279,39 @@ let x: Int = 42;           // annotation
 let y = x : Float;         // cast
 ```
 
+**Casting rules:**
+
+| From → To | Allowed? |
+|---|---|
+| Anonymous tuple/struct → named | Yes |
+| Named → anonymous tuple/struct | Yes |
+| Named type A → named type B | **No** — compile error |
+| Tuple → Struct | **No** — compile error |
+| Struct → Tuple | **No** — compile error |
+| Any type → `union(...)` / `interface()` containing it | Yes |
+| `union(...)` / `interface()` → contained type | Yes, but may panic at runtime |
+
 ### Generics
 
-Type parameters on declarations use square brackets after the name.
+Type parameters on declarations use square brackets after the `def`/`defn` name.
 
 ```aura
 defn identity[T](x: T) -> T { x }
-deftype Pair[A, B](first: A, second: B)
+def[A, B] Pair = (first: A, second: B)
 ```
 
 At call sites, type arguments are usually inferred and can be omitted.
+
+### Fallible Patterns in Assignments
+
+Any binding construct (`let`, `const`, `def`) may use a destructuring pattern on its left-hand side. Some patterns are *fallible* — they panic at runtime if the value does not match:
+
+```aura
+let .ok(value)    = result;   // panics if result is .err
+let Coord(x, y)   = some_val; // panics if some_val is not a Coord
+let (a, b)        = tuple_val;
+let (name, age)   = struct_val;
+```
 
 ---
 
@@ -297,7 +480,7 @@ The inline-scope trick also applies inside `( )`.
 
 ### Sum Types — `enum` and `union`
 
-Sum types are constructed as values using dot-identifiers and typed with `enum` or `union` macros.
+Sum types are constructed as values using dot-identifiers and typed with `enum` or `union` type expressions.
 
 `union` creates an anonymous tagged union:
 
@@ -318,7 +501,7 @@ Inline-scope trick applies inside variant constructors:
 .some(let x = compute(); x)
 ```
 
-Named sum types should be declared with `deftype` (see [Type Declarations](#type-declarations)).
+Named sum types are declared with `def` (see [Type Declarations](#type-declarations)).
 
 ### The `null` Value and Nullable Types
 
@@ -360,13 +543,28 @@ Pattern syntax per arm:
 ```
 arm      ::= pattern ("," pattern)* guard? "->" expr
 guard    ::= "~" expr
-pattern  ::= literal | identifier | "_" | tuple_pattern
-tuple_pattern ::= "(" pattern ("," pattern)* ")"
+pattern  ::= literal
+           | "_"
+           | identifier
+           | identifier ":" type_expr              // type-check pattern: `i: Int`
+           | "(" struct_field ("," struct_field)* ","? ")"   // struct pattern
+           | identifier "(" pattern ("," pattern)* ","? ")"  // constructor pattern
+           | ".." identifier?                       // rest pattern: `..rest` or `..`
+           | "." identifier ("(" pattern ")")?      // variant pattern: `.ok(x)` or `.null`
+           | "(" pattern ("," pattern)* ","? ")"    // tuple pattern
+
+struct_field ::= identifier "=" identifier          // field rename: `name = alias`
+              |  identifier                         // plain field bind
 ```
 
 - A literal pattern matches the exact value.
 - An identifier pattern always matches and binds the value to that name.
 - `_` matches and discards.
+- A type-check pattern `name: Type` matches if the value is of the given type and binds it to `name`.
+- A struct pattern `(field, name = alias)` destructures a struct by field name.
+- A constructor pattern `TypeName(p1, p2)` destructures a named tuple or struct, optionally casting.
+- A rest pattern `..rest` captures remaining elements into a list; bare `..` discards them.
+- A variant pattern `.ok(inner)` matches a dot-identifier enum variant.
 - A guard `~ expr` is evaluated only when all patterns match; the arm is taken only if the guard is also `true`.
 - Arms are tried in order; the first matching arm is taken.
 
@@ -794,16 +992,42 @@ loop {
 
 ### Module-level vs Local
 
-Declarations that use the `def`-family macros (`def`, `defn`, `deftype`, `defmacro`) are *static* — they exist at module scope, are resolved at compile time, and cannot appear inside function bodies or loops (they are not expressions that produce a value). `let` and `const` are *dynamic* — they exist inside local scopes.
+Declarations that use the `def`-family macros (`def`, `defn`, `defmacro`) are *static* — they exist at module scope, are resolved at compile time, and cannot appear inside function bodies or loops (they are not expressions that produce a value). `let` and `const` are *dynamic* — they exist inside local scopes.
 
-### `def` — Static Value
+### `def` — Static Value and Type Declarations
 
-Defines a compile-time constant or module-level value. No type annotation is required if it can be inferred.
+`def` is the universal module-level declaration. It handles compile-time constant values, type aliases (named tuples, structs, unions, enums, interfaces), and destructuring assignments with full pattern support.
+
+**Value binding:**
 
 ```aura
 def pi = 3.14159
 def version = "1.0.0"
 def MaxRetries = 3
+```
+
+**Type alias** — the right-hand side is a type expression (tuple, struct, union, enum, or interface):
+
+```aura
+def Coord    = (Int, Int)
+def Person   = (name: String, age: Int)
+def Number   = union(Int, Float)
+def[T, E] Result = enum(ok: T, err: E)
+def ToStr    = interface(to_string: Func[(), String])
+```
+
+The optional generic type parameter list `[T, E]` immediately follows `def`.
+
+A `def` with a type-alias right-hand side automatically generates:
+- A constructor function with the same name: `Person(name = "Alice", age = 30)`.
+- Field accessors for struct and enum types.
+
+**Destructuring binding** — a pattern may appear on the left-hand side:
+
+```aura
+def (x, y) = compute_coords()     // tuple destructuring
+def (name, age) = some_person      // struct destructuring
+def .ok(value) = some_result       // fallible — panics if result is .err
 ```
 
 Macro definition:
@@ -844,38 +1068,6 @@ Macro definition:
 defmacro defn[T, U](
     name: Identifier,
     body: Expr[Func[T, U]]
-) -> Stmt
-```
-
-### Type Declarations
-
-`deftype` declares a named product type (struct). The body is a parenthesised list of typed fields.
-
-```aura
-deftype Point(x: Int, y: Int)
-deftype Person(name: String, age: Int)
-deftype Pair[A, B](first: A, second: B)
-```
-
-A `deftype` automatically generates:
-
-- A constructor function with the same name: `Point(x = 1, y = 2)`.
-- Field accessors: `point.x`, `point.y`.
-
-Named sum types are expressed by combining `deftype` with `enum`:
-
-```aura
-deftype Shape = union(Circle(radius: Float), Rect(width: Float, height: Float))
-```
-
-*(This form is a design-level intent; the exact macro expansion is implementation-defined.)*
-
-Macro definition:
-
-```aura
-defmacro deftype[T](
-    name: Identifier,
-    ty:   TyExpr[TupleType]
 ) -> Stmt
 ```
 
@@ -931,12 +1123,43 @@ pub defn greet(name: String) -> String {
 }
 ```
 
-Importing from another module:
+### `use` — Import Declaration
+
+`use` brings names from another module into the current scope.
+
+```
+use_decl ::= "use" use_pattern "=" string_literal ";"
+
+use_pattern ::= identifier                            // namespace: `use io = "@stl/io"`
+             |  "(" use_field ("," use_field)* ","? ")"  // destructure: `use (print, read) = "@stl/io"`
+
+use_field   ::= identifier "=" identifier             // rename: exported_name = local_alias
+             |  identifier                            // plain: bind under same name
+```
+
+**Namespace import** — bind the entire module under a local name:
 
 ```aura
-use math.sqrt
-use collections.{ List, Dict }
+use io = "@stl/io";
+io.print("hello");
 ```
+
+**Destructuring import** — bring specific names into scope:
+
+```aura
+use (print, read) = "@stl/io";
+```
+
+**Rename on import** — `exported_name = local_alias` (field = alias, matching struct-pattern syntax):
+
+```aura
+use (print = my_print, read) = "@stl/io";
+my_print("hello");
+```
+
+Module paths:
+- `@name/...` — library reference resolved via the library lookup path.
+- `./...` or `../...` — relative path from the importing file's directory.
 
 ---
 
@@ -952,10 +1175,10 @@ use collections.{ List, Dict }
 | `if` | Control | Two-branch conditional expression |
 | `cases` | Control | Multi-branch conditional expression |
 | `loop` | Control | Indefinite or conditional loop |
-| `def` | Static | Module-level constant |
+| `def` | Static | Module-level constant, type alias, or destructuring binding |
 | `defn` | Static | Named function or method |
-| `deftype` | Static | Named product type |
 | `defmacro` | Static | Compile-time macro |
-| `enum` | Type | Named-variant sum type constructor |
-| `union` | Type | Anonymous union type constructor |
+| `enum` | Type | Named-variant sum type expression |
+| `union` | Type | Anonymous union type expression |
+| `interface` | Type | Structural contract (interface) type expression |
 | `template` | Value | Lazy string template |
