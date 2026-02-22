@@ -106,7 +106,37 @@ pub fn run_source(src: &str, file_path: &str) -> AuraResult<()> {
     let chunk = compile_program(program)?;
     let mut heap = gc::GcHeap::new();
     let mut machine = vm::Vm::new(&mut heap, file_path);
+
+    // Load STL modules before user code
+    load_stl(&mut machine)?;
+
     machine
         .run(chunk)
         .map_err(|e| AuraError::Runtime(e.to_string()))
+}
+
+/// Load the standard library into the VM.
+///
+/// This runs the STL files to register their globals before user code executes.
+fn load_stl(vm: &mut vm::Vm) -> AuraResult<()> {
+    // Load STL modules in dependency order.
+    // Each module uses builtin() to bind to kernel primitives.
+    let modules: [(&str, &str); 7] = [
+        ("stl/string", include_str!("../stl/string.aura")),
+        ("stl/list", include_str!("../stl/list.aura")),
+        ("stl/dict", include_str!("../stl/dict.aura")),
+        ("stl/math", include_str!("../stl/math.aura")),
+        ("stl/result", include_str!("../stl/result.aura")),
+        ("stl/io", include_str!("../stl/io.aura")),
+        ("stl/os", include_str!("../stl/os.aura")),
+    ];
+
+    for (name, source) in modules {
+        let program = parse_source(source)?;
+        let chunk = compile_program(program)?;
+        vm.run_module(chunk, name)
+            .map_err(|e| AuraError::Runtime(e.to_string()))?;
+    }
+
+    Ok(())
 }
