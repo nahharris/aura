@@ -384,7 +384,12 @@ impl Parser {
         // Parse optional receiver prefix: `Type.name` or just `name`.
         let first = self.expect_ident()?;
         let (receiver, name) = if self.eat(TokenKind::Dot) {
+            // `Type.name` with separate Dot and Ident tokens
             let method_name = self.expect_ident()?;
+            (Some(first), method_name)
+        } else if let TokenKind::DotIdent(method_name) = self.cur_kind().clone() {
+            // `Type.name` with combined DotIdent token
+            self.advance();
             (Some(first), method_name)
         } else {
             (None, first)
@@ -534,11 +539,11 @@ impl Parser {
     /// - `internal external: Type` — internal name + external label + type
     fn parse_param(&mut self) -> Result<Param, ParseError> {
         let start = self.cur_span();
-        let first = self.expect_ident()?;
+        let first = self.expect_ident_or_self()?;
 
         // Two-identifier form: `internal external_label: Type`
-        let (internal, label) = if let TokenKind::Ident(_) = self.cur_kind() {
-            let second = self.expect_ident()?;
+        let (internal, label) = if matches!(self.cur_kind(), TokenKind::Ident(_)) {
+            let second = self.expect_ident_or_self()?;
             (first, Some(second))
         } else {
             (first, None)
@@ -884,6 +889,34 @@ impl Parser {
         Ok(LabelledBlock { label, block, span })
     }
 
+    /// Parse a builtin reference: `builtin("name")`
+    fn parse_builtin(&mut self, start: Span) -> Result<Expr, ParseError> {
+        self.expect(TokenKind::LParen)?;
+        let name = match self.cur_kind().clone() {
+            TokenKind::Str(parts) => {
+                self.advance();
+                // Extract the raw string from parts
+                if parts.len() == 1 {
+                    if let StringPart::Raw(s) = &parts[0] {
+                        s.clone()
+                    } else {
+                        return Err(
+                            self.error("builtin name must be a plain string literal".to_string())
+                        );
+                    }
+                } else {
+                    return Err(
+                        self.error("builtin name must be a plain string literal".to_string())
+                    );
+                }
+            }
+            _ => return Err(self.error("expected string literal for builtin name".to_string())),
+        };
+        self.expect(TokenKind::RParen)?;
+        let span = start.merge(self.cur_span());
+        Ok(Expr::Builtin { name, span })
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Expression parsing — Pratt precedence climbing
     // ─────────────────────────────────────────────────────────────────────────
@@ -1004,6 +1037,37 @@ impl Parser {
                             span,
                         };
                     } else {
+                        let span = lhs.span().merge(self.cur_span());
+                        lhs = Expr::FieldAccess {
+                            object: Box::new(lhs),
+                            field,
+                            span,
+                        };
+                    }
+                }
+
+                // ── Postfix: method call via DotIdent `.name(...)` ──────────────
+                // When `.method` appears after an expression (not at the start),
+                // treat it as a method call.
+                TokenKind::DotIdent(field) => {
+                    self.advance();
+                    // If followed by `(`, this is a method call.
+                    if self.check(&TokenKind::LParen) {
+                        let (args, trailing) = self.parse_call_args()?;
+                        let span = lhs.span().merge(self.cur_span());
+                        let callee = Expr::FieldAccess {
+                            object: Box::new(lhs),
+                            field,
+                            span: op_span.merge(self.cur_span()),
+                        };
+                        lhs = Expr::Call {
+                            callee: Box::new(callee),
+                            args,
+                            trailing,
+                            span,
+                        };
+                    } else {
+                        // Field access without call
                         let span = lhs.span().merge(self.cur_span());
                         lhs = Expr::FieldAccess {
                             object: Box::new(lhs),
@@ -1167,6 +1231,7 @@ impl Parser {
                     "if" => self.parse_if(ident_span),
                     "cases" => self.parse_cases(ident_span),
                     "loop" => self.parse_loop(ident_span),
+                    "builtin" => self.parse_builtin(ident_span),
                     _ => Ok(Expr::Ident(name, ident_span)),
                 }
             }
@@ -1870,6 +1935,20 @@ impl Parser {
             _ => Err(self.error(format!("expected identifier, found {}", self.cur_kind()))),
         }
     }
+
+    fn expect_ident_or_self(&mut self) -> Result<String, ParseError> {
+        match self.cur_kind().clone() {
+            TokenKind::Ident(name) => {
+                self.advance();
+                Ok(name)
+            }
+            TokenKind::SelfKw => {
+                self.advance();
+                Ok("self".to_string())
+            }
+            _ => Err(self.error(format!("expected identifier, found {}", self.cur_kind()))),
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1912,6 +1991,8 @@ fn infix_binding_power(kind: &TokenKind) -> (u8, Option<u8>) {
         TokenKind::QuestionDot => (25, None),
         // Field access `.` — postfix.
         TokenKind::Dot => (27, None),
+        // Method call via DotIdent `.method(...)` — postfix.
+        TokenKind::DotIdent(_) => (27, None),
         // Call `()` and index `[]` — postfix, highest precedence.
         TokenKind::LParen | TokenKind::LBracket => (29, None),
         // Everything else is not an infix/postfix operator.
