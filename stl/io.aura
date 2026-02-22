@@ -1,192 +1,41 @@
 // stl/io.aura — Standard I/O library for Aura.
 //
-// Provides I/O functions for reading from stdin and writing to stdout/stderr.
-// All operations use file descriptors; stdin=0, stdout=1, stderr=2.
+// Minimal I/O: console output only.
+// All functions accept Any (the top type) so any value can be printed.
 //
-// Kernel primitives bound via builtin():
-//   io_open, io_close, io_write, io_read, io_read_line, io_read_all, io_flush,
-//   to_str, is_null, str_trim, str_parse_int, str_parse_float, str_split, str_join, list_len
+// Kernel primitives used:
+//   io_write   — write a string to a file descriptor
+//   to_str     — convert any value to its string representation
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Kernel bindings
 // ─────────────────────────────────────────────────────────────────────────────
 
-def _io_open      = builtin("io_open");
-def _io_close     = builtin("io_close");
-def _io_write     = builtin("io_write");
-def _io_read      = builtin("io_read");
-def _io_read_line = builtin("io_read_line");
-def _io_read_all  = builtin("io_read_all");
-def _io_flush     = builtin("io_flush");
-def _io_to_str    = builtin("to_str");
-def _io_is_null    = builtin("is_null");
-def _io_str_trim   = builtin("str_trim");
-def _io_str_parse_int   = builtin("str_parse_int");
-def _io_str_parse_float = builtin("str_parse_float");
-def _io_str_split  = builtin("str_split");
-def _io_str_join   = builtin("str_join");
-def _io_list_len   = builtin("list_len");
+def _io_write = builtin("io_write");
+def _to_str   = builtin("to_str");
 
 // ─────────────────────────────────────────────────────────────────────────────
-// File type
+// Output
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub deftype File(fd: Int)
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Standard stream constants
-// ─────────────────────────────────────────────────────────────────────────────
-
-pub def STDIN  = File(0);
-pub def STDOUT = File(1);
-pub def STDERR = File(2);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// File operations
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Open a file at `path` with the given `mode`.
-/// Mode: "r" = read, "w" = write (truncate), "a" = append, "rw" = read+write.
-/// Returns `.ok(File)` on success or `.error(msg)` on failure.
-pub defn open(path: String, mode: String) -> Value {
-    let result = _io_open(path, mode);
-    { .ok(fd) -> .ok(File(fd)), .error(e) -> .error(e) }(result)
-}
-
-/// Close a file. Returns `.ok(null)` or `.error(msg)`.
-pub defn File.close(self) -> Value {
-    _io_close(self.fd)
-}
-
-/// Write a string to the file. Returns `.ok(bytes_written)` or `.error(msg)`.
-pub defn File.write(self, data: String) -> Value {
-    _io_write(self.fd, data)
-}
-
-/// Read up to `n` bytes from the file. Returns `.ok(data)` or `.error(msg)`.
-pub defn File.read(self, n: Int) -> Value {
-    _io_read(self.fd, n)
-}
-
-/// Read one line from the file. Returns `.ok(line)`, `.ok(null)` at EOF, or `.error(msg)`.
-pub defn File.readLine(self) -> Value {
-    _io_read_line(self.fd)
-}
-
-/// Read all remaining content from the file. Returns `.ok(data)` or `.error(msg)`.
-pub defn File.readAll(self) -> Value {
-    _io_read_all(self.fd)
-}
-
-/// Flush output buffer. Returns `.ok(null)` or `.error(msg)`.
-pub defn File.flush(self) -> Value {
-    _io_flush(self.fd)
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Output convenience functions (single-arg, write to stdout/stderr)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Print a value to stdout (no newline).
-pub defn print(value) -> Void {
-    let _ = _io_write(1, _io_to_str(value));
+/// Print a value to stdout (no trailing newline).
+pub defn print(value: Any) -> Void {
+    let _ = _io_write(1, _to_str(value));
 }
 
 /// Print a value to stdout followed by a newline.
-pub defn println(value) -> Void {
-    print(value);
-    print("\n");
+pub defn println(value: Any) -> Void {
+    let _ = _io_write(1, _to_str(value));
+    let _ = _io_write(1, "\n");
 }
 
-/// Print a value to stderr (no newline).
-pub defn eprint(value) -> Void {
-    let _ = _io_write(2, _io_to_str(value));
+/// Print a value to stderr (no trailing newline).
+pub defn eprint(value: Any) -> Void {
+    let _ = _io_write(2, _to_str(value));
 }
 
 /// Print a value to stderr followed by a newline.
-pub defn eprintln(value) -> Void {
-    eprint(value);
-    eprint("\n");
+pub defn eprintln(value: Any) -> Void {
+    let _ = _io_write(2, _to_str(value));
+    let _ = _io_write(2, "\n");
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Input convenience functions (read from stdin)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Read one line from stdin. Returns `.ok(line)`, `.ok(null)` at EOF, or `.error(msg)`.
-pub defn readLine() -> Value {
-    _io_read_line(0)
-}
-
-/// Print a prompt message and read one line from stdin.
-/// Returns `.ok(trimmed_line)`, `.ok(null)` at EOF, or `.error(msg)`.
-pub defn prompt(message: String) -> Value {
-    print(message);
-    let _ = _io_flush(1);
-    let result = _io_read_line(0);
-    { .ok(v) -> if (_io_is_null(v)) { .ok(null) } else { .ok(_io_str_trim(v)) },
-      .error(e) -> .error(e)
-    }(result)
-}
-
-/// Read an integer from stdin. Returns `.ok(int)` or `.error(msg)`.
-pub defn readInt() -> Value {
-    let result = _io_read_line(0);
-    { .ok(v) -> if (_io_is_null(v)) { .error("EOF: no input available") }
-                else { let trimmed = _io_str_trim(v);
-                       let parsed = _io_str_parse_int(trimmed);
-                       if (_io_is_null(parsed)) { .error("cannot parse as Int") }
-                       else { .ok(parsed) } },
-      .error(e) -> .error(e)
-    }(result)
-}
-
-/// Read a float from stdin. Returns `.ok(float)` or `.error(msg)`.
-pub defn readFloat() -> Value {
-    let result = _io_read_line(0);
-    { .ok(v) -> if (_io_is_null(v)) { .error("EOF: no input available") }
-                else { let trimmed = _io_str_trim(v);
-                       let parsed = _io_str_parse_float(trimmed);
-                       if (_io_is_null(parsed)) { .error("cannot parse as Float") }
-                       else { .ok(parsed) } },
-      .error(e) -> .error(e)
-    }(result)
-}
-
-/// Read a trimmed line from stdin. Returns `.ok(trimmed_line)`, `.ok(null)` at EOF, or `.error(msg)`.
-pub defn readTrimmed() -> Value {
-    let result = _io_read_line(0);
-    { .ok(v) -> if (_io_is_null(v)) { .ok(null) }
-                else { .ok(_io_str_trim(v)) },
-      .error(e) -> .error(e)
-    }(result)
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Formatted output
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Print formatted string with `{}` placeholders replaced by args.
-pub defn printf(fmt: String, args: List) -> Void {
-    let parts: List = _io_str_split(fmt, "{}");
-    let len: Int = _io_list_len(parts);
-    let argsLen: Int = _io_list_len(args);
-    let result: String = "";
-    let i: Int = 0;
-    loop while { i < len } do {
-        result = result + parts[i];
-        if (i < argsLen) {
-            result = result + _io_to_str(args[i]);
-        }
-        i++;
-    }
-    print(result)
-}
-
-/// Print formatted string with `{}` placeholders, followed by newline.
-pub defn printfln(fmt: String, args: List) -> Void {
-    printf(fmt, args);
-    print("\n")
-}
-
-defn main() {}

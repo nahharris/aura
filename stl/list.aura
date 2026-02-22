@@ -1,54 +1,49 @@
-// stl/list.aura — List methods for Aura.
+// stl/list.aura — Core list methods for Aura.
 //
-// Provides method syntax on List type: list.len(), list.push(x), etc.
-// Higher-order methods (map, filter, reduce) are implemented in pure Aura.
+// Provides method syntax on List values: list.len(), list.push(x), etc.
+// Higher-order methods (map, filter, each) are implemented in pure Aura.
+// All methods are fully type-annotated where possible; closures use Any.
 //
-// Kernel primitives bound via builtin():
-//   list_len, list_push, list_pop, list_insert, list_remove, list_contains,
-//   list_reverse, list_sort, list_concat, list_slice, list_first, list_last,
-//   list_flatten, list_range, list_index_of
+// Kernel primitives used:
+//   list_len, list_push, list_pop, list_contains, list_slice,
+//   list_concat, list_reverse, list_index_of
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Kernel bindings
 // ─────────────────────────────────────────────────────────────────────────────
 
-def _list_len = builtin("list_len");
-def _list_push = builtin("list_push");
-def _list_pop = builtin("list_pop");
-def _list_insert = builtin("list_insert");
-def _list_remove = builtin("list_remove");
+def _list_len      = builtin("list_len");
+def _list_push     = builtin("list_push");
+def _list_pop      = builtin("list_pop");
 def _list_contains = builtin("list_contains");
-def _list_reverse = builtin("list_reverse");
-def _list_sort = builtin("list_sort");
-def _list_concat = builtin("list_concat");
-def _list_slice = builtin("list_slice");
-def _list_first = builtin("list_first");
-def _list_last = builtin("list_last");
-def _list_flatten = builtin("list_flatten");
-def _list_range = builtin("list_range");
+def _list_slice    = builtin("list_slice");
+def _list_concat   = builtin("list_concat");
+def _list_reverse  = builtin("list_reverse");
 def _list_index_of = builtin("list_index_of");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Inspection
 // ─────────────────────────────────────────────────────────────────────────────
 
-defn List.len(self) -> Int { _list_len(self) }
+/// Returns the number of elements in the list.
+pub defn List.len(self: List) -> Int { _list_len(self) }
 
-defn List.isEmpty(self) -> Bool { _list_len(self) == 0 }
+/// Returns `true` if the list has no elements.
+pub defn List.isEmpty(self: List) -> Bool { _list_len(self) == 0 }
 
-defn List.contains(self, value) -> Bool { _list_contains(self, value) }
+/// Returns `true` if the list contains `value`.
+pub defn List.contains(self: List, value: Any) -> Bool { _list_contains(self, value) }
 
-defn List.indexOf(self, value) -> Int { _list_index_of(self, value) }
+/// Returns the index of the first occurrence of `value`, or `-1` if not found.
+pub defn List.indexOf(self: List, value: Any) -> Int { _list_index_of(self, value) }
 
-defn List.first(self) -> Value { _list_first(self) }
-
-defn List.last(self) -> Value { _list_last(self) }
-
-defn List.get(self, i: Int) -> Value {
+/// Returns the element at index `i`, or `null` if out of bounds.
+/// Negative indices count from the end (e.g. `-1` is the last element).
+pub defn List.get(self: List, i: Int) -> Any {
     let n: Int = _list_len(self);
     let actual: Int = if (i < 0) { n + i } else { i };
     if (actual < 0 || actual >= n) {
-        .null
+        null
     } else {
         self[actual]
     }
@@ -58,49 +53,31 @@ defn List.get(self, i: Int) -> Value {
 // Mutation
 // ─────────────────────────────────────────────────────────────────────────────
 
-defn List.push(self, item) -> Void { _list_push(self, item) }
+/// Appends `item` to the end of the list (mutates in place).
+pub defn List.push(self: List, item: Any) -> Void { _list_push(self, item) }
 
-defn List.pop(self) -> Value { _list_pop(self) }
-
-defn List.insert(self, index: Int, item) -> Void { _list_insert(self, index, item) }
-
-defn List.remove(self, index: Int) -> Value { _list_remove(self, index) }
+/// Removes and returns the last element, or `null` if the list is empty.
+pub defn List.pop(self: List) -> Any { _list_pop(self) }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Slicing
+// Slicing / Combining
 // ─────────────────────────────────────────────────────────────────────────────
 
-defn List.slice(self, start: Int, end: Int) -> List { _list_slice(self, start, end) }
+/// Returns a new list containing elements from index `start` to `end` (exclusive).
+pub defn List.slice(self: List, start: Int, end: Int) -> List { _list_slice(self, start, end) }
 
-defn List.take(self, n: Int) -> List {
-    let slen: Int = _list_len(self);
-    let end: Int = if (n > slen) { slen } else { if (n < 0) { 0 } else { n } };
-    _list_slice(self, 0, end)
-}
+/// Returns a new list that is the concatenation of `self` and `other`.
+pub defn List.concat(self: List, other: List) -> List { _list_concat(self, other) }
 
-defn List.drop(self, n: Int) -> List {
-    let slen: Int = _list_len(self);
-    let start: Int = if (n > slen) { slen } else { if (n < 0) { 0 } else { n } };
-    _list_slice(self, start, slen)
-}
+/// Returns a new list with the elements in reverse order.
+pub defn List.reverse(self: List) -> List { _list_reverse(self) }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Transformation
+// Higher-order
 // ─────────────────────────────────────────────────────────────────────────────
 
-defn List.reverse(self) -> List { _list_reverse(self) }
-
-defn List.sort(self) -> List { _list_sort(self) }
-
-defn List.concat(self, other: List) -> List { _list_concat(self, other) }
-
-defn List.flatten(self) -> List { _list_flatten(self) }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Higher-order methods
-// ─────────────────────────────────────────────────────────────────────────────
-
-defn List.map(self, f) -> List {
+/// Returns a new list produced by applying `f` to each element.
+pub defn List.map(self: List, f: Any) -> List {
     let result: List = [];
     let i: Int = 0;
     let n: Int = _list_len(self);
@@ -111,7 +88,8 @@ defn List.map(self, f) -> List {
     result
 }
 
-defn List.filter(self, pred) -> List {
+/// Returns a new list containing only the elements for which `pred` returns `true`.
+pub defn List.filter(self: List, pred: Any) -> List {
     let result: List = [];
     let i: Int = 0;
     let n: Int = _list_len(self);
@@ -124,54 +102,8 @@ defn List.filter(self, pred) -> List {
     result
 }
 
-defn List.reduce(self, init, f) -> Value {
-    let acc = init;
-    let i: Int = 0;
-    let n: Int = _list_len(self);
-    loop while { i < n } do {
-        acc = f(acc, self[i]);
-        i++;
-    }
-    acc
-}
-
-defn List.find(self, pred) -> Value {
-    let i: Int = 0;
-    let n: Int = _list_len(self);
-    loop while { i < n } do {
-        if (pred(self[i])) {
-            return self[i]
-        }
-        i++;
-    }
-    .null
-}
-
-defn List.any(self, pred) -> Bool {
-    let i: Int = 0;
-    let n: Int = _list_len(self);
-    loop while { i < n } do {
-        if (pred(self[i])) {
-            return true
-        }
-        i++;
-    }
-    false
-}
-
-defn List.all(self, pred) -> Bool {
-    let i: Int = 0;
-    let n: Int = _list_len(self);
-    loop while { i < n } do {
-        if (!pred(self[i])) {
-            return false
-        }
-        i++;
-    }
-    true
-}
-
-defn List.each(self, f) -> Void {
+/// Calls `f` with each element. Returns `null`.
+pub defn List.each(self: List, f: Any) -> Void {
     let i: Int = 0;
     let n: Int = _list_len(self);
     loop while { i < n } do {
@@ -179,63 +111,3 @@ defn List.each(self, f) -> Void {
         i++;
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Aggregates
-// ─────────────────────────────────────────────────────────────────────────────
-
-defn List.sum(self) -> Int {
-    let acc: Int = 0;
-    let i: Int = 0;
-    let n: Int = _list_len(self);
-    loop while { i < n } do {
-        acc = acc + self[i];
-        i++;
-    }
-    acc
-}
-
-defn List.product(self) -> Int {
-    let acc: Int = 1;
-    let i: Int = 0;
-    let n: Int = _list_len(self);
-    loop while { i < n } do {
-        acc = acc * self[i];
-        i++;
-    }
-    acc
-}
-
-defn List.min(self) -> Value {
-    let n: Int = _list_len(self);
-    if (n == 0) {
-        return .null
-    }
-    let m = self[0];
-    let i: Int = 1;
-    loop while { i < n } do {
-        if (self[i] < m) {
-            m = self[i];
-        }
-        i++;
-    }
-    m
-}
-
-defn List.max(self) -> Value {
-    let n: Int = _list_len(self);
-    if (n == 0) {
-        return .null
-    }
-    let m = self[0];
-    let i: Int = 1;
-    loop while { i < n } do {
-        if (self[i] > m) {
-            m = self[i];
-        }
-        i++;
-    }
-    m
-}
-
-defn main() {}

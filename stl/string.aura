@@ -1,98 +1,85 @@
-// stl/string.aura — String methods for Aura.
+// stl/string.aura — Core string methods for Aura.
 //
-// Provides method syntax on String type: s.len(), s.upper(), etc.
+// Provides method syntax on String values: s.len(), s.upper(), etc.
+// All methods are fully type-annotated.
 //
-// Kernel primitives bound via builtin():
-//   str_len, str_upper, str_lower, str_trim, str_trim_start, str_trim_end,
-//   str_starts_with, str_ends_with, str_contains, str_split, str_join,
-//   str_replace, str_slice, str_find, str_repeat, str_chars, str_bytes,
-//   str_from_chars, str_parse_int, str_parse_float
+// Kernel primitives used:
+//   str_len, str_upper, str_lower, str_trim, str_contains,
+//   str_starts_with, str_ends_with, str_split, str_join,
+//   str_replace, str_slice, str_parse_int, str_parse_float
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Kernel bindings
 // ─────────────────────────────────────────────────────────────────────────────
 
-def _str_len = builtin("str_len");
-def _str_upper = builtin("str_upper");
-def _str_lower = builtin("str_lower");
-def _str_trim = builtin("str_trim");
-def _str_trim_start = builtin("str_trim_start");
-def _str_trim_end = builtin("str_trim_end");
+def _str_len         = builtin("str_len");
+def _str_upper       = builtin("str_upper");
+def _str_lower       = builtin("str_lower");
+def _str_trim        = builtin("str_trim");
+def _str_contains    = builtin("str_contains");
 def _str_starts_with = builtin("str_starts_with");
-def _str_ends_with = builtin("str_ends_with");
-def _str_contains = builtin("str_contains");
-def _str_split = builtin("str_split");
-def _str_join = builtin("str_join");
-def _str_replace = builtin("str_replace");
-def _str_slice = builtin("str_slice");
-def _str_find = builtin("str_find");
-def _str_repeat = builtin("str_repeat");
-def _str_chars = builtin("str_chars");
-def _str_bytes = builtin("str_bytes");
-def _str_from_chars = builtin("str_from_chars");
-def _str_parse_int = builtin("str_parse_int");
+def _str_ends_with   = builtin("str_ends_with");
+def _str_split       = builtin("str_split");
+def _str_join        = builtin("str_join");
+def _str_replace     = builtin("str_replace");
+def _str_slice       = builtin("str_slice");
+def _str_parse_int   = builtin("str_parse_int");
 def _str_parse_float = builtin("str_parse_float");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Inspection
 // ─────────────────────────────────────────────────────────────────────────────
 
-defn String.len(self) -> Int { _str_len(self) }
+/// Returns the number of characters in the string.
+pub defn String.len(self: String) -> Int { _str_len(self) }
 
-defn String.isEmpty(self) -> Bool { _str_len(self) == 0 }
+/// Returns `true` if the string has zero characters.
+pub defn String.isEmpty(self: String) -> Bool { _str_len(self) == 0 }
 
-defn String.startsWith(self, prefix: String) -> Bool { _str_starts_with(self, prefix) }
+/// Returns `true` if the string contains `needle` as a substring.
+pub defn String.contains(self: String, needle: String) -> Bool { _str_contains(self, needle) }
 
-defn String.endsWith(self, suffix: String) -> Bool { _str_ends_with(self, suffix) }
+/// Returns `true` if the string starts with `prefix`.
+pub defn String.startsWith(self: String, prefix: String) -> Bool { _str_starts_with(self, prefix) }
 
-defn String.contains(self, needle: String) -> Bool { _str_contains(self, needle) }
-
-defn String.find(self, needle: String) -> Int { _str_find(self, needle) }
+/// Returns `true` if the string ends with `suffix`.
+pub defn String.endsWith(self: String, suffix: String) -> Bool { _str_ends_with(self, suffix) }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Transformation
 // ─────────────────────────────────────────────────────────────────────────────
 
-defn String.upper(self) -> String { _str_upper(self) }
+/// Returns the string converted to upper case.
+pub defn String.upper(self: String) -> String { _str_upper(self) }
 
-defn String.lower(self) -> String { _str_lower(self) }
+/// Returns the string converted to lower case.
+pub defn String.lower(self: String) -> String { _str_lower(self) }
 
-defn String.trim(self) -> String { _str_trim(self) }
+/// Returns the string with leading and trailing whitespace removed.
+pub defn String.trim(self: String) -> String { _str_trim(self) }
 
-defn String.trimStart(self) -> String { _str_trim_start(self) }
-
-defn String.trimEnd(self) -> String { _str_trim_end(self) }
-
-defn String.replace(self, from: String, to: String) -> String { _str_replace(self, from, to) }
-
-defn String.repeat(self, n: Int) -> String { _str_repeat(self, n) }
+/// Returns a new string with all occurrences of `from` replaced by `to`.
+pub defn String.replace(self: String, from: String, to: String) -> String { _str_replace(self, from, to) }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Slicing
+// Slicing / Splitting / Joining
 // ─────────────────────────────────────────────────────────────────────────────
 
-defn String.slice(self, start: Int, end: Int) -> String { _str_slice(self, start, end) }
+/// Returns the substring from index `start` (inclusive) to `end` (exclusive).
+pub defn String.slice(self: String, start: Int, end: Int) -> String { _str_slice(self, start, end) }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Splitting / Joining
-// ─────────────────────────────────────────────────────────────────────────────
+/// Splits the string on `sep` and returns a `List` of parts.
+pub defn String.split(self: String, sep: String) -> List { _str_split(self, sep) }
 
-defn String.split(self, sep: String) -> List { _str_split(self, sep) }
-
-defn String.join(self, parts: List) -> String { _str_join(self, parts) }
-
-defn String.chars(self) -> List { _str_chars(self) }
-
-defn String.bytes(self) -> List { _str_bytes(self) }
-
-defn String.fromChars(chars: List) -> String { _str_from_chars(chars) }
+/// Joins a list of strings with `self` as the separator.
+pub defn String.join(self: String, parts: List) -> String { _str_join(self, parts) }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Parsing
 // ─────────────────────────────────────────────────────────────────────────────
 
-defn String.parseInt(self) -> Int { _str_parse_int(self) }
+/// Parses the string as an integer. Returns `null` if parsing fails.
+pub defn String.parseInt(self: String) -> Any { _str_parse_int(self) }
 
-defn String.parseFloat(self) -> Float { _str_parse_float(self) }
-
-defn main() {}
+/// Parses the string as a float. Returns `null` if parsing fails.
+pub defn String.parseFloat(self: String) -> Any { _str_parse_float(self) }
