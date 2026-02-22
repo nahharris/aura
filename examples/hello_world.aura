@@ -1,0 +1,77 @@
+// examples/hello_world.aura — Aura language showcase
+//
+// Demonstrates core language features that work with the current compiler.
+// Run with: aura examples/hello_world.aura
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Functions
+// ─────────────────────────────────────────────────────────────────────────────
+
+defn add(a: Int, b: Int) -> Int {
+    a + b
+}
+
+defn greet(name: String) -> String {
+    "Hello, $(name)!"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Closures and pattern matching
+// ─────────────────────────────────────────────────────────────────────────────
+
+// FizzBuzz via pattern-matching closure
+def fizzbuzz = {
+    n ~ n % 15 == 0 -> "FizzBuzz",
+    n ~ n % 3  == 0 -> "Fizz",
+    n ~ n % 5  == 0 -> "Buzz",
+    n                -> "$(n)",
+};
+
+// Higher-order function: applies a transformation closure to a value
+defn transform(value: Int, f: Any) -> Any { f(value) }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main entry point
+// ─────────────────────────────────────────────────────────────────────────────
+
+defn main() -> Void {
+    // Basic output
+    println(greet("World"));
+
+    // Arithmetic
+    let sum = add(3, 4);
+    println("3 + 4 = $(sum)");
+
+    // String interpolation
+    const pi = 3.14159;
+    println("Pi is approximately $(pi)");
+
+    // FizzBuzz loop (1..=15)
+    let i = 1;
+    loop while { i <= 15 } do {
+        print("$(fizzbuzz(i)) ");
+        i++;
+    }
+    println("");
+
+    // List and higher-order functions
+    let nums = [1, 2, 3, 4, 5];
+    let squares = nums.map({ x -> x * x });
+    println("squares: $(squares)");
+
+    let evens = nums.filter({ x -> x % 2 == 0 });
+    println("evens: $(evens)");
+
+    // String methods
+    let s = "  hello, world!  ";
+    let trimmed = s.trim();
+    println(trimmed.upper());
+    let has_world = s.contains("world");
+    println("contains 'world': $(has_world)");
+
+    // Closures as first-class values
+    let result = transform(10, { x -> x * x });
+    println("transform(10, square) = $(result)");
+
+    println("Done.");
+}
