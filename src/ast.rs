@@ -373,6 +373,8 @@ pub enum Expr {
     Ident(String, Span),
     /// A dot-identifier variant constructor: `.ok`, `.null`, `.some`.
     DotIdent(String, Span),
+    /// A builtin reference: `builtin("name")` — binds to a native function.
+    Builtin { name: String, span: Span },
 
     // ── Arithmetic / logic ───────────────────────────────────────────────────
     /// A binary operation: `a + b`, `x == y`, `p && q`.
@@ -515,6 +517,7 @@ impl Expr {
             Expr::Str(_, s) => *s,
             Expr::Ident(_, s) => *s,
             Expr::DotIdent(_, s) => *s,
+            Expr::Builtin { span, .. } => *span,
             Expr::Binary { span, .. } => *span,
             Expr::Unary { span, .. } => *span,
             Expr::Assign { span, .. } => *span,
