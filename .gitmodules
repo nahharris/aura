@@ -4,3 +4,6 @@
 [submodule "tool/tree-sitter-aura"]
 	path = tool/tree-sitter-aura
 	url = https://github.com/nahharris/tree-sitter-aura.git
+[submodule "tool/aura-vscode"]
+	path = tool/aura-vscode
+	url = https://github.com/nahharris/aura-vscode.git
