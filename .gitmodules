@@ -1,0 +1,6 @@
+[submodule "tool/aura-zed"]
+	path = tool/aura-zed
+	url = https://github.com/nahharris/aura-zed.git
+[submodule "tool/tree-sitter-aura"]
+	path = tool/tree-sitter-aura
+	url = https://github.com/nahharris/tree-sitter-aura.git
