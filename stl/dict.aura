@@ -1,151 +1,131 @@
-// stl/dict.aura — Dictionary utilities for Aura.
+// stl/dict.aura — Dictionary methods for Aura.
 //
-// Wraps the native dict primitives and provides higher-order helpers
-// built in pure Aura.
+// Provides method syntax on Dict type: d.len(), d.keys(), d.has(k), etc.
 //
-// Functions that can fail return Option or Result variants:
-//   .some(value) | .null       — for lookups that may not find anything
-//   .ok(value)   | .error(msg) — for operations that can fail with a reason
-//
-// Native primitives used:
+// Kernel primitives bound via builtin():
 //   dict_keys, dict_values, dict_entries, dict_has, dict_delete,
-//   dict_len, dict_merge, is_null
+//   dict_len, dict_merge
 
-// ── Inspection ────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Kernel bindings
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Return the number of key-value pairs in the dict.
-pub defn len(d: Dict[String, V]) -> Int {
-    dict_len(d)
-}
+def _dict_len = builtin("dict_len");
+def _dict_has = builtin("dict_has");
+def _dict_delete = builtin("dict_delete");
+def _dict_keys = builtin("dict_keys");
+def _dict_values = builtin("dict_values");
+def _dict_entries = builtin("dict_entries");
+def _dict_merge = builtin("dict_merge");
 
-// Return true if the dict contains no entries.
-pub defn is_empty(d: Dict[String, V]) -> Bool {
-    dict_len(d) == 0
-}
+def _list_len = builtin("list_len");
 
-// Return true if `key` exists in the dict.
-pub defn has(d: Dict[String, V], key: String) -> Bool {
-    dict_has(d, key)
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// Inspection
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Return all keys as a list.
-pub defn keys(d: Dict[String, V]) -> List[String] {
-    dict_keys(d)
-}
+defn Dict.len(self) -> Int { _dict_len(self) }
 
-// Return all values as a list.
-pub defn values(d: Dict[String, V]) -> List[V] {
-    dict_values(d)
-}
+defn Dict.isEmpty(self) -> Bool { _dict_len(self) == 0 }
 
-// Return all [key, value] pairs as a list.
-pub defn entries(d: Dict[String, V]) -> List[List[T]] {
-    dict_entries(d)
-}
+defn Dict.has(self, key: String) -> Bool { _dict_has(self, key) }
 
-// ── Access ────────────────────────────────────────────────────────────────────
+defn Dict.keys(self) -> List { _dict_keys(self) }
 
-// Return the value for `key` wrapped in .some, or .null if not found.
-pub defn get(d: Dict[String, V], key: String) -> Option[V] {
-    if (dict_has(d, key)) {
-        .some(d[key])
+defn Dict.values(self) -> List { _dict_values(self) }
+
+defn Dict.entries(self) -> List { _dict_entries(self) }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Access
+// ─────────────────────────────────────────────────────────────────────────────
+
+defn Dict.get(self, key: String) -> Value {
+    if (_dict_has(self, key)) {
+        self[key]
     } else {
         .null
     }
 }
 
-// Return the value for `key`, or `default` if not found.
-pub defn get_or(d: Dict[String, V], key: String, default: V) -> V {
-    if (dict_has(d, key)) {
-        d[key]
+defn Dict.getOr(self, key: String, default) -> Value {
+    if (_dict_has(self, key)) {
+        self[key]
     } else {
         default
     }
 }
 
-// ── Mutation helpers ──────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Mutation
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Delete `key` from the dict.  Returns .ok(Void) if the key existed,
-// .error(msg) if it was not present.
-pub defn remove(d: Dict[String, V], key: String) -> Result[Void, String] {
-    if (dict_has(d, key)) {
-        dict_delete(d, key);
-        .ok(null)
-    } else {
-        .error("key \"$(key)\" not found in dict")
-    }
-}
+defn Dict.delete(self, key: String) -> Void { _dict_delete(self, key) }
 
-// Merge `other` into `base`, returning a new dict.  Keys in `other` win on conflict.
-pub defn merge(base: Dict[String, V], other: Dict[String, V]) -> Dict[String, V] {
-    dict_merge(base, other)
-}
+defn Dict.merge(self, other: Dict) -> Dict { _dict_merge(self, other) }
 
-// ── Higher-order combinators ─────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Higher-order methods
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Apply `f(key, value)` to every entry for its side effects.
-pub defn each(d: Dict[String, V], f: Func[(String, V), Void]) -> Void {
-    let ks: List[String] = dict_keys(d);
+defn Dict.each(self, f) -> Void {
+    let ks: List = _dict_keys(self);
     let i: Int = 0;
-    let n: Int = list_len(ks);
+    let n: Int = _list_len(ks);
     loop while { i < n } do {
-        f(ks[i], d[ks[i]]);
+        f(ks[i], self[ks[i]]);
         i++;
     }
 }
 
-// Return a new dict with values transformed by `f(key, value) -> W`.
-pub defn map_values(d: Dict[String, V], f: Func[(String, V), W]) -> Dict[String, W] {
-    let result: Dict[String, W] = [];
-    let ks: List[String] = dict_keys(d);
+defn Dict.mapValues(self, f) -> Dict {
+    let result: Dict = [];
+    let ks: List = _dict_keys(self);
     let i: Int = 0;
-    let n: Int = list_len(ks);
+    let n: Int = _list_len(ks);
     loop while { i < n } do {
-        let k: String = ks[i];
-        result[k] = f(k, d[k]);
+        let k = ks[i];
+        result[k] = f(k, self[k]);
         i++;
     }
     result
 }
 
-// Return a new dict containing only entries for which `pred(key, value)` is true.
-pub defn filter(d: Dict[String, V], pred: Func[(String, V), Bool]) -> Dict[String, V] {
-    let result: Dict[String, V] = [];
-    let ks: List[String] = dict_keys(d);
+defn Dict.filter(self, pred) -> Dict {
+    let result: Dict = [];
+    let ks: List = _dict_keys(self);
     let i: Int = 0;
-    let n: Int = list_len(ks);
+    let n: Int = _list_len(ks);
     loop while { i < n } do {
-        let k: String = ks[i];
-        if (pred(k, d[k])) {
-            result[k] = d[k];
+        let k = ks[i];
+        if (pred(k, self[k])) {
+            result[k] = self[k];
         }
         i++;
     }
     result
 }
 
-// Reduce all entries to a single value by applying `f(acc, key, value)`.
-pub defn reduce(d: Dict[String, V], init: A, f: Func[(A, String, V), A]) -> A {
-    let acc: A = init;
-    let ks: List[String] = dict_keys(d);
+defn Dict.reduce(self, init, f) -> Value {
+    let acc = init;
+    let ks: List = _dict_keys(self);
     let i: Int = 0;
-    let n: Int = list_len(ks);
+    let n: Int = _list_len(ks);
     loop while { i < n } do {
-        let k: String = ks[i];
-        acc = f(acc, k, d[k]);
+        let k = ks[i];
+        acc = f(acc, k, self[k]);
         i++;
     }
     acc
 }
 
-// Return true if `pred(key, value)` is true for at least one entry.
-pub defn any(d: Dict[String, V], pred: Func[(String, V), Bool]) -> Bool {
-    let ks: List[String] = dict_keys(d);
+defn Dict.any(self, pred) -> Bool {
+    let ks: List = _dict_keys(self);
     let i: Int = 0;
-    let n: Int = list_len(ks);
+    let n: Int = _list_len(ks);
     loop while { i < n } do {
-        let k: String = ks[i];
-        if (pred(k, d[k])) {
+        let k = ks[i];
+        if (pred(k, self[k])) {
             return true
         }
         i++;
@@ -153,14 +133,13 @@ pub defn any(d: Dict[String, V], pred: Func[(String, V), Bool]) -> Bool {
     false
 }
 
-// Return true if `pred(key, value)` is true for every entry.
-pub defn all(d: Dict[String, V], pred: Func[(String, V), Bool]) -> Bool {
-    let ks: List[String] = dict_keys(d);
+defn Dict.all(self, pred) -> Bool {
+    let ks: List = _dict_keys(self);
     let i: Int = 0;
-    let n: Int = list_len(ks);
+    let n: Int = _list_len(ks);
     loop while { i < n } do {
-        let k: String = ks[i];
-        if (!pred(k, d[k])) {
+        let k = ks[i];
+        if (!pred(k, self[k])) {
             return false
         }
         i++;
@@ -168,33 +147,4 @@ pub defn all(d: Dict[String, V], pred: Func[(String, V), Bool]) -> Bool {
     true
 }
 
-// ── Construction ──────────────────────────────────────────────────────────────
-
-// Build a dict from a list of [key, value] pairs.
-// Later pairs overwrite earlier ones for duplicate keys.
-pub defn from_entries(entries: List[List[T]]) -> Dict[String, T] {
-    let result: Dict[String, T] = [];
-    let i: Int = 0;
-    let n: Int = list_len(entries);
-    loop while { i < n } do {
-        let pair: List[T] = entries[i];
-        result[pair[0]] = pair[1];
-        i++;
-    }
-    result
-}
-
-// Build a dict from a list of keys and a list of values (zipped).
-// Stops at the shorter list.
-pub defn from_lists(keys: List[String], values: List[V]) -> Dict[String, V] {
-    let result: Dict[String, V] = [];
-    let nk: Int = list_len(keys);
-    let nv: Int = list_len(values);
-    let n: Int = if (nk < nv) { nk } else { nv };
-    let i: Int = 0;
-    loop while { i < n } do {
-        result[keys[i]] = values[i];
-        i++;
-    }
-    result
-}
+defn main() {}

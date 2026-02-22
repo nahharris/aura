@@ -1,255 +1,157 @@
-// stl/list.aura — List utilities for Aura.
+// stl/list.aura — List methods for Aura.
 //
-// Wraps the native list primitives and provides higher-order combinators
-// (map, filter, reduce, etc.) built in pure Aura.
+// Provides method syntax on List type: list.len(), list.push(x), etc.
+// Higher-order methods (map, filter, reduce) are implemented in pure Aura.
 //
-// Functions that can fail return Option or Result variants:
-//   .some(value) | .null       — for lookups that may not find anything
-//   .ok(value)   | .error(msg) — for operations that can fail with a reason
-//
-// Native primitives used:
+// Kernel primitives bound via builtin():
 //   list_len, list_push, list_pop, list_insert, list_remove, list_contains,
 //   list_reverse, list_sort, list_concat, list_slice, list_first, list_last,
-//   list_flatten, list_range, list_index_of, is_null
+//   list_flatten, list_range, list_index_of
 
-// ── Inspection ────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Kernel bindings
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Return the number of elements in the list.
-pub defn len(lst: List[T]) -> Int {
-    list_len(lst)
-}
+def _list_len = builtin("list_len");
+def _list_push = builtin("list_push");
+def _list_pop = builtin("list_pop");
+def _list_insert = builtin("list_insert");
+def _list_remove = builtin("list_remove");
+def _list_contains = builtin("list_contains");
+def _list_reverse = builtin("list_reverse");
+def _list_sort = builtin("list_sort");
+def _list_concat = builtin("list_concat");
+def _list_slice = builtin("list_slice");
+def _list_first = builtin("list_first");
+def _list_last = builtin("list_last");
+def _list_flatten = builtin("list_flatten");
+def _list_range = builtin("list_range");
+def _list_index_of = builtin("list_index_of");
 
-// Return true if the list has zero elements.
-pub defn is_empty(lst: List[T]) -> Bool {
-    list_len(lst) == 0
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// Inspection
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Return true if `value` is in the list (uses == equality).
-pub defn contains(lst: List[T], value: T) -> Bool {
-    list_contains(lst, value)
-}
+defn List.len(self) -> Int { _list_len(self) }
 
-// Return the index of the first occurrence of `value`, or .null if not found.
-pub defn index_of(lst: List[T], value: T) -> Option[Int] {
-    let idx: Int = list_index_of(lst, value);
-    if (is_null(idx)) {
-        .null
-    } else {
-        .some(idx)
-    }
-}
+defn List.isEmpty(self) -> Bool { _list_len(self) == 0 }
 
-// Return the first element wrapped in .some, or .null if the list is empty.
-pub defn first(lst: List[T]) -> Option[T] {
-    let v: T = list_first(lst);
-    if (is_null(v)) {
-        .null
-    } else {
-        .some(v)
-    }
-}
+defn List.contains(self, value) -> Bool { _list_contains(self, value) }
 
-// Return the last element wrapped in .some, or .null if the list is empty.
-pub defn last(lst: List[T]) -> Option[T] {
-    let v: T = list_last(lst);
-    if (is_null(v)) {
-        .null
-    } else {
-        .some(v)
-    }
-}
+defn List.indexOf(self, value) -> Int { _list_index_of(self, value) }
 
-// Return the element at index `i` wrapped in .some, or .null if out of bounds.
-// Negative indices count from the end: get(lst, -1) returns the last element.
-pub defn get(lst: List[T], i: Int) -> Option[T] {
-    let n: Int = list_len(lst);
+defn List.first(self) -> Value { _list_first(self) }
+
+defn List.last(self) -> Value { _list_last(self) }
+
+defn List.get(self, i: Int) -> Value {
+    let n: Int = _list_len(self);
     let actual: Int = if (i < 0) { n + i } else { i };
     if (actual < 0 || actual >= n) {
         .null
     } else {
-        .some(lst[actual])
+        self[actual]
     }
 }
 
-// ── Slicing ───────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Mutation
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Return a slice of `lst` from `start` (inclusive) to `end` (exclusive).
-// Returns .ok(slice) or .error(msg) on invalid bounds.
-pub defn slice(lst: List[T], start: Int, end: Int) -> Result[List[T], String] {
-    let n: Int = list_len(lst);
-    if (start < 0 || end < start || end > n) {
-        .error("slice bounds $(start)..$(end) out of range for list of length $(n)")
-    } else {
-        .ok(list_slice(lst, start, end))
-    }
-}
+defn List.push(self, item) -> Void { _list_push(self, item) }
 
-// Return the first `n` elements of `lst`.
-pub defn take(lst: List[T], n: Int) -> List[T] {
-    let slen: Int = list_len(lst);
+defn List.pop(self) -> Value { _list_pop(self) }
+
+defn List.insert(self, index: Int, item) -> Void { _list_insert(self, index, item) }
+
+defn List.remove(self, index: Int) -> Value { _list_remove(self, index) }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Slicing
+// ─────────────────────────────────────────────────────────────────────────────
+
+defn List.slice(self, start: Int, end: Int) -> List { _list_slice(self, start, end) }
+
+defn List.take(self, n: Int) -> List {
+    let slen: Int = _list_len(self);
     let end: Int = if (n > slen) { slen } else { if (n < 0) { 0 } else { n } };
-    list_slice(lst, 0, end)
+    _list_slice(self, 0, end)
 }
 
-// Return `lst` with the first `n` elements removed.
-pub defn drop(lst: List[T], n: Int) -> List[T] {
-    let slen: Int = list_len(lst);
+defn List.drop(self, n: Int) -> List {
+    let slen: Int = _list_len(self);
     let start: Int = if (n > slen) { slen } else { if (n < 0) { 0 } else { n } };
-    list_slice(lst, start, slen)
+    _list_slice(self, start, slen)
 }
 
-// ── Construction ──────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Transformation
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Return a list of integers from `start` (inclusive) to `end` (exclusive).
-pub defn range(start: Int, end: Int) -> List[Int] {
-    list_range(start, end)
-}
+defn List.reverse(self) -> List { _list_reverse(self) }
 
-// Return a list of `n` copies of `value`.
-pub defn repeat(value: T, n: Int) -> List[T] {
-    let result: List[T] = [];
+defn List.sort(self) -> List { _list_sort(self) }
+
+defn List.concat(self, other: List) -> List { _list_concat(self, other) }
+
+defn List.flatten(self) -> List { _list_flatten(self) }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Higher-order methods
+// ─────────────────────────────────────────────────────────────────────────────
+
+defn List.map(self, f) -> List {
+    let result: List = [];
     let i: Int = 0;
+    let n: Int = _list_len(self);
     loop while { i < n } do {
-        list_push(result, value);
+        _list_push(result, f(self[i]));
         i++;
     }
     result
 }
 
-// Zip two lists into a list of [a, b] pairs (stops at the shorter list).
-pub defn zip(a: List[A], b: List[B]) -> List[List[T]] {
-    let na: Int = list_len(a);
-    let nb: Int = list_len(b);
-    let n: Int = if (na < nb) { na } else { nb };
-    let result: List[List[T]] = [];
+defn List.filter(self, pred) -> List {
+    let result: List = [];
     let i: Int = 0;
+    let n: Int = _list_len(self);
     loop while { i < n } do {
-        list_push(result, [a[i], b[i]]);
-        i++;
-    }
-    result
-}
-
-// Return a list of [index, value] pairs for each element.
-pub defn enumerate(lst: List[T]) -> List[List[T]] {
-    let result: List[List[T]] = [];
-    let i: Int = 0;
-    let n: Int = list_len(lst);
-    loop while { i < n } do {
-        list_push(result, [i, lst[i]]);
-        i++;
-    }
-    result
-}
-
-// ── Set-like operations ───────────────────────────────────────────────────────
-
-// Return a new list with duplicate values removed (first occurrence kept).
-pub defn unique(lst: List[T]) -> List[T] {
-    let result: List[T] = [];
-    let i: Int = 0;
-    let n: Int = list_len(lst);
-    loop while { i < n } do {
-        let v: T = lst[i];
-        if (!list_contains(result, v)) {
-            list_push(result, v);
+        if (pred(self[i])) {
+            _list_push(result, self[i]);
         }
         i++;
     }
     result
 }
 
-// Return a new list containing only elements present in both `a` and `b`.
-pub defn intersect(a: List[T], b: List[T]) -> List[T] {
-    let result: List[T] = [];
+defn List.reduce(self, init, f) -> Value {
+    let acc = init;
     let i: Int = 0;
-    let n: Int = list_len(a);
+    let n: Int = _list_len(self);
     loop while { i < n } do {
-        let v: T = a[i];
-        if (list_contains(b, v) && !list_contains(result, v)) {
-            list_push(result, v);
-        }
-        i++;
-    }
-    result
-}
-
-// Return a new list of elements in `a` that are not in `b`.
-pub defn difference(a: List[T], b: List[T]) -> List[T] {
-    let result: List[T] = [];
-    let i: Int = 0;
-    let n: Int = list_len(a);
-    loop while { i < n } do {
-        let v: T = a[i];
-        if (!list_contains(b, v)) {
-            list_push(result, v);
-        }
-        i++;
-    }
-    result
-}
-
-// ── Higher-order combinators ─────────────────────────────────────────────────
-
-// Apply `f` to each element and return a new list of the results.
-pub defn map(lst: List[A], f: Func[A, B]) -> List[B] {
-    let result: List[B] = [];
-    let i: Int = 0;
-    let n: Int = list_len(lst);
-    loop while { i < n } do {
-        list_push(result, f(lst[i]));
-        i++;
-    }
-    result
-}
-
-// Return a new list containing only elements for which `pred` returns true.
-pub defn filter(lst: List[T], pred: Func[T, Bool]) -> List[T] {
-    let result: List[T] = [];
-    let i: Int = 0;
-    let n: Int = list_len(lst);
-    loop while { i < n } do {
-        if (pred(lst[i])) {
-            list_push(result, lst[i]);
-        }
-        i++;
-    }
-    result
-}
-
-// Reduce the list to a single value by applying `f(acc, element)` left-to-right.
-// `init` is the initial accumulator.
-pub defn reduce(lst: List[T], init: A, f: Func[(A, T), A]) -> A {
-    let acc: A = init;
-    let i: Int = 0;
-    let n: Int = list_len(lst);
-    loop while { i < n } do {
-        acc = f(acc, lst[i]);
+        acc = f(acc, self[i]);
         i++;
     }
     acc
 }
 
-// Return the first element for which `pred` returns true, wrapped in .some,
-// or .null if no element matches.
-pub defn find(lst: List[T], pred: Func[T, Bool]) -> Option[T] {
+defn List.find(self, pred) -> Value {
     let i: Int = 0;
-    let n: Int = list_len(lst);
+    let n: Int = _list_len(self);
     loop while { i < n } do {
-        if (pred(lst[i])) {
-            return .some(lst[i])
+        if (pred(self[i])) {
+            return self[i]
         }
         i++;
     }
     .null
 }
 
-// Return true if `pred` returns true for at least one element.
-pub defn any(lst: List[T], pred: Func[T, Bool]) -> Bool {
+defn List.any(self, pred) -> Bool {
     let i: Int = 0;
-    let n: Int = list_len(lst);
+    let n: Int = _list_len(self);
     loop while { i < n } do {
-        if (pred(lst[i])) {
+        if (pred(self[i])) {
             return true
         }
         i++;
@@ -257,12 +159,11 @@ pub defn any(lst: List[T], pred: Func[T, Bool]) -> Bool {
     false
 }
 
-// Return true if `pred` returns true for every element.
-pub defn all(lst: List[T], pred: Func[T, Bool]) -> Bool {
+defn List.all(self, pred) -> Bool {
     let i: Int = 0;
-    let n: Int = list_len(lst);
+    let n: Int = _list_len(self);
     loop while { i < n } do {
-        if (!pred(lst[i])) {
+        if (!pred(self[i])) {
             return false
         }
         i++;
@@ -270,121 +171,71 @@ pub defn all(lst: List[T], pred: Func[T, Bool]) -> Bool {
     true
 }
 
-// Apply `f` to each element for its side effects; returns Void.
-pub defn each(lst: List[T], f: Func[T, Void]) -> Void {
+defn List.each(self, f) -> Void {
     let i: Int = 0;
-    let n: Int = list_len(lst);
+    let n: Int = _list_len(self);
     loop while { i < n } do {
-        f(lst[i]);
+        f(self[i]);
         i++;
     }
 }
 
-// Apply `f(index, element)` to each element for its side effects.
-pub defn each_with_index(lst: List[T], f: Func[(Int, T), Void]) -> Void {
-    let i: Int = 0;
-    let n: Int = list_len(lst);
-    loop while { i < n } do {
-        f(i, lst[i]);
-        i++;
-    }
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// Aggregates
+// ─────────────────────────────────────────────────────────────────────────────
 
-// ── Aggregates ────────────────────────────────────────────────────────────────
-
-// Return the sum of a list of numbers.
-pub defn sum(lst: List[Int]) -> Int {
+defn List.sum(self) -> Int {
     let acc: Int = 0;
     let i: Int = 0;
-    let n: Int = list_len(lst);
+    let n: Int = _list_len(self);
     loop while { i < n } do {
-        acc = acc + lst[i];
+        acc = acc + self[i];
         i++;
     }
     acc
 }
 
-// Return the sum of a list of floats.
-pub defn sum_float(lst: List[Float]) -> Float {
-    let acc: Float = 0.0;
-    let i: Int = 0;
-    let n: Int = list_len(lst);
-    loop while { i < n } do {
-        acc = acc + lst[i];
-        i++;
-    }
-    acc
-}
-
-// Return the product of a list of numbers.
-pub defn product(lst: List[Int]) -> Int {
+defn List.product(self) -> Int {
     let acc: Int = 1;
     let i: Int = 0;
-    let n: Int = list_len(lst);
+    let n: Int = _list_len(self);
     loop while { i < n } do {
-        acc = acc * lst[i];
+        acc = acc * self[i];
         i++;
     }
     acc
 }
 
-// Return the minimum value in a list, or .null if the list is empty.
-pub defn min(lst: List[T]) -> Option[T] {
-    let n: Int = list_len(lst);
+defn List.min(self) -> Value {
+    let n: Int = _list_len(self);
     if (n == 0) {
         return .null
     }
-    let m: T = lst[0];
+    let m = self[0];
     let i: Int = 1;
     loop while { i < n } do {
-        if (lst[i] < m) {
-            m = lst[i];
+        if (self[i] < m) {
+            m = self[i];
         }
         i++;
     }
-    .some(m)
+    m
 }
 
-// Return the maximum value in a list, or .null if the list is empty.
-pub defn max(lst: List[T]) -> Option[T] {
-    let n: Int = list_len(lst);
+defn List.max(self) -> Value {
+    let n: Int = _list_len(self);
     if (n == 0) {
         return .null
     }
-    let m: T = lst[0];
+    let m = self[0];
     let i: Int = 1;
     loop while { i < n } do {
-        if (lst[i] > m) {
-            m = lst[i];
+        if (self[i] > m) {
+            m = self[i];
         }
         i++;
     }
-    .some(m)
+    m
 }
 
-// ── Reordering ────────────────────────────────────────────────────────────────
-
-// Return a new list with the elements in reverse order.
-pub defn reverse(lst: List[T]) -> List[T] {
-    list_reverse(lst)
-}
-
-// Return a new sorted list (ascending, using natural < ordering).
-pub defn sort(lst: List[T]) -> List[T] {
-    list_sort(lst)
-}
-
-// Concatenate two lists into a new list.
-pub defn concat(a: List[T], b: List[T]) -> List[T] {
-    list_concat(a, b)
-}
-
-// Flatten a list of lists by one level.
-pub defn flatten(lst: List[List[T]]) -> List[T] {
-    list_flatten(lst)
-}
-
-// Map then flatten (flat_map / bind).
-pub defn flat_map(lst: List[A], f: Func[A, List[B]]) -> List[B] {
-    list_flatten(map(lst, f))
-}
+defn main() {}
