@@ -4,12 +4,13 @@
 //!
 //! 1. **Lexer** (`lexer`) — tokenises source text into a flat `Vec<Token>`.
 //! 2. **Parser** (`parser`) — builds a typed [`ast::Program`] from the token stream.
-//! 3. **Bytecode** (`bytecode`) — `OpCode` definitions and `Chunk` (bytecode + constants).
-//! 4. **Values** (`value`) — runtime `Value` enum, heap `Object` variants.
-//! 5. **GC** (`gc`) — mark-and-sweep garbage collector with `GcHeap` / `GcPtr<T>`.
-//! 6. **Compiler** (`compiler`) — lowers AST to bytecode `Chunk`s.
-//! 7. **Builtins** (`builtins`) — native Rust functions exposed to Aura programs.
-//! 8. **VM** (`vm`) — stack-based interpreter that executes `Chunk`s.
+//! 3. **Type checker** (`typechecker`) — static type analysis pass (Phase 4).
+//! 4. **Bytecode** (`bytecode`) — `OpCode` definitions and `Chunk` (bytecode + constants).
+//! 5. **Values** (`value`) — runtime `Value` enum, heap `Object` variants.
+//! 6. **GC** (`gc`) — mark-and-sweep garbage collector with `GcHeap` / `GcPtr<T>`.
+//! 7. **Compiler** (`compiler`) — lowers AST to bytecode `Chunk`s.
+//! 8. **Builtins** (`builtins`) — native Rust functions exposed to Aura programs.
+//! 9. **VM** (`vm`) — stack-based interpreter that executes `Chunk`s.
 //!
 //! # Entry point
 //!
@@ -32,6 +33,7 @@ pub mod gc;
 pub mod lexer;
 pub mod parser;
 pub mod token;
+pub mod typechecker;
 pub mod value;
 pub mod vm;
 
@@ -41,6 +43,7 @@ pub mod vm;
 
 use crate::lexer::LexError;
 use crate::parser::ParseError;
+use crate::typechecker::TypeError;
 
 /// The unified error type for all Aura pipeline stages.
 ///
@@ -55,6 +58,10 @@ pub enum AuraError {
     /// One or more parse errors.
     #[error("Parse error at {}: {}", .0.first().map(|e| e.span.to_string()).unwrap_or_default(), .0.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; "))]
     Parse(Vec<ParseError>),
+
+    /// One or more static type errors.
+    #[error("Type error: {}", .0.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "))]
+    Type(Vec<TypeError>),
 
     /// A compile-time error (name resolution, scope, etc.).
     #[error("Compile error: {0}")]
@@ -98,11 +105,20 @@ pub fn compile_program(program: ast::Program) -> AuraResult<bytecode::Chunk> {
     compiler::compile(program).map_err(|e| AuraError::Compile(e.to_string()))
 }
 
-/// Full pipeline: lex → parse → compile → run.
+/// Run the static type checker over a parsed [`ast::Program`].
+///
+/// Returns `Ok(())` if no type errors were found, or `Err(AuraError::Type(...))`
+/// with all collected errors otherwise.
+pub fn typecheck_program(program: &ast::Program) -> AuraResult<()> {
+    typechecker::check(program).map_err(AuraError::Type)
+}
+
+/// Full pipeline: lex → parse → typecheck → compile → run.
 ///
 /// `file_path` is used only for error messages and module resolution.
 pub fn run_source(src: &str, file_path: &str) -> AuraResult<()> {
     let program = parse_source(src)?;
+    typecheck_program(&program)?;
     let chunk = compile_program(program)?;
     let mut heap = gc::GcHeap::new();
     let mut machine = vm::Vm::new(&mut heap, file_path);
@@ -118,21 +134,20 @@ pub fn run_source(src: &str, file_path: &str) -> AuraResult<()> {
 /// Load the standard library into the VM.
 ///
 /// This runs the STL files to register their globals before user code executes.
+/// Only the minimal set of modules needed by the type checker is loaded:
+/// string, list, and io.
 fn load_stl(vm: &mut vm::Vm) -> AuraResult<()> {
-    // Load STL modules in dependency order.
-    // Each module uses builtin() to bind to kernel primitives.
-    let modules: [(&str, &str); 7] = [
+    let modules: [(&str, &str); 3] = [
         ("stl/string", include_str!("../stl/string.aura")),
         ("stl/list", include_str!("../stl/list.aura")),
-        ("stl/dict", include_str!("../stl/dict.aura")),
-        ("stl/math", include_str!("../stl/math.aura")),
-        ("stl/result", include_str!("../stl/result.aura")),
         ("stl/io", include_str!("../stl/io.aura")),
-        ("stl/os", include_str!("../stl/os.aura")),
     ];
 
     for (name, source) in modules {
         let program = parse_source(source)?;
+        // STL files are trusted internal code; skip the typechecker so that
+        // intentionally loose signatures (bare `List`, `Any` params) do not
+        // produce false-positive type errors.
         let chunk = compile_program(program)?;
         vm.run_module(chunk, name)
             .map_err(|e| AuraError::Runtime(e.to_string()))?;

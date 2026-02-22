@@ -172,6 +172,13 @@ fn format_error(path: &str, src: &str, err: &aura::AuraError) -> String {
             }
             out
         }
+        AuraError::Type(errors) => {
+            let mut out = String::new();
+            for e in errors {
+                out.push_str(&format_span_error(path, src, e.span.start, &e.message));
+            }
+            out
+        }
         AuraError::Compile(msg) => {
             format!("error[compile]: {path}: {msg}\n")
         }
