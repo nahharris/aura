@@ -32,10 +32,6 @@ use crate::vm::Vm;
 /// same name as the registered identifier.
 pub fn register_all(vm: &mut Vm) {
     // ── Core ──────────────────────────────────────────────────────────────────
-    vm.register_native("print", core_print);
-    vm.register_native("println", core_println);
-    vm.register_native("eprint", core_eprint);
-    vm.register_native("eprintln", core_eprintln);
     vm.register_native("type_of", core_type_of);
     vm.register_native("to_str", core_to_str);
     vm.register_native("to_int", core_to_int);
@@ -46,7 +42,13 @@ pub fn register_all(vm: &mut Vm) {
     vm.register_native("panic", core_panic);
 
     // ── I/O ───────────────────────────────────────────────────────────────────
-    vm.register_native("read_line", io_read_line);
+    vm.register_native("io_open", io_open);
+    vm.register_native("io_close", io_close);
+    vm.register_native("io_write", io_write);
+    vm.register_native("io_read", io_read);
+    vm.register_native("io_read_line", io_read_line);
+    vm.register_native("io_read_all", io_read_all);
+    vm.register_native("io_flush", io_flush);
 
     // ── String ────────────────────────────────────────────────────────────────
     vm.register_native("str_len", str_len);
@@ -130,9 +132,6 @@ pub fn register_all(vm: &mut Vm) {
     vm.register_native("os_args", os_args);
     vm.register_native("os_env", os_env);
     vm.register_native("os_exit", os_exit);
-    vm.register_native("os_read_file", os_read_file);
-    vm.register_native("os_write_file", os_write_file);
-    vm.register_native("os_append_file", os_append_file);
     vm.register_native("os_delete_file", os_delete_file);
     vm.register_native("os_exists", os_exists);
     vm.register_native("os_is_file", os_is_file);
@@ -216,34 +215,6 @@ fn get_float(val: &Value, pos: &str) -> Result<f64, String> {
 // ─────────────────────────────────────────────────────────────────────────────
 // Core
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// `print(value...)` — print values separated by spaces, no trailing newline.
-fn core_print(args: &[Value]) -> Result<Value, String> {
-    let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-    print!("{}", parts.join(" "));
-    Ok(Value::Null)
-}
-
-/// `println(value...)` — print values separated by spaces, with trailing newline.
-fn core_println(args: &[Value]) -> Result<Value, String> {
-    let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-    println!("{}", parts.join(" "));
-    Ok(Value::Null)
-}
-
-/// `eprint(value...)` — like `print` but to stderr.
-fn core_eprint(args: &[Value]) -> Result<Value, String> {
-    let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-    eprint!("{}", parts.join(" "));
-    Ok(Value::Null)
-}
-
-/// `eprintln(value...)` — like `println` but to stderr.
-fn core_eprintln(args: &[Value]) -> Result<Value, String> {
-    let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
-    eprintln!("{}", parts.join(" "));
-    Ok(Value::Null)
-}
 
 /// `type_of(value)` — return the type name as a string.
 fn core_type_of(args: &[Value]) -> Result<Value, String> {
@@ -341,27 +312,6 @@ fn core_panic(args: &[Value]) -> Result<Value, String> {
         format!("{}", args[0])
     };
     Err(msg)
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// I/O
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// `read_line()` — read a line from stdin, returning it (without the newline).
-fn io_read_line(args: &[Value]) -> Result<Value, String> {
-    expect_args("read_line", args, 0)?;
-    let mut buf = String::new();
-    std::io::stdin()
-        .read_line(&mut buf)
-        .map_err(|e| format!("read_line: {e}"))?;
-    // Strip trailing newline.
-    if buf.ends_with('\n') {
-        buf.pop();
-        if buf.ends_with('\r') {
-            buf.pop();
-        }
-    }
-    Ok(mk_str(buf))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1253,37 +1203,6 @@ fn os_exit(args: &[Value]) -> Result<Value, String> {
     std::process::exit(code);
 }
 
-fn os_read_file(args: &[Value]) -> Result<Value, String> {
-    expect_args("os_read_file", args, 1)?;
-    let path = get_str(&args[0], "argument 1")?;
-    std::fs::read_to_string(path)
-        .map(mk_str)
-        .map_err(|e| format!("os_read_file: {e}"))
-}
-
-fn os_write_file(args: &[Value]) -> Result<Value, String> {
-    expect_args("os_write_file", args, 2)?;
-    let path = get_str(&args[0], "argument 1")?;
-    let content = get_str(&args[1], "argument 2")?;
-    std::fs::write(path, content).map_err(|e| format!("os_write_file: {e}"))?;
-    Ok(Value::Null)
-}
-
-fn os_append_file(args: &[Value]) -> Result<Value, String> {
-    expect_args("os_append_file", args, 2)?;
-    let path = get_str(&args[0], "argument 1")?;
-    let content = get_str(&args[1], "argument 2")?;
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(path)
-        .map_err(|e| format!("os_append_file: {e}"))?;
-    file.write_all(content.as_bytes())
-        .map_err(|e| format!("os_append_file: {e}"))?;
-    Ok(Value::Null)
-}
-
 fn os_delete_file(args: &[Value]) -> Result<Value, String> {
     expect_args("os_delete_file", args, 1)?;
     let path = get_str(&args[0], "argument 1")?;
@@ -1358,6 +1277,401 @@ fn os_sleep(args: &[Value]) -> Result<Value, String> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// File I/O builtins
+// ─────────────────────────────────────────────────────────────────────────────
+
+use std::collections::HashMap as StdHashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read, Stderr, Stdin, Stdout, Write};
+
+/// File handle types stored in the registry.
+enum FileHandle {
+    /// Standard input (FD 0) - buffered for line reading.
+    Stdin(BufReader<Stdin>),
+    /// Standard output (FD 1).
+    Stdout(Stdout),
+    /// Standard error (FD 2).
+    Stderr(Stderr),
+    /// A file opened for reading.
+    Read(BufReader<File>),
+    /// A file opened for writing.
+    Write(File),
+    /// A file opened for appending.
+    Append(File),
+    /// A file opened for both reading and writing.
+    ReadWrite {
+        reader: BufReader<File>,
+        writer: File,
+    },
+}
+
+thread_local! {
+    static FILE_HANDLES: std::cell::RefCell<StdHashMap<i64, FileHandle>> =
+        std::cell::RefCell::new(StdHashMap::new());
+    static NEXT_FILE_FD: std::cell::Cell<i64> = const { std::cell::Cell::new(3) };
+}
+
+/// Initialize the standard file descriptors (0=stdin, 1=stdout, 2=stderr).
+/// This should be called once at VM startup.
+fn init_stdio() {
+    FILE_HANDLES.with(|m| {
+        let mut map = m.borrow_mut();
+        if map.is_empty() {
+            map.insert(0, FileHandle::Stdin(BufReader::new(std::io::stdin())));
+            map.insert(1, FileHandle::Stdout(std::io::stdout()));
+            map.insert(2, FileHandle::Stderr(std::io::stderr()));
+        }
+    });
+}
+
+fn next_file_fd() -> i64 {
+    NEXT_FILE_FD.with(|c| {
+        let fd = c.get();
+        c.set(fd + 1);
+        fd
+    })
+}
+
+/// `io_open(path: String, mode: String) -> Result`
+///
+/// Open a file at `path` with the given mode:
+/// - "r"  - read
+/// - "w"  - write (truncate)
+/// - "a"  - append
+/// - "rw" - read and write
+///
+/// Returns `.ok(fd)` on success or `.error(msg)` on failure.
+fn io_open(args: &[Value]) -> Result<Value, String> {
+    init_stdio();
+    expect_args("io_open", args, 2)?;
+    let path = get_str(&args[0], "argument 1 (path)")?;
+    let mode = get_str(&args[1], "argument 2 (mode)")?;
+
+    let handle = match mode {
+        "r" => {
+            let file = File::open(path).map_err(|e| format!("io_open: {e}"))?;
+            FileHandle::Read(BufReader::new(file))
+        }
+        "w" => {
+            let file = File::create(path).map_err(|e| format!("io_open: {e}"))?;
+            FileHandle::Write(file)
+        }
+        "a" => {
+            let file = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(path)
+                .map_err(|e| format!("io_open: {e}"))?;
+            FileHandle::Append(file)
+        }
+        "rw" => {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(path)
+                .map_err(|e| format!("io_open: {e}"))?;
+            let writer = file.try_clone().map_err(|e| format!("io_open: {e}"))?;
+            FileHandle::ReadWrite {
+                reader: BufReader::new(file),
+                writer,
+            }
+        }
+        _ => return Ok(mk_error(format!("io_open: invalid mode '{mode}'"))),
+    };
+
+    let fd = next_file_fd();
+    FILE_HANDLES.with(|m| m.borrow_mut().insert(fd, handle));
+    Ok(mk_ok(Value::Int(fd)))
+}
+
+/// `io_close(fd: Int) -> Result`
+///
+/// Close a file descriptor. Returns `.ok(null)` on success or `.error(msg)` on failure.
+fn io_close(args: &[Value]) -> Result<Value, String> {
+    init_stdio();
+    expect_args("io_close", args, 1)?;
+    let fd = get_int(&args[0], "argument 1 (fd)")?;
+
+    let removed = FILE_HANDLES.with(|m| m.borrow_mut().remove(&fd));
+    if removed.is_some() {
+        Ok(mk_ok(Value::Null))
+    } else {
+        Ok(mk_error(format!("io_close: invalid file descriptor {fd}")))
+    }
+}
+
+/// `io_write(fd: Int, data: String) -> Result`
+///
+/// Write `data` to file descriptor `fd`.
+/// Returns `.ok(bytes_written)` on success or `.error(msg)` on failure.
+fn io_write(args: &[Value]) -> Result<Value, String> {
+    init_stdio();
+    expect_args("io_write", args, 2)?;
+    let fd = get_int(&args[0], "argument 1 (fd)")?;
+    let data = get_str(&args[1], "argument 2 (data)")?;
+
+    let result = FILE_HANDLES.with(|m| {
+        let mut map = m.borrow_mut();
+        match map.get_mut(&fd) {
+            Some(FileHandle::Stdout(stdout)) => {
+                let mut stdout = stdout.lock();
+                stdout
+                    .write_all(data.as_bytes())
+                    .map_err(|e| format!("io_write: {e}"))?;
+                Ok(data.len())
+            }
+            Some(FileHandle::Stderr(stderr)) => {
+                let mut stderr = stderr.lock();
+                stderr
+                    .write_all(data.as_bytes())
+                    .map_err(|e| format!("io_write: {e}"))?;
+                Ok(data.len())
+            }
+            Some(FileHandle::Write(file)) => {
+                file.write_all(data.as_bytes())
+                    .map_err(|e| format!("io_write: {e}"))?;
+                Ok(data.len())
+            }
+            Some(FileHandle::Append(file)) => {
+                file.write_all(data.as_bytes())
+                    .map_err(|e| format!("io_write: {e}"))?;
+                Ok(data.len())
+            }
+            Some(FileHandle::ReadWrite { writer, .. }) => {
+                writer
+                    .write_all(data.as_bytes())
+                    .map_err(|e| format!("io_write: {e}"))?;
+                Ok(data.len())
+            }
+            Some(FileHandle::Read(_)) => Err("io_write: file not open for writing".to_string()),
+            Some(FileHandle::Stdin(_)) => Err("io_write: cannot write to stdin".to_string()),
+            None => Err(format!("io_write: invalid file descriptor {fd}")),
+        }
+    });
+
+    match result {
+        Ok(n) => Ok(mk_ok(Value::Int(n as i64))),
+        Err(e) => Ok(mk_error(e)),
+    }
+}
+
+/// `io_read(fd: Int, n: Int) -> Result`
+///
+/// Read up to `n` bytes from file descriptor `fd`.
+/// Returns `.ok(data)` on success or `.error(msg)` on failure.
+fn io_read(args: &[Value]) -> Result<Value, String> {
+    init_stdio();
+    expect_args("io_read", args, 2)?;
+    let fd = get_int(&args[0], "argument 1 (fd)")?;
+    let n = get_int(&args[1], "argument 2 (n)")?;
+    if n < 0 {
+        return Ok(mk_error("io_read: count must be non-negative".to_string()));
+    }
+    let n = n as usize;
+
+    let result = FILE_HANDLES.with(|m| {
+        let mut map = m.borrow_mut();
+        match map.get_mut(&fd) {
+            Some(FileHandle::Stdin(reader)) => {
+                let mut buf = vec![0u8; n];
+                let bytes_read = reader.read(&mut buf).map_err(|e| format!("io_read: {e}"))?;
+                buf.truncate(bytes_read);
+                String::from_utf8(buf).map_err(|e| format!("io_read: invalid UTF-8: {e}"))
+            }
+            Some(FileHandle::Read(reader)) => {
+                let mut buf = vec![0u8; n];
+                let bytes_read = reader.read(&mut buf).map_err(|e| format!("io_read: {e}"))?;
+                buf.truncate(bytes_read);
+                String::from_utf8(buf).map_err(|e| format!("io_read: invalid UTF-8: {e}"))
+            }
+            Some(FileHandle::ReadWrite { reader, .. }) => {
+                let mut buf = vec![0u8; n];
+                let bytes_read = reader.read(&mut buf).map_err(|e| format!("io_read: {e}"))?;
+                buf.truncate(bytes_read);
+                String::from_utf8(buf).map_err(|e| format!("io_read: invalid UTF-8: {e}"))
+            }
+            Some(FileHandle::Write(_)) | Some(FileHandle::Append(_)) => {
+                Err("io_read: file not open for reading".to_string())
+            }
+            Some(FileHandle::Stdout(_)) | Some(FileHandle::Stderr(_)) => {
+                Err("io_read: cannot read from stdout/stderr".to_string())
+            }
+            None => Err(format!("io_read: invalid file descriptor {fd}")),
+        }
+    });
+
+    match result {
+        Ok(s) => Ok(mk_ok(mk_str(s))),
+        Err(e) => Ok(mk_error(e)),
+    }
+}
+
+/// `io_read_line(fd: Int) -> Result`
+///
+/// Read one line from file descriptor `fd`.
+/// Returns `.ok(line)` on success, `.ok(null)` at EOF, or `.error(msg)` on failure.
+fn io_read_line(args: &[Value]) -> Result<Value, String> {
+    init_stdio();
+    expect_args("io_read_line", args, 1)?;
+    let fd = get_int(&args[0], "argument 1 (fd)")?;
+
+    let result = FILE_HANDLES.with(|m| {
+        let mut map = m.borrow_mut();
+        match map.get_mut(&fd) {
+            Some(FileHandle::Stdin(reader)) => {
+                let mut buf = String::new();
+                match reader.read_line(&mut buf) {
+                    Ok(0) => Ok(None), // EOF
+                    Ok(_) => {
+                        // Strip trailing newline.
+                        if buf.ends_with('\n') {
+                            buf.pop();
+                            if buf.ends_with('\r') {
+                                buf.pop();
+                            }
+                        }
+                        Ok(Some(buf))
+                    }
+                    Err(e) => Err(format!("io_read_line: {e}")),
+                }
+            }
+            Some(FileHandle::Read(reader)) => {
+                let mut buf = String::new();
+                match reader.read_line(&mut buf) {
+                    Ok(0) => Ok(None), // EOF
+                    Ok(_) => {
+                        if buf.ends_with('\n') {
+                            buf.pop();
+                            if buf.ends_with('\r') {
+                                buf.pop();
+                            }
+                        }
+                        Ok(Some(buf))
+                    }
+                    Err(e) => Err(format!("io_read_line: {e}")),
+                }
+            }
+            Some(FileHandle::ReadWrite { reader, .. }) => {
+                let mut buf = String::new();
+                match reader.read_line(&mut buf) {
+                    Ok(0) => Ok(None),
+                    Ok(_) => {
+                        if buf.ends_with('\n') {
+                            buf.pop();
+                            if buf.ends_with('\r') {
+                                buf.pop();
+                            }
+                        }
+                        Ok(Some(buf))
+                    }
+                    Err(e) => Err(format!("io_read_line: {e}")),
+                }
+            }
+            Some(FileHandle::Write(_)) | Some(FileHandle::Append(_)) => {
+                Err("io_read_line: file not open for reading".to_string())
+            }
+            Some(FileHandle::Stdout(_)) | Some(FileHandle::Stderr(_)) => {
+                Err("io_read_line: cannot read from stdout/stderr".to_string())
+            }
+            None => Err(format!("io_read_line: invalid file descriptor {fd}")),
+        }
+    });
+
+    match result {
+        Ok(Some(s)) => Ok(mk_ok(mk_str(s))),
+        Ok(None) => Ok(mk_ok(Value::Null)),
+        Err(e) => Ok(mk_error(e)),
+    }
+}
+
+/// `io_read_all(fd: Int) -> Result`
+///
+/// Read all remaining content from file descriptor `fd`.
+/// Returns `.ok(data)` on success or `.error(msg)` on failure.
+fn io_read_all(args: &[Value]) -> Result<Value, String> {
+    init_stdio();
+    expect_args("io_read_all", args, 1)?;
+    let fd = get_int(&args[0], "argument 1 (fd)")?;
+
+    let result = FILE_HANDLES.with(|m| {
+        let mut map = m.borrow_mut();
+        match map.get_mut(&fd) {
+            Some(FileHandle::Stdin(reader)) => {
+                let mut buf = String::new();
+                reader
+                    .read_to_string(&mut buf)
+                    .map_err(|e| format!("io_read_all: {e}"))?;
+                Ok(buf)
+            }
+            Some(FileHandle::Read(reader)) => {
+                let mut buf = String::new();
+                reader
+                    .read_to_string(&mut buf)
+                    .map_err(|e| format!("io_read_all: {e}"))?;
+                Ok(buf)
+            }
+            Some(FileHandle::ReadWrite { reader, .. }) => {
+                let mut buf = String::new();
+                reader
+                    .read_to_string(&mut buf)
+                    .map_err(|e| format!("io_read_all: {e}"))?;
+                Ok(buf)
+            }
+            Some(FileHandle::Write(_)) | Some(FileHandle::Append(_)) => {
+                Err("io_read_all: file not open for reading".to_string())
+            }
+            Some(FileHandle::Stdout(_)) | Some(FileHandle::Stderr(_)) => {
+                Err("io_read_all: cannot read from stdout/stderr".to_string())
+            }
+            None => Err(format!("io_read_all: invalid file descriptor {fd}")),
+        }
+    });
+
+    match result {
+        Ok(s) => Ok(mk_ok(mk_str(s))),
+        Err(e) => Ok(mk_error(e)),
+    }
+}
+
+/// `io_flush(fd: Int) -> Result`
+///
+/// Flush output buffer for file descriptor `fd`.
+/// Returns `.ok(null)` on success or `.error(msg)` on failure.
+fn io_flush(args: &[Value]) -> Result<Value, String> {
+    init_stdio();
+    expect_args("io_flush", args, 1)?;
+    let fd = get_int(&args[0], "argument 1 (fd)")?;
+
+    let result = FILE_HANDLES.with(|m| {
+        let mut map = m.borrow_mut();
+        match map.get_mut(&fd) {
+            Some(FileHandle::Stdout(stdout)) => {
+                stdout.flush().map_err(|e| format!("io_flush: {e}"))
+            }
+            Some(FileHandle::Stderr(stderr)) => {
+                stderr.flush().map_err(|e| format!("io_flush: {e}"))
+            }
+            Some(FileHandle::Write(file)) => file.flush().map_err(|e| format!("io_flush: {e}")),
+            Some(FileHandle::Append(file)) => file.flush().map_err(|e| format!("io_flush: {e}")),
+            Some(FileHandle::ReadWrite { writer, .. }) => {
+                writer.flush().map_err(|e| format!("io_flush: {e}"))
+            }
+            Some(FileHandle::Read(_)) | Some(FileHandle::Stdin(_)) => {
+                Err("io_flush: file not open for writing".to_string())
+            }
+            None => Err(format!("io_flush: invalid file descriptor {fd}")),
+        }
+    });
+
+    match result {
+        Ok(()) => Ok(mk_ok(Value::Null)),
+        Err(e) => Ok(mk_error(e)),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Net
 // ─────────────────────────────────────────────────────────────────────────────
 //
@@ -1369,8 +1683,6 @@ fn os_sleep(args: &[Value]) -> Result<Value, String> {
 // TCP listener registry: handle → TcpListener
 // UDP socket registry:  handle → UdpSocket
 
-use std::collections::HashMap as StdHashMap;
-use std::io::{BufRead, BufReader, Write as IoWrite};
 use std::net::{TcpListener, TcpStream, UdpSocket};
 
 thread_local! {
