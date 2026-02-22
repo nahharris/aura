@@ -182,6 +182,21 @@ impl Compiler {
             .emit_op_u16_u8(op, operand_u16, operand_u8, line);
     }
 
+    /// Emit a raw byte (operand) directly into the current chunk.
+    fn emit_byte_raw(&mut self, byte: u8, line: u32) {
+        self.chunk_mut().emit_byte(byte, line);
+    }
+
+    /// Record a compile error and emit a `Null` placeholder so compilation can continue.
+    fn emit_error(&mut self, message: impl Into<String>, span: Span) {
+        self.errors.push(CompileError {
+            message: message.into(),
+            span,
+        });
+        // Emit a no-op so the bytecode stays consistent.
+        self.emit(OpCode::Nop, span.line);
+    }
+
     fn emit_jump(&mut self, op: OpCode, line: u32) -> usize {
         self.chunk_mut().emit_jump(op, line)
     }
@@ -338,11 +353,7 @@ impl Compiler {
 
         for item in program.items {
             match item {
-                Item::Use(_use_decl) => {
-                    // Module loading is handled by the VM at runtime.
-                    // The compiler just emits a LoadGlobal + DefineGlobal sequence.
-                    // For now, use declarations are no-ops at compile time.
-                }
+                Item::Use(use_decl) => self.compile_use(use_decl),
                 Item::Decl(decl) => self.compile_decl(decl),
             }
         }
@@ -355,17 +366,9 @@ impl Compiler {
             self.emit_u16(OpCode::LoadGlobal, name_idx, line);
             self.emit_u8(OpCode::Call, 0, line);
             self.emit(OpCode::Pop, line);
-        } else {
-            self.errors.push(CompileError {
-                message: "program has no `defn main()` entry point".into(),
-                span: Span {
-                    start: 0,
-                    end: 0,
-                    line: 1,
-                    col: 1,
-                },
-            });
         }
+        // If no `main` is defined this is a library module — top-level code
+        // still runs to register globals, but no entry-point call is emitted.
 
         // Implicit `return null` at the end of the module chunk.
         self.emit(OpCode::Null, line);
@@ -386,19 +389,414 @@ impl Compiler {
         match decl.kind {
             DeclKind::Def(d) => self.compile_def(d),
             DeclKind::Defn(d) => self.compile_defn(d),
-            DeclKind::Deftype(d) => self.compile_deftype(d),
             DeclKind::Defmacro(_) => {
                 // defmacro is parsed but not yet compiled; ignore silently.
             }
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Use / module import
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Emit a `UseModule` instruction for a `use` declaration.
+    ///
+    /// Encoding:
+    ///   Namespace:     UseModule  u16:path_idx  u8:0  u16:local_name_idx
+    ///   Destructure:   UseModule  u16:path_idx  u8:1  u16:count  (u16:exp_idx u16:loc_idx)*
+    fn compile_use(&mut self, use_decl: UseDecl) {
+        let line = use_decl.span.line;
+        let path_idx = self.chunk_mut().add_str(&use_decl.path);
+
+        match use_decl.pattern {
+            Pattern::Bind(local_name, _) => {
+                // Namespace import: `use io = "@stl/io"`
+                let local_name_idx = self.chunk_mut().add_str(&local_name);
+                self.emit_u16(OpCode::UseModule, path_idx, line);
+                self.emit_byte_raw(0u8, line); // kind = 0 (namespace)
+                self.emit_byte_raw((local_name_idx >> 8) as u8, line);
+                self.emit_byte_raw((local_name_idx & 0xff) as u8, line);
+            }
+            Pattern::Struct { fields, .. } => {
+                // Destructuring import: `use (print, read = my_read) = "@stl/io"`
+                // Each field: name = exported name, binding = optional local name.
+                let count = fields.len() as u16;
+                self.emit_u16(OpCode::UseModule, path_idx, line);
+                self.emit_byte_raw(1u8, line); // kind = 1 (destructure)
+                self.emit_byte_raw((count >> 8) as u8, line);
+                self.emit_byte_raw((count & 0xff) as u8, line);
+                for field in fields {
+                    let exported_name = &field.name;
+                    let local_name = field.binding.as_ref().unwrap_or(&field.name);
+                    let exp_idx = self.chunk_mut().add_str(exported_name);
+                    let loc_idx = self.chunk_mut().add_str(local_name);
+                    self.emit_byte_raw((exp_idx >> 8) as u8, line);
+                    self.emit_byte_raw((exp_idx & 0xff) as u8, line);
+                    self.emit_byte_raw((loc_idx >> 8) as u8, line);
+                    self.emit_byte_raw((loc_idx & 0xff) as u8, line);
+                }
+            }
+            other => {
+                self.emit_error(format!("unsupported use pattern: {other:?}"), use_decl.span);
+            }
+        }
+    }
+
     fn compile_def(&mut self, def: DefDecl) {
-        for (name, init) in def.bindings {
-            let span = init.span();
-            self.compile_expr(init);
-            let name_idx = self.chunk_mut().add_str(&name);
-            self.emit_u16(OpCode::DefineGlobal, name_idx, span.line);
+        for binding in def.bindings {
+            match binding {
+                DefBinding::Value { pattern, init, .. } => {
+                    let span = init.span();
+                    self.compile_expr(*init);
+                    self.compile_pattern_binding_global(pattern, span.line);
+                }
+                DefBinding::TypeAlias {
+                    name,
+                    type_params: _,
+                    ty,
+                    span,
+                } => {
+                    // Type aliases generate a constructor function (same as the old deftype).
+                    self.compile_type_alias_ctor(name, ty, span);
+                }
+            }
+        }
+    }
+
+    /// Generate a constructor function for a type alias.
+    ///
+    /// - `def Name = (x: T, y: T, …)` (struct) → `fn Name(x, y, …) { MakeTypedStruct }`
+    /// - `def Name = (T, U, …)` (tuple) → `fn Name(0, 1, …) { MakeTypedStruct }`
+    /// - `def Name = enum(ok: T, err: E)` → one constructor per variant: `Name.ok`, `Name.err`
+    /// - `def Name = union(…)` → passthrough identity constructor `fn Name(v) { v }`
+    /// - `def Name = interface(…)` → `null` (interfaces are structural, no constructor)
+    fn compile_type_alias_ctor(&mut self, name: String, ty: TypeExpr, span: Span) {
+        match ty {
+            TypeExpr::Struct(fields, _) => {
+                // Build a constructor FnProto in a new frame.
+                let arity = fields.len() as u8;
+                self.frames.push(Frame::new(name.clone(), arity));
+
+                // Each field becomes a parameter local at depth 0.
+                let depth = self.frame().scope_depth;
+                for field in &fields {
+                    self.declare_local(field.name.clone(), depth);
+                }
+
+                // Body: push interleaved (name_string, value) pairs then MakeTypedStruct.
+                for (slot, field) in fields.iter().enumerate() {
+                    let name_idx = self.chunk_mut().add_str(&field.name);
+                    self.emit_u16(OpCode::Const, name_idx, span.line);
+                    self.emit_u8(OpCode::LoadLocal, slot as u8, span.line);
+                }
+                let type_name_idx = self.chunk_mut().add_str(&name);
+                let field_count = fields.len() as u16;
+                // emit MakeTypedStruct with two u16 operands
+                self.chunk_mut().emit_op_u16_u16(
+                    OpCode::MakeTypedStruct,
+                    type_name_idx,
+                    field_count,
+                    span.line,
+                );
+                self.emit(OpCode::Return, span.line);
+
+                let finished = self.frames.pop().unwrap();
+                let proto = FnProto {
+                    name: name.clone(),
+                    arity,
+                    chunk: finished.chunk,
+                    upvalues: finished.upvalues,
+                };
+                self.emit_const(Constant::FnProto(Box::new(proto)), span.line);
+                let global_idx = self.chunk_mut().add_str(&name);
+                self.emit_u16(OpCode::DefineGlobal, global_idx, span.line);
+            }
+            TypeExpr::Tuple(elems, _) => {
+                // Positional tuple alias: `def Coord = (Int, Int)`
+                // Constructor: `fn Coord(0, 1, …) → MakeTypedStruct` with field names "0","1",…
+                let arity = elems.len() as u8;
+                self.frames.push(Frame::new(name.clone(), arity));
+
+                let depth = self.frame().scope_depth;
+                for i in 0..arity {
+                    self.declare_local(i.to_string(), depth);
+                }
+
+                for i in 0usize..arity as usize {
+                    let field_name_idx = self.chunk_mut().add_str(i.to_string());
+                    self.emit_u16(OpCode::Const, field_name_idx, span.line);
+                    self.emit_u8(OpCode::LoadLocal, i as u8, span.line);
+                }
+                let type_name_idx = self.chunk_mut().add_str(&name);
+                let field_count = arity as u16;
+                self.chunk_mut().emit_op_u16_u16(
+                    OpCode::MakeTypedStruct,
+                    type_name_idx,
+                    field_count,
+                    span.line,
+                );
+                self.emit(OpCode::Return, span.line);
+
+                let finished = self.frames.pop().unwrap();
+                let proto = FnProto {
+                    name: name.clone(),
+                    arity,
+                    chunk: finished.chunk,
+                    upvalues: finished.upvalues,
+                };
+                self.emit_const(Constant::FnProto(Box::new(proto)), span.line);
+                let global_idx = self.chunk_mut().add_str(&name);
+                self.emit_u16(OpCode::DefineGlobal, global_idx, span.line);
+            }
+            TypeExpr::Enum(variants, _) => {
+                // Emit one constructor per variant: `Name.variant(payload) → tagged struct`
+                // Each variant constructor:
+                //   - unit variant (ty = None): `fn Name.v()  { MakeTypedStruct { __tag__="v" } }`
+                //   - payload variant (ty = Some): `fn Name.v(v) { MakeTypedStruct { __tag__="v", __val__=v } }`
+                for variant in variants {
+                    let ctor_name = format!("{}.{}", name, variant.name);
+                    let has_payload = variant.ty.is_some();
+                    let arity: u8 = if has_payload { 1 } else { 0 };
+
+                    self.frames.push(Frame::new(ctor_name.clone(), arity));
+                    let depth = self.frame().scope_depth;
+
+                    if has_payload {
+                        self.declare_local("__val__".to_string(), depth);
+                    }
+
+                    // Push `("__tag__", "variant_name")` pair.
+                    let tag_key_idx = self.chunk_mut().add_str("__tag__");
+                    self.emit_u16(OpCode::Const, tag_key_idx, span.line);
+                    let tag_val_idx = self.chunk_mut().add_str(&variant.name);
+                    self.emit_u16(OpCode::Const, tag_val_idx, span.line);
+
+                    let mut field_count: u16 = 1; // __tag__ field
+                    if has_payload {
+                        // Push `("__val__", arg0)` pair.
+                        let val_key_idx = self.chunk_mut().add_str("__val__");
+                        self.emit_u16(OpCode::Const, val_key_idx, span.line);
+                        self.emit_u8(OpCode::LoadLocal, 0, span.line);
+                        field_count = 2;
+                    }
+
+                    // type_name is the full variant tag e.g. "Result.ok"
+                    let type_name_idx = self.chunk_mut().add_str(&ctor_name);
+                    self.chunk_mut().emit_op_u16_u16(
+                        OpCode::MakeTypedStruct,
+                        type_name_idx,
+                        field_count,
+                        span.line,
+                    );
+                    self.emit(OpCode::Return, span.line);
+
+                    let finished = self.frames.pop().unwrap();
+                    let proto = FnProto {
+                        name: ctor_name.clone(),
+                        arity,
+                        chunk: finished.chunk,
+                        upvalues: finished.upvalues,
+                    };
+                    self.emit_const(Constant::FnProto(Box::new(proto)), span.line);
+                    let global_idx = self.chunk_mut().add_str(&ctor_name);
+                    self.emit_u16(OpCode::DefineGlobal, global_idx, span.line);
+                }
+                // Also bind the base name to null (no bare `Name(...)` constructor for enums).
+                self.emit(OpCode::Null, span.line);
+                let name_idx = self.chunk_mut().add_str(&name);
+                self.emit_u16(OpCode::DefineGlobal, name_idx, span.line);
+            }
+            TypeExpr::Union(_, _) => {
+                // Union: passthrough identity constructor `fn Name(v) { v }`.
+                // At runtime a union value is just the underlying value itself.
+                self.frames.push(Frame::new(name.clone(), 1));
+                let depth = self.frame().scope_depth;
+                self.declare_local("v".to_string(), depth);
+                self.emit_u8(OpCode::LoadLocal, 0, span.line);
+                self.emit(OpCode::Return, span.line);
+
+                let finished = self.frames.pop().unwrap();
+                let proto = FnProto {
+                    name: name.clone(),
+                    arity: 1,
+                    chunk: finished.chunk,
+                    upvalues: finished.upvalues,
+                };
+                self.emit_const(Constant::FnProto(Box::new(proto)), span.line);
+                let global_idx = self.chunk_mut().add_str(&name);
+                self.emit_u16(OpCode::DefineGlobal, global_idx, span.line);
+            }
+            TypeExpr::Interface(_, _) => {
+                // Interfaces are structural — no runtime constructor.
+                // Bind the name to null so references don't crash with "undefined global".
+                self.emit(OpCode::Null, span.line);
+                let name_idx = self.chunk_mut().add_str(&name);
+                self.emit_u16(OpCode::DefineGlobal, name_idx, span.line);
+            }
+            TypeExpr::Named { .. } => {
+                // Type alias to another named type — no dedicated constructor.
+                self.emit(OpCode::Null, span.line);
+                let name_idx = self.chunk_mut().add_str(&name);
+                self.emit_u16(OpCode::DefineGlobal, name_idx, span.line);
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Pattern binding helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Destructure the value currently on top of the stack into global bindings.
+    ///
+    /// Consumes (pops) the top-of-stack value.
+    fn compile_pattern_binding_global(&mut self, pattern: Pattern, line: u32) {
+        match pattern {
+            Pattern::Bind(name, _) => {
+                let name_idx = self.chunk_mut().add_str(&name);
+                self.emit_u16(OpCode::DefineGlobal, name_idx, line);
+            }
+            Pattern::Wildcard(_) => {
+                // Discard.
+                self.emit(OpCode::Pop, line);
+            }
+            Pattern::Tuple(sub_patterns, span) => {
+                // Value on stack is a tuple/struct with positional fields "0","1",…
+                // Dup so we can access each field without consuming the base.
+                let n = sub_patterns.len();
+                for (i, sub) in sub_patterns.into_iter().enumerate() {
+                    if i < n - 1 {
+                        self.emit(OpCode::Dup, span.line);
+                    }
+                    // GetField "i"
+                    let field_idx = self.chunk_mut().add_str(i.to_string());
+                    self.emit_u16(OpCode::GetField, field_idx, span.line);
+                    self.compile_pattern_binding_global(sub, span.line);
+                }
+            }
+            Pattern::Struct { fields, span } => {
+                let n = fields.len();
+                for (i, field) in fields.into_iter().enumerate() {
+                    if i < n - 1 {
+                        self.emit(OpCode::Dup, span.line);
+                    }
+                    let field_name_idx = self.chunk_mut().add_str(&field.name);
+                    self.emit_u16(OpCode::GetField, field_name_idx, span.line);
+                    let bind_name = field.binding.unwrap_or(field.name);
+                    let name_idx = self.chunk_mut().add_str(&bind_name);
+                    self.emit_u16(OpCode::DefineGlobal, name_idx, span.line);
+                }
+            }
+            Pattern::Variant { name, inner, span } => {
+                // Runtime tag check: GetTag, compare with expected tag, panic on mismatch.
+                self.emit(OpCode::Dup, span.line);
+                self.emit(OpCode::GetTag, span.line);
+                let expected_idx = self.chunk_mut().add_str(&name);
+                self.emit_u16(OpCode::Const, expected_idx, span.line);
+                self.emit(OpCode::CmpEq, span.line);
+                // JumpIfTrue → skip the panic.
+                let ok_jump = self.emit_jump(OpCode::JumpIfTrue, span.line);
+                // Tag mismatch: emit AssertTag with the expected variant name to trigger panic.
+                let tag_idx = self.chunk_mut().add_str(&name);
+                self.emit_u16(OpCode::AssertTag, tag_idx, span.line);
+                self.patch_jump(ok_jump);
+                // Now extract the payload if needed.
+                if let Some(inner_pat) = inner {
+                    // GetField "__val__" to get the payload.
+                    let val_idx = self.chunk_mut().add_str("__val__");
+                    self.emit_u16(OpCode::GetField, val_idx, span.line);
+                    self.compile_pattern_binding_global(*inner_pat, span.line);
+                } else {
+                    self.emit(OpCode::Pop, span.line);
+                }
+            }
+            Pattern::Constructor {
+                type_name: _,
+                inner,
+                span,
+            } => {
+                // Treat as tuple destructuring of a named type.
+                self.compile_pattern_binding_global(*inner, span.line);
+            }
+            _ => {
+                // Literal / TypeCheck / Rest / other — not meaningful as a binding target.
+                self.emit(OpCode::Pop, line);
+            }
+        }
+    }
+
+    /// Destructure the value currently on top of the stack into local bindings.
+    ///
+    /// Consumes (pops) the top-of-stack value.
+    fn compile_pattern_binding_local(&mut self, pattern: Pattern, line: u32) {
+        match pattern {
+            Pattern::Bind(name, _) => {
+                let depth = self.frame().scope_depth;
+                self.declare_local(name, depth);
+                // Value is left on the stack in the new local's slot — no explicit store needed.
+            }
+            Pattern::Wildcard(_) => {
+                self.emit(OpCode::Pop, line);
+            }
+            Pattern::Tuple(sub_patterns, span) => {
+                let n = sub_patterns.len();
+                // We need to extract each field; use a temp local to hold the base value
+                // so we can index into it multiple times.
+                let depth = self.frame().scope_depth;
+                let base_slot = self.declare_local("__destructure_base__".to_string(), depth);
+                for (i, sub) in sub_patterns.into_iter().enumerate() {
+                    self.emit_u8(OpCode::LoadLocal, base_slot, span.line);
+                    let field_idx = self.chunk_mut().add_str(i.to_string());
+                    self.emit_u16(OpCode::GetField, field_idx, span.line);
+                    self.compile_pattern_binding_local(sub, span.line);
+                }
+                // Pop the temp base local — leave it as is (it stays in scope until end_scope).
+                let _ = n; // used above via enumerate
+            }
+            Pattern::Struct { fields, span } => {
+                let depth = self.frame().scope_depth;
+                let base_slot = self.declare_local("__destructure_base__".to_string(), depth);
+                for field in fields {
+                    self.emit_u8(OpCode::LoadLocal, base_slot, span.line);
+                    let field_name_idx = self.chunk_mut().add_str(&field.name);
+                    self.emit_u16(OpCode::GetField, field_name_idx, span.line);
+                    let bind_name = field.binding.unwrap_or(field.name);
+                    let depth2 = self.frame().scope_depth;
+                    self.declare_local(bind_name, depth2);
+                }
+            }
+            Pattern::Variant { name, inner, span } => {
+                // Runtime tag check.
+                let depth = self.frame().scope_depth;
+                let base_slot = self.declare_local("__destructure_base__".to_string(), depth);
+                // Check tag.
+                self.emit_u8(OpCode::LoadLocal, base_slot, span.line);
+                self.emit(OpCode::GetTag, span.line);
+                let expected_idx = self.chunk_mut().add_str(&name);
+                self.emit_u16(OpCode::Const, expected_idx, span.line);
+                self.emit(OpCode::CmpEq, span.line);
+                let ok_jump = self.emit_jump(OpCode::JumpIfTrue, span.line);
+                // Tag mismatch → emit AssertTag opcode to trigger runtime error.
+                let tag_idx = self.chunk_mut().add_str(&name);
+                self.emit_u16(OpCode::AssertTag, tag_idx, span.line);
+                self.patch_jump(ok_jump);
+                // Extract payload.
+                if let Some(inner_pat) = inner {
+                    self.emit_u8(OpCode::LoadLocal, base_slot, span.line);
+                    let val_idx = self.chunk_mut().add_str("__val__");
+                    self.emit_u16(OpCode::GetField, val_idx, span.line);
+                    self.compile_pattern_binding_local(*inner_pat, span.line);
+                }
+            }
+            Pattern::Constructor {
+                type_name: _,
+                inner,
+                span,
+            } => {
+                self.compile_pattern_binding_local(*inner, span.line);
+            }
+            _ => {
+                self.emit(OpCode::Pop, line);
+            }
         }
     }
 
@@ -420,42 +818,6 @@ impl Compiler {
                           // Emit DefineGlobal.
         let name_idx = self.chunk_mut().add_str(&full_name);
         self.emit_u16(OpCode::DefineGlobal, name_idx, span.line);
-    }
-
-    fn compile_deftype(&mut self, dt: DeftypeDecl) {
-        // `deftype Point(x: Int, y: Int)` generates a constructor function named `Point`
-        // that accepts `x` and `y` as named args and returns a struct value.
-        let span = dt.span;
-        let ctor_name = dt.name.clone();
-        let field_names: Vec<String> = dt.fields.iter().map(|f| f.name.clone()).collect();
-        let arity = field_names.len() as u8;
-
-        // Build a FnProto manually.
-        let mut ctor_chunk = Chunk::new();
-        let line = span.line;
-
-        // Each parameter is local slot [0], [1], ...
-        // Push field name constants and local values onto the stack in pairs,
-        // then MakeTypedStruct with the type name.
-        for (i, name) in field_names.iter().enumerate() {
-            let name_idx = ctor_chunk.add_str(name);
-            ctor_chunk.emit_op_u16(OpCode::Const, name_idx, line);
-            ctor_chunk.emit_op_u8(OpCode::LoadLocal, i as u8, line);
-        }
-        let type_name_idx = ctor_chunk.add_str(&ctor_name);
-        ctor_chunk.emit_op_u16_u16(OpCode::MakeTypedStruct, type_name_idx, arity as u16, line);
-        ctor_chunk.emit_op(OpCode::Return, line);
-
-        let proto = FnProto {
-            name: ctor_name.clone(),
-            arity,
-            chunk: ctor_chunk,
-            upvalues: Vec::new(),
-        };
-
-        self.emit_const(Constant::FnProto(Box::new(proto)), line);
-        let name_idx = self.chunk_mut().add_str(&ctor_name);
-        self.emit_u16(OpCode::DefineGlobal, name_idx, line);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -512,10 +874,7 @@ impl Compiler {
         for binding in s.bindings {
             let span = binding.span;
             self.compile_expr(binding.init);
-            let depth = self.frame().scope_depth;
-            self.declare_local(binding.name, depth);
-            // Value is already on the stack in the right slot — no StoreLocal needed.
-            let _ = span;
+            self.compile_pattern_binding_local(binding.pattern, span.line);
         }
     }
 
@@ -523,9 +882,9 @@ impl Compiler {
         // `const` is identical to `let` for the bytecode compiler (no mutation
         // enforcement at this stage; that would be a static analysis pass).
         for binding in s.bindings {
+            let span = binding.span;
             self.compile_expr(binding.init);
-            let depth = self.frame().scope_depth;
-            self.declare_local(binding.name, depth);
+            self.compile_pattern_binding_local(binding.pattern, span.line);
         }
     }
 
@@ -723,9 +1082,13 @@ impl Compiler {
             Expr::PostDecrement { target, span } => {
                 self.compile_postfix_mutate(*target, false, span.line);
             }
-            Expr::Cast { expr, ty: _, .. } => {
-                // Dynamic typing: cast is a no-op at runtime for now.
+            Expr::Cast { expr, ty, span } => {
+                // Compile the inner expression first, then emit a Cast opcode that
+                // performs a runtime tag check against the target type name.
                 self.compile_expr(*expr);
+                let tag = type_expr_to_tag(&ty);
+                let idx = self.chunk_mut().add_constant(Constant::Str(tag));
+                self.emit_u16(OpCode::Cast, idx, span.line);
             }
             Expr::Elvis { left, right, span } => {
                 self.compile_expr(*left);
@@ -822,20 +1185,10 @@ impl Compiler {
                 }
                 StringPart::Interp(tokens) => {
                     // Re-parse the interpolated token stream and compile it.
-                    let (program_like, _errors) = crate::parser::parse_tokens(tokens);
-                    // The interpolation is a single expression; grab the first
-                    // expression statement from the synthetic program if available.
-                    let expr_opt = program_like.items.into_iter().find_map(|item| {
-                        if let Item::Decl(_) = item {
-                            None
-                        } else {
-                            None
-                        }
-                    });
-                    // Fallback: emit null if we can't parse the interpolation.
-                    if let Some(expr) = expr_opt {
+                    if let Some(expr) = crate::parser::parse_expr_from_tokens(tokens) {
                         self.compile_expr(expr);
                     } else {
+                        // Fallback: emit null if we can't parse the interpolation.
                         self.emit(OpCode::Null, line);
                     }
                 }
@@ -1019,9 +1372,38 @@ impl Compiler {
         if let Expr::FieldAccess {
             object,
             field,
-            span: _,
+            span: fa_span,
         } = callee
         {
+            // Special case: `Name.variant(args)` where `Name` is a plain identifier.
+            // Enum variant constructors are stored as globals named "Name.variant".
+            // Emit a direct LoadGlobal + Call instead of CallMethod to avoid
+            // dispatching on the type of `Name` (which would be Null for enum namespaces).
+            //
+            // Only applies to PascalCase identifiers (type/enum namespaces).  Lowercase
+            // identifiers (e.g. module aliases like `io`) must go through GetField + Call
+            // so that `Value::Module` field access works correctly at runtime.
+            if let Expr::Ident(ref name, _) = *object {
+                let is_type_namespace = name.chars().next().is_some_and(|c| c.is_uppercase());
+                if is_type_namespace {
+                    let composite = format!("{}.{}", name, field);
+                    let composite_idx = self.chunk_mut().add_str(&composite);
+                    self.emit_u16(OpCode::LoadGlobal, composite_idx, fa_span.line);
+
+                    let mut arg_count = args.len();
+                    for arg in args {
+                        self.compile_expr(arg.value);
+                    }
+                    for trail in trailing {
+                        arg_count += 1;
+                        let block_expr = Expr::Block(trail.block.block);
+                        self.compile_expr(block_expr);
+                    }
+                    self.emit_u8(OpCode::Call, arg_count as u8, line);
+                    return;
+                }
+            }
+
             // Method call: compile as CallMethod
             // Stack: ... receiver arg0 arg1 ... argN-1
             self.compile_expr(*object);
@@ -1168,24 +1550,23 @@ impl Compiler {
                     Pattern::Tuple(_, _) => {
                         // Tuple patterns not yet implemented; skip.
                     }
+                    Pattern::Struct { .. }
+                    | Pattern::Constructor { .. }
+                    | Pattern::TypeCheck { .. }
+                    | Pattern::Rest { .. } => {
+                        // Complex patterns not yet implemented; skip.
+                    }
                 }
             }
 
-            // Compile guard if present.
-            if let Some(guard) = arm.guard {
-                // Bind args first so guard can reference them.
-                let guard_line = guard.span().line;
-                self.compile_expr(guard);
-                let patch = self.emit_jump(OpCode::JumpIfFalse, guard_line);
-                self.emit(OpCode::Pop, guard_line);
-                fail_patches.push(patch);
-            }
-
-            // Bind pattern variables.
+            // Bind pattern variables first so they are visible to the guard
+            // (and later to the body).  We track how many new locals were
+            // declared here so we can pop them on guard failure.
+            let bound_count_before = self.frame().locals.len();
             for (i, pattern) in arm.patterns.iter().enumerate() {
                 match pattern {
                     Pattern::Bind(name, _span) => {
-                        // LoadLocal arg[i] → stays on stack as the local.
+                        // LoadLocal arg[i] → stays on stack as the named local.
                         self.emit_u8(OpCode::LoadLocal, i as u8, arm_line);
                         let depth = self.frame().scope_depth;
                         self.declare_local(name.clone(), depth);
@@ -1215,6 +1596,17 @@ impl Compiler {
                     _ => {}
                 }
             }
+            let bound_count_after = self.frame().locals.len();
+            let newly_bound = bound_count_after - bound_count_before;
+
+            // Compile guard if present.  Pattern variables are already in scope.
+            if let Some(guard) = arm.guard {
+                let guard_line = guard.span().line;
+                self.compile_expr(guard);
+                let patch = self.emit_jump(OpCode::JumpIfFalse, guard_line);
+                self.emit(OpCode::Pop, guard_line);
+                fail_patches.push(patch);
+            }
 
             // Compile arm body.
             let body_line = arm.body.span().line;
@@ -1223,10 +1615,24 @@ impl Compiler {
             end_patches.push(end_patch);
 
             // Patch all failure jumps to here.
+            // On guard failure we must clean up:
+            //   1. Pop the `false` boolean left by the guard evaluation.
+            //   2. Pop any locals that were bound before the guard, and remove
+            //      them from the locals table so the next arm starts clean.
             for patch in fail_patches {
                 self.patch_jump(patch);
                 self.emit(OpCode::Pop, arm_line); // pop the false boolean
+                                                  // Pop each bound local from the stack and remove it from the
+                                                  // locals table so the next arm does not see stale bindings.
+                for _ in 0..newly_bound {
+                    self.emit(OpCode::Pop, arm_line);
+                    self.frame_mut().locals.pop();
+                }
             }
+            // When no guard (or guard succeeded and we jumped to end_patch),
+            // the bound locals remain in scope for the body. After the body
+            // jumps to the end patches the frame is discarded, so no cleanup
+            // is needed there.
         }
 
         // If no arm matched, return null.
@@ -1371,7 +1777,33 @@ impl Pattern {
             Pattern::Bind(_, s) => *s,
             Pattern::Tuple(_, s) => *s,
             Pattern::Variant { span, .. } => *span,
+            Pattern::Struct { span, .. } => *span,
+            Pattern::Constructor { span, .. } => *span,
+            Pattern::TypeCheck { span, .. } => *span,
+            Pattern::Rest { span, .. } => *span,
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Convert a [`TypeExpr`] to the runtime tag string used by the VM's `Cast`
+/// opcode for the type-check.
+///
+/// For named types the tag is the bare type name (e.g. `"Int"`, `"String"`).
+/// For structural types (tuple, struct, union, enum, interface) we fall back
+/// to the nearest sensible tag; callers should prefer named aliases so the
+/// check can be meaningful.
+fn type_expr_to_tag(ty: &TypeExpr) -> String {
+    match ty {
+        TypeExpr::Named { name, .. } => name.clone(),
+        TypeExpr::Tuple(_, _) => "Tuple".to_string(),
+        TypeExpr::Struct(_, _) => "Struct".to_string(),
+        TypeExpr::Union(_, _) => "Any".to_string(),
+        TypeExpr::Enum(_, _) => "Enum".to_string(),
+        TypeExpr::Interface(_, _) => "Any".to_string(),
     }
 }
 
@@ -1407,20 +1839,222 @@ mod tests {
 
     #[test]
     fn test_compile_integer_literal() {
-        let chunk = compile_src("def x = 42; defn main() {}");
+        let chunk = compile_src("def x = 42;");
         // Should have at least a Const and DefineGlobal.
         assert!(!chunk.code.is_empty());
     }
 
     #[test]
     fn test_compile_arithmetic() {
-        let chunk = compile_src("def y = 1 + 2; defn main() {}");
+        let chunk = compile_src("def y = 1 + 2;");
         assert!(!chunk.code.is_empty());
     }
 
     #[test]
     fn test_compile_defn() {
-        let chunk = compile_src("defn add(a, b) { a + b } defn main() {}");
+        let chunk = compile_src("defn add(a, b) { a + b }");
         assert!(!chunk.code.is_empty());
+    }
+
+    #[test]
+    fn test_compile_main_is_called() {
+        // When main is defined, it should be auto-called (chunk is non-trivial).
+        let chunk = compile_src("defn main() { def x = 1; }");
+        assert!(!chunk.code.is_empty());
+    }
+
+    #[test]
+    fn test_compile_no_main_ok() {
+        // Library modules with no main should compile without error.
+        let chunk = compile_src("def x = 42;");
+        assert!(!chunk.code.is_empty());
+    }
+
+    #[test]
+    fn test_compile_struct_constructor_emits_fn_proto() {
+        // `def Point = (x: Int, y: Int)` should compile a FnProto constructor
+        // named "Point" into the top-level chunk's constant pool, NOT a Null.
+        let chunk = compile_src("def Point = (x: Int, y: Int);");
+        let has_fn_proto = chunk
+            .constants
+            .iter()
+            .any(|c| matches!(c, crate::bytecode::Constant::FnProto(p) if p.name == "Point"));
+        assert!(
+            has_fn_proto,
+            "expected a FnProto named 'Point' in constants; got: {:?}",
+            chunk.constants
+        );
+        // Should NOT emit a top-level Null (the old broken behaviour).
+        let has_null = chunk
+            .constants
+            .iter()
+            .any(|c| matches!(c, crate::bytecode::Constant::Null));
+        assert!(
+            !has_null,
+            "unexpected Null constant in chunk — constructor should emit FnProto"
+        );
+    }
+
+    #[test]
+    fn test_compile_struct_constructor_arity() {
+        // The generated FnProto should have arity == number of fields.
+        let chunk = compile_src("def Vec3 = (x: Float, y: Float, z: Float);");
+        let proto = chunk
+            .constants
+            .iter()
+            .find_map(|c| {
+                if let crate::bytecode::Constant::FnProto(p) = c {
+                    if p.name == "Vec3" {
+                        return Some(p.as_ref());
+                    }
+                }
+                None
+            })
+            .expect("expected FnProto named 'Vec3'");
+        assert_eq!(proto.arity, 3, "Vec3 constructor should have arity 3");
+    }
+
+    #[test]
+    fn test_compile_string_interpolation_not_null() {
+        // `"Hello $(name)!"` inside a function should compile the interpolation
+        // to a real expression load, not a bare Null opcode.
+        // We verify that the function body chunk does NOT consist solely of
+        // Null + StrConcat (the broken behaviour) by checking that the inner
+        // FnProto chunk has no Null constant.
+        let chunk = compile_src(r#"defn greet(name: String) -> String { "Hello $(name)!" }"#);
+        // Find the FnProto for `greet`.
+        let greet_proto = chunk
+            .constants
+            .iter()
+            .find_map(|c| {
+                if let crate::bytecode::Constant::FnProto(p) = c {
+                    if p.name == "greet" {
+                        return Some(p.as_ref());
+                    }
+                }
+                None
+            })
+            .expect("expected FnProto named 'greet'");
+        // The inner chunk must NOT contain a Null constant — that was the bug.
+        let has_null = greet_proto
+            .chunk
+            .constants
+            .iter()
+            .any(|c| matches!(c, crate::bytecode::Constant::Null));
+        assert!(
+            !has_null,
+            "interpolation body should not have a Null constant; got: {:?}",
+            greet_proto.chunk.constants
+        );
+    }
+
+    // ─── Phase 5 new tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_compile_tuple_alias_emits_fn_proto() {
+        // `def Pair = (Int, String)` should emit a FnProto constructor named "Pair".
+        let chunk = compile_src("def Pair = (Int, String);");
+        let has_proto = chunk
+            .constants
+            .iter()
+            .any(|c| matches!(c, crate::bytecode::Constant::FnProto(p) if p.name == "Pair"));
+        assert!(
+            has_proto,
+            "expected FnProto named 'Pair' for tuple alias; got: {:?}",
+            chunk.constants
+        );
+    }
+
+    #[test]
+    fn test_compile_tuple_alias_arity() {
+        // `def Triple = (Int, Int, Int)` constructor should have arity 3.
+        let chunk = compile_src("def Triple = (Int, Int, Int);");
+        let proto = chunk
+            .constants
+            .iter()
+            .find_map(|c| match c {
+                crate::bytecode::Constant::FnProto(p) if p.name == "Triple" => Some(p.clone()),
+                _ => None,
+            })
+            .expect("FnProto 'Triple' not found");
+        assert_eq!(proto.arity, 3, "tuple alias arity should be 3");
+    }
+
+    #[test]
+    fn test_compile_enum_alias_emits_variant_constructors() {
+        // `def Color = enum(red, green, blue)` should emit FnProtos for each variant.
+        let chunk = compile_src("def Color = enum(red, green, blue);");
+        for variant in &["Color.red", "Color.green", "Color.blue"] {
+            let has_proto = chunk
+                .constants
+                .iter()
+                .any(|c| matches!(c, crate::bytecode::Constant::FnProto(p) if p.name == *variant));
+            assert!(
+                has_proto,
+                "expected FnProto for variant '{variant}'; constants: {:?}",
+                chunk.constants
+            );
+        }
+    }
+
+    #[test]
+    fn test_compile_enum_unit_variant_arity_zero() {
+        // Unit variant constructors take no arguments.
+        let chunk = compile_src("def Flag = enum(on, off);");
+        let proto = chunk
+            .constants
+            .iter()
+            .find_map(|c| match c {
+                crate::bytecode::Constant::FnProto(p) if p.name == "Flag.on" => Some(p.clone()),
+                _ => None,
+            })
+            .expect("FnProto 'Flag.on' not found");
+        assert_eq!(proto.arity, 0, "unit variant arity should be 0");
+    }
+
+    #[test]
+    fn test_compile_union_alias_emits_identity_constructor() {
+        // `def Num = union(Int, Float)` should emit a FnProto with arity 1 (identity).
+        let chunk = compile_src("def Num = union(Int, Float);");
+        let proto = chunk
+            .constants
+            .iter()
+            .find_map(|c| match c {
+                crate::bytecode::Constant::FnProto(p) if p.name == "Num" => Some(p.clone()),
+                _ => None,
+            })
+            .expect("FnProto 'Num' not found");
+        assert_eq!(
+            proto.arity, 1,
+            "union alias constructor should have arity 1"
+        );
+    }
+
+    #[test]
+    fn test_compile_interface_alias_emits_no_fn_proto() {
+        // `def Printable = interface(to_str: Func[(), String])` — no constructor FnProto.
+        let chunk = compile_src("def Printable = interface(to_str: Func[(), String]);");
+        let has_proto = chunk
+            .constants
+            .iter()
+            .any(|c| matches!(c, crate::bytecode::Constant::FnProto(p) if p.name == "Printable"));
+        assert!(
+            !has_proto,
+            "interface alias should not emit a FnProto constructor"
+        );
+    }
+
+    #[test]
+    fn test_compile_cast_emits_cast_opcode() {
+        // `def x = 42 : Int;` should emit an OpCode::Cast in the chunk.
+        let chunk = compile_src("def x = 42 : Int;");
+        let has_cast = chunk
+            .code
+            .iter()
+            .any(|&b| b == crate::bytecode::OpCode::Cast as u8);
+        assert!(
+            has_cast,
+            "expected Cast opcode in chunk for cast expression"
+        );
     }
 }

@@ -236,7 +236,7 @@ impl Parser {
             self.cur_kind(),
             TokenKind::Ident(s) if matches!(
                 s.as_str(),
-                "def" | "defn" | "deftype" | "defmacro"
+                "def" | "defn" | "defmacro"
             )
         )
     }
@@ -265,22 +265,37 @@ impl Parser {
         self.expect(TokenKind::Use)?;
 
         let pattern = if self.check(&TokenKind::LParen) {
-            // Destructuring: `use (x, y, z) = "path"`
+            // Destructuring: `use (x, y, z) = "path"` or `use (print = my_print) = "path"`
             self.advance(); // consume `(`
-            let mut names = Vec::new();
+            let mut fields = Vec::new();
             while !self.check(&TokenKind::RParen) && !self.at_eof() {
-                let name = self.expect_ident()?;
-                names.push(name);
+                let field_start = self.cur_span();
+                let first = self.expect_ident()?;
+                // Check for rename syntax: `exported_name = local_alias`
+                let (name, binding) = if self.eat(TokenKind::Eq) {
+                    let alias = self.expect_ident()?;
+                    (first, Some(alias))
+                } else {
+                    (first, None)
+                };
+                let field_span = field_start.merge(self.cur_span());
+                fields.push(StructPatternField {
+                    name,
+                    binding,
+                    span: field_span,
+                });
                 if !self.eat(TokenKind::Comma) {
                     break;
                 }
             }
             self.expect(TokenKind::RParen)?;
-            UsePattern::Destructure(names)
+            let span = self.cur_span();
+            Pattern::Struct { fields, span }
         } else {
             // Namespace: `use name = "path"`
+            let name_span = self.cur_span();
             let name = self.expect_ident()?;
-            UsePattern::Namespace(name)
+            Pattern::Bind(name, name_span)
         };
 
         self.expect(TokenKind::Eq)?;
@@ -332,13 +347,12 @@ impl Parser {
             match name.as_str() {
                 "def" => DeclKind::Def(self.parse_def(start)?),
                 "defn" => DeclKind::Defn(self.parse_defn(start)?),
-                "deftype" => DeclKind::Deftype(self.parse_deftype(start)?),
                 "defmacro" => DeclKind::Defmacro(self.parse_defmacro(start)?),
                 _ => unreachable!(),
             }
         } else {
             return Err(self.error(format!(
-                "expected declaration (`def`, `defn`, `deftype`, `defmacro`), found {}",
+                "expected declaration (`def`, `defn`, `defmacro`), found {}",
                 self.cur_kind()
             )));
         };
@@ -354,14 +368,101 @@ impl Parser {
     /// ```aura
     /// def pi = 3.14159
     /// def a = 1, b = 2
+    /// def[T] Result = enum(ok: T, err: String)
+    /// def Point = (x: Int, y: Int)
     /// ```
     fn parse_def(&mut self, start: Span) -> Result<DefDecl, ParseError> {
         let mut bindings = Vec::new();
         loop {
+            let b_start = self.cur_span();
+
+            // Optional generic type parameters: `[T, U]` — presence implies type alias.
+            let type_params = self.parse_type_params()?;
+
+            // Destructuring global binding: `def (a, b) = expr`
+            // Detected when current token is `(` and (after peeking inside) it does NOT look like
+            // a type alias: i.e. the first element inside is NOT `ident:` (struct alias) and NOT
+            // an uppercase-starting ident (tuple type alias).
+            if type_params.is_empty() && self.check(&TokenKind::LParen) {
+                let saved = self.cursor;
+                self.advance(); // consume `(`
+                let is_named_field = matches!(self.cur_kind(), TokenKind::Ident(_))
+                    && matches!(self.peek_kind(), TokenKind::Colon);
+                let is_positional_tuple = matches!(
+                    self.cur_kind(),
+                    TokenKind::Ident(s) if s.chars().next().map(char::is_uppercase).unwrap_or(false)
+                );
+                self.cursor = saved;
+
+                if !is_named_field && !is_positional_tuple {
+                    // It's a destructuring pattern binding: `def (a, b) = expr`
+                    let pattern = self.parse_pattern()?;
+                    self.expect(TokenKind::Eq)?;
+                    let value = self.parse_expr(0)?;
+                    let b_span = b_start.merge(self.cur_span());
+                    bindings.push(DefBinding::Value {
+                        pattern,
+                        init: Box::new(value),
+                        span: b_span,
+                    });
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
+                    continue;
+                }
+            }
+
             let name = self.expect_ident()?;
             self.expect(TokenKind::Eq)?;
-            let value = self.parse_expr(0)?;
-            bindings.push((name, value));
+
+            // Determine whether the RHS is a type expression or a value expression.
+            // Rules:
+            // 1. If type_params were present → type alias.
+            // 2. If RHS starts with `union`, `enum`, or `interface` ident → type alias.
+            // 3. If RHS is `(` and peek-ahead sees `ident :` → struct type alias.
+            // 4. If RHS is `(` and the first element starts with an uppercase ident → tuple type alias.
+            //    (Heuristic: type names start with uppercase, value idents with lowercase.)
+            // 5. Otherwise → value binding.
+            let is_type_alias = !type_params.is_empty()
+                || matches!(self.cur_kind(), TokenKind::Ident(s) if matches!(s.as_str(), "union" | "enum" | "interface"))
+                || (self.check(&TokenKind::LParen)
+                    && {
+                        // Save cursor, consume `(`, inspect first token.
+                        let saved = self.cursor;
+                        self.advance(); // consume `(`
+                        let is_named_field = matches!(self.cur_kind(), TokenKind::Ident(_))
+                            && matches!(self.peek_kind(), TokenKind::Colon);
+                        // Positional tuple type: first element is an uppercase-starting ident
+                        // (type name convention).
+                        let is_positional_tuple = matches!(
+                            self.cur_kind(),
+                            TokenKind::Ident(s) if s.chars().next().map(char::is_uppercase).unwrap_or(false)
+                        );
+                        self.cursor = saved;
+                        is_named_field || is_positional_tuple
+                    });
+
+            let b_span = b_start.merge(self.cur_span());
+            if is_type_alias {
+                let ty = self.parse_type_expr()?;
+                let b_span2 = b_start.merge(self.cur_span());
+                bindings.push(DefBinding::TypeAlias {
+                    name,
+                    type_params,
+                    ty,
+                    span: b_span2,
+                });
+            } else {
+                let _ = b_span;
+                let value = self.parse_expr(0)?;
+                let b_span2 = b_start.merge(self.cur_span());
+                bindings.push(DefBinding::Value {
+                    pattern: Pattern::Bind(name, b_start),
+                    init: Box::new(value),
+                    span: b_span2,
+                });
+            }
+
             if !self.eat(TokenKind::Comma) {
                 break;
             }
@@ -420,48 +521,6 @@ impl Parser {
             params,
             return_type,
             body,
-            span,
-        })
-    }
-
-    // ── deftype ───────────────────────────────────────────────────────────────
-
-    /// Parse the body of a `deftype` declaration.
-    ///
-    /// ```aura
-    /// deftype Point(x: Int, y: Int)
-    /// deftype Pair[A, B](first: A, second: B)
-    /// ```
-    fn parse_deftype(&mut self, start: Span) -> Result<DeftypeDecl, ParseError> {
-        let name = self.expect_ident()?;
-        let type_params = self.parse_type_params()?;
-
-        // Field list enclosed in `( )`.
-        self.expect(TokenKind::LParen)?;
-        let mut fields = Vec::new();
-        while !self.check(&TokenKind::RParen) && !self.at_eof() {
-            let field_start = self.cur_span();
-            let field_name = self.expect_ident()?;
-            self.expect(TokenKind::Colon)?;
-            let ty = self.parse_type_expr()?;
-            let field_span = field_start.merge(self.cur_span());
-            fields.push(TypedField {
-                name: field_name,
-                ty,
-                span: field_span,
-            });
-            if !self.eat(TokenKind::Comma) {
-                break;
-            }
-        }
-        self.expect(TokenKind::RParen)?;
-        self.eat_terminators();
-
-        let span = start.merge(self.cur_span());
-        Ok(DeftypeDecl {
-            name,
-            type_params,
-            fields,
             span,
         })
     }
@@ -579,6 +638,76 @@ impl Parser {
             return self.parse_tuple_or_struct_type(start);
         }
 
+        // Handle `union(T, U, ...)`, `enum(name: T, ...)`, `interface(name: T, ...)`.
+        if let TokenKind::Ident(kw) = self.cur_kind().clone() {
+            match kw.as_str() {
+                "union" => {
+                    self.advance();
+                    self.expect(TokenKind::LParen)?;
+                    let mut variants = Vec::new();
+                    while !self.check(&TokenKind::RParen) && !self.at_eof() {
+                        variants.push(self.parse_type_expr()?);
+                        if !self.eat(TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(TokenKind::RParen)?;
+                    let span = start.merge(self.cur_span());
+                    return Ok(TypeExpr::Union(variants, span));
+                }
+                "enum" => {
+                    self.advance();
+                    self.expect(TokenKind::LParen)?;
+                    let mut variants = Vec::new();
+                    while !self.check(&TokenKind::RParen) && !self.at_eof() {
+                        let v_start = self.cur_span();
+                        let name = self.expect_ident()?;
+                        let ty = if self.eat(TokenKind::Colon) {
+                            Some(self.parse_type_expr()?)
+                        } else {
+                            None
+                        };
+                        let v_span = v_start.merge(self.cur_span());
+                        variants.push(EnumVariant {
+                            name,
+                            ty,
+                            span: v_span,
+                        });
+                        if !self.eat(TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(TokenKind::RParen)?;
+                    let span = start.merge(self.cur_span());
+                    return Ok(TypeExpr::Enum(variants, span));
+                }
+                "interface" => {
+                    self.advance();
+                    self.expect(TokenKind::LParen)?;
+                    let mut fields = Vec::new();
+                    while !self.check(&TokenKind::RParen) && !self.at_eof() {
+                        let f_start = self.cur_span();
+                        let field_name = self.expect_ident()?;
+                        self.expect(TokenKind::Colon)?;
+                        let ty = self.parse_type_expr()?;
+                        let f_span = f_start.merge(self.cur_span());
+                        fields.push(TypedField {
+                            name: field_name,
+                            ty,
+                            span: f_span,
+                        });
+                        if !self.eat(TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(TokenKind::RParen)?;
+                    let span = start.merge(self.cur_span());
+                    return Ok(TypeExpr::Interface(fields, span));
+                }
+                _ => {}
+            }
+        }
+
         let name = self.expect_ident()?;
         let args = if self.check(&TokenKind::LBracket) {
             self.advance(); // consume `[`
@@ -685,19 +814,22 @@ impl Parser {
         let mut bindings = Vec::new();
         loop {
             let b_start = self.cur_span();
-            let name = self.expect_ident()?;
-            let ty = if self.eat(TokenKind::Colon) {
-                // Only treat as type annotation if it's followed by a PascalCase/type identifier
-                // (not a cast in `let x: Int = ...` form).
-                Some(self.parse_type_expr()?)
-            } else {
-                None
+            let raw_pattern = self.parse_pattern()?;
+
+            // `parse_pattern` eagerly consumes `name: Type` as a `Pattern::TypeCheck`.
+            // For let/const bindings the `: Type` is the type *annotation* on the
+            // binding itself, not a runtime type-check pattern.  Lift it out here so
+            // `LocalBinding.ty` is populated and the pattern reduces to a simple bind.
+            let (pattern, ty) = match raw_pattern {
+                Pattern::TypeCheck { name, ty, span } => (Pattern::Bind(name, span), Some(ty)),
+                other => (other, None),
             };
+
             self.expect(TokenKind::Eq)?;
             let init = self.parse_expr(0)?;
             let b_span = b_start.merge(self.cur_span());
             bindings.push(LocalBinding {
-                name,
+                pattern,
                 ty,
                 init,
                 span: b_span,
@@ -1014,10 +1146,17 @@ impl Parser {
                     };
                 }
 
-                // ── Postfix: field access `.name` ─────────────────────────────
+                // ── Postfix: field access `.name` or `.0` ─────────────────────
                 TokenKind::Dot => {
                     self.advance();
-                    let field = self.expect_ident()?;
+                    // Allow numeric field access: `tuple.0`, `tuple.1`, …
+                    let field = if let TokenKind::Int(n) = self.cur_kind().clone() {
+                        let s = n.to_string();
+                        self.advance();
+                        s
+                    } else {
+                        self.expect_ident()?
+                    };
                     // If followed by `(`, this is a method call.
                     if self.check(&TokenKind::LParen) {
                         let (args, trailing) = self.parse_call_args()?;
@@ -1462,7 +1601,7 @@ impl Parser {
         })
     }
 
-    /// Parse a single pattern (literal, identifier, wildcard, tuple, or variant).
+    /// Parse a single pattern (literal, identifier, wildcard, tuple, struct, constructor, or variant).
     fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
         let start = self.cur_span();
         match self.cur_kind().clone() {
@@ -1470,8 +1609,47 @@ impl Parser {
                 self.advance();
                 Ok(Pattern::Wildcard(start))
             }
+            TokenKind::DotDot => {
+                // Rest pattern: `..name` or `..`
+                self.advance();
+                let rest_name = if let TokenKind::Ident(n) = self.cur_kind().clone() {
+                    if n != "_" {
+                        self.advance();
+                        Some(n)
+                    } else {
+                        self.advance();
+                        None
+                    }
+                } else {
+                    None
+                };
+                let span = start.merge(self.cur_span());
+                Ok(Pattern::Rest {
+                    name: rest_name,
+                    span,
+                })
+            }
             TokenKind::Ident(name) => {
                 self.advance();
+                // Check for type-check pattern: `name: Type`
+                if self.eat(TokenKind::Colon) {
+                    let ty = self.parse_type_expr()?;
+                    let span = start.merge(self.cur_span());
+                    return Ok(Pattern::TypeCheck { name, ty, span });
+                }
+                // Check for constructor pattern: `TypeName(inner)` — PascalCase ident + `(`
+                let is_pascal = name.chars().next().is_some_and(|c| c.is_uppercase());
+                if is_pascal && self.check(&TokenKind::LParen) {
+                    self.advance(); // consume `(`
+                    let inner = self.parse_pattern()?;
+                    self.expect(TokenKind::RParen)?;
+                    let span = start.merge(self.cur_span());
+                    return Ok(Pattern::Constructor {
+                        type_name: name,
+                        inner: Box::new(inner),
+                        span,
+                    });
+                }
                 Ok(Pattern::Bind(name, start))
             }
             TokenKind::Int(n) => {
@@ -1500,16 +1678,46 @@ impl Parser {
             }
             TokenKind::LParen => {
                 self.advance();
-                let mut pats = Vec::new();
-                while !self.check(&TokenKind::RParen) && !self.at_eof() {
-                    pats.push(self.parse_pattern()?);
-                    if !self.eat(TokenKind::Comma) {
-                        break;
+                // Peek: if first element is `ident =` → struct pattern;
+                // otherwise → tuple pattern.
+                let is_struct = matches!(self.cur_kind(), TokenKind::Ident(_))
+                    && matches!(self.peek_kind(), TokenKind::Eq);
+                if is_struct {
+                    let mut fields = Vec::new();
+                    while !self.check(&TokenKind::RParen) && !self.at_eof() {
+                        let f_start = self.cur_span();
+                        // Supports both `field` and `field = alias`
+                        let field_name = self.expect_ident()?;
+                        let binding = if self.eat(TokenKind::Eq) {
+                            Some(self.expect_ident()?)
+                        } else {
+                            None
+                        };
+                        let f_span = f_start.merge(self.cur_span());
+                        fields.push(StructPatternField {
+                            name: field_name,
+                            binding,
+                            span: f_span,
+                        });
+                        if !self.eat(TokenKind::Comma) {
+                            break;
+                        }
                     }
+                    self.expect(TokenKind::RParen)?;
+                    let span = start.merge(self.cur_span());
+                    Ok(Pattern::Struct { fields, span })
+                } else {
+                    let mut pats = Vec::new();
+                    while !self.check(&TokenKind::RParen) && !self.at_eof() {
+                        pats.push(self.parse_pattern()?);
+                        if !self.eat(TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(TokenKind::RParen)?;
+                    let span = start.merge(self.cur_span());
+                    Ok(Pattern::Tuple(pats, span))
                 }
-                self.expect(TokenKind::RParen)?;
-                let span = start.merge(self.cur_span());
-                Ok(Pattern::Tuple(pats, span))
             }
             TokenKind::DotIdent(name) => {
                 self.advance();
@@ -2054,6 +2262,51 @@ pub fn parse_tokens(tokens: Vec<crate::token::Token>) -> (Program, Vec<ParseErro
     parser.parse_program()
 }
 
+/// Parse a single expression from a pre-lexed token stream.
+///
+/// Used by the compiler's string-interpolation handler to extract the expression
+/// inside `$(…)`.  The tokens are wrapped in a synthetic
+/// `defn __interp__() { <tokens> }` token stream (no source text involved) so
+/// the parser can resolve them as a tail expression or expression statement.
+/// Returns `None` if the tokens do not produce a parseable expression (e.g. empty
+/// interpolation or parse errors).
+pub fn parse_expr_from_tokens(tokens: Vec<crate::token::Token>) -> Option<Expr> {
+    use crate::token::{Span, Token, TokenKind};
+
+    let dummy = Span::dummy();
+
+    // Build a wrapper token stream: `defn __interp__() { <tokens> }` + Eof.
+    // `defn` and `__interp__` are plain identifiers (not keywords in Aura).
+    let mut wrapped: Vec<Token> = vec![
+        Token::new(TokenKind::Ident("defn".into()), dummy),
+        Token::new(TokenKind::Ident("__interp__".into()), dummy),
+        Token::new(TokenKind::LParen, dummy),
+        Token::new(TokenKind::RParen, dummy),
+        Token::new(TokenKind::LBrace, dummy),
+    ];
+    // Strip any trailing Eof tokens produced by the nested lexer call in
+    // `scan_string` — inserting them before our synthetic `}` would cause the
+    // parser to terminate early and return `None`, triggering a null fallback.
+    wrapped.extend(tokens.into_iter().filter(|t| t.kind != TokenKind::Eof));
+    wrapped.push(Token::new(TokenKind::RBrace, dummy));
+    wrapped.push(Token::new(TokenKind::Eof, dummy));
+
+    let (prog, _errors) = parse_tokens(wrapped);
+
+    // Extract the tail expression or last expression statement from the body.
+    if let Some(Item::Decl(d)) = prog.items.into_iter().next() {
+        if let DeclKind::Defn(f) = d.kind {
+            if let Some(tail) = f.body.tail {
+                return Some(*tail);
+            }
+            if let Some(Stmt::Expr(es)) = f.body.stmts.into_iter().last() {
+                return Some(es.expr);
+            }
+        }
+    }
+    None
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2180,7 +2433,8 @@ mod tests {
         let prog = parse_ok(r#"use (println, print) = "@stl/io";"#);
         if let Item::Use(u) = &prog.items[0] {
             assert_eq!(u.path, "@stl/io");
-            assert!(matches!(u.pattern, UsePattern::Destructure(_)));
+            // Pattern should be a struct pattern with two fields (println, print)
+            assert!(matches!(u.pattern, Pattern::Struct { .. }));
         } else {
             panic!("expected use decl");
         }
@@ -2294,12 +2548,15 @@ mod tests {
 
     #[test]
     fn test_parse_deftype() {
-        let prog = parse_ok("deftype Point(x: Int, y: Int)");
+        // `deftype` is removed; `def Name = (fields...)` is the replacement.
+        let prog = parse_ok("def Point = (x: Int, y: Int)");
         if let Item::Decl(d) = &prog.items[0] {
-            if let DeclKind::Deftype(t) = &d.kind {
-                assert_eq!(t.name, "Point");
-                assert_eq!(t.fields.len(), 2);
-                return;
+            if let DeclKind::Def(def) = &d.kind {
+                assert_eq!(def.bindings.len(), 1);
+                if let DefBinding::TypeAlias { name, .. } = &def.bindings[0] {
+                    assert_eq!(name, "Point");
+                    return;
+                }
             }
         }
         panic!("unexpected parse result");
@@ -2329,5 +2586,42 @@ mod tests {
             }
         }
         panic!("unexpected parse result");
+    }
+
+    #[test]
+    fn test_parse_expr_from_tokens_ident() {
+        // A single identifier token should parse as Expr::Ident.
+        use crate::token::{Span, Token, TokenKind};
+        let dummy = Span::dummy();
+        let tokens = vec![Token::new(TokenKind::Ident("name".into()), dummy)];
+        let expr = parse_expr_from_tokens(tokens).expect("expected Some(Expr)");
+        assert!(
+            matches!(&expr, Expr::Ident(i, _) if i == "name"),
+            "expected Expr::Ident(\"name\"), got: {expr:?}"
+        );
+    }
+
+    #[test]
+    fn test_parse_expr_from_tokens_arithmetic() {
+        // A simple `1 + 2` expression should parse as BinaryOp.
+        use crate::token::{Span, Token, TokenKind};
+        let dummy = Span::dummy();
+        let tokens = vec![
+            Token::new(TokenKind::Int(1), dummy),
+            Token::new(TokenKind::Plus, dummy),
+            Token::new(TokenKind::Int(2), dummy),
+        ];
+        let expr = parse_expr_from_tokens(tokens).expect("expected Some(Expr)");
+        assert!(
+            matches!(expr, Expr::Binary { .. }),
+            "expected Expr::Binary, got: {expr:?}"
+        );
+    }
+
+    #[test]
+    fn test_parse_expr_from_tokens_empty_returns_none() {
+        // Empty token list should return None (no expression to parse).
+        let expr = parse_expr_from_tokens(vec![]);
+        assert!(expr.is_none(), "expected None for empty token list");
     }
 }

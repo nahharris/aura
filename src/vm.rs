@@ -22,7 +22,7 @@ use std::collections::HashMap;
 
 use crate::bytecode::{Chunk, Constant, FnProto, OpCode};
 use crate::gc::GcHeap;
-use crate::value::{NativeFn, ObjClosure, Upvalue, Value};
+use crate::value::{NativeFn, ObjClosure, ObjModule, Upvalue, Value};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Runtime error
@@ -176,6 +176,91 @@ impl<'heap> Vm<'heap> {
             stack_base: 0,
         });
         self.dispatch()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Module loading helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Resolve a module path string to Aura source code.
+    ///
+    /// Handles:
+    /// - `@stl/<name>` — built-in STL modules (embedded at compile time).
+    /// - Other paths produce a runtime error (filesystem loading is a future feature).
+    fn resolve_module_source(&self, path: &str) -> VmResult<String> {
+        match path {
+            "@stl/io" => Ok(include_str!("../stl/io.aura").to_string()),
+            "@stl/string" => Ok(include_str!("../stl/string.aura").to_string()),
+            "@stl/list" => Ok(include_str!("../stl/list.aura").to_string()),
+            other => Err(RuntimeError {
+                message: format!("unknown module path: `{other}`"),
+                stack_trace: Vec::new(),
+            }),
+        }
+    }
+
+    /// Compile and run a module source in isolation, returning its exports.
+    ///
+    /// The sub-VM starts with only the built-in native functions (registered by
+    /// `Vm::new` via `register_all`).  It does NOT inherit any user-defined or
+    /// STL-preloaded globals from the caller VM — this ensures the exports map
+    /// contains exactly the names the module itself defines.
+    fn run_module_isolated(
+        &mut self,
+        source: &str,
+        name: &str,
+    ) -> VmResult<std::collections::HashMap<String, Value>> {
+        use crate::bytecode::Chunk;
+        use crate::lexer::lex;
+        use crate::parser::parse_tokens;
+
+        // Lex + parse
+        let (tokens, lex_errs) = lex(source);
+        if !lex_errs.is_empty() {
+            return Err(RuntimeError {
+                message: format!("module `{name}`: lex error: {:?}", lex_errs),
+                stack_trace: Vec::new(),
+            });
+        }
+        let (program, parse_errs) = parse_tokens(tokens);
+        if !parse_errs.is_empty() {
+            return Err(RuntimeError {
+                message: format!("module `{name}`: parse error: {:?}", parse_errs),
+                stack_trace: Vec::new(),
+            });
+        }
+
+        // Compile
+        let chunk: Chunk = crate::compiler::compile(program).map_err(|errs| RuntimeError {
+            message: format!("module `{name}`: compile error: {:?}", errs),
+            stack_trace: Vec::new(),
+        })?;
+
+        // Run in a temporary sub-VM that shares the same heap.
+        // SAFETY: The sub-VM does not collect the heap (no GC trigger during module load)
+        // and the sub-VM is dropped before we return, so the double-borrow is safe.
+        let heap_ptr: *mut crate::gc::GcHeap = self.heap;
+        let heap_ref: &'heap mut crate::gc::GcHeap = unsafe { &mut *heap_ptr };
+
+        // The sub-VM starts fresh: `Vm::new` registers all native builtins.
+        // We do NOT copy self.globals — that would include preloaded STL globals
+        // and would make all exports appear as "already existed".
+        let mut sub_vm = Vm::new(heap_ref, name);
+
+        // Snapshot the native-only globals so we can filter them from exports.
+        let native_keys: std::collections::HashSet<String> =
+            sub_vm.globals.keys().cloned().collect();
+
+        sub_vm.run_module(chunk, name)?;
+
+        // Exports = everything the module defined beyond the native baseline.
+        let exports: std::collections::HashMap<String, Value> = sub_vm
+            .globals
+            .into_iter()
+            .filter(|(k, _)| !native_keys.contains(k))
+            .collect();
+
+        Ok(exports)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -531,9 +616,23 @@ impl<'heap> Vm<'heap> {
                         let count = frame.read_byte() as usize;
                         (idx, count)
                     };
-                    let method_name = self.constant_as_str(method_name_idx)?;
+                    let method_name = self.constant_as_str(method_name_idx)?.to_string();
                     let receiver_idx = self.stack.len() - 1 - arg_count;
                     let receiver = self.stack[receiver_idx].clone();
+
+                    // Module field access: `mod.fn(args)` — look up the function
+                    // directly in the module's exports map, then call it without
+                    // passing the module as a receiver.
+                    if let Value::Module(m) = &receiver {
+                        let m = unsafe { m.as_ref() };
+                        let callee = m.exports.get(&method_name).cloned().unwrap_or(Value::Null);
+                        // Replace the receiver slot with the callee.
+                        self.stack[receiver_idx] = callee;
+                        // Call without the receiver — arg_count args only.
+                        self.call_value(arg_count)?;
+                        continue;
+                    }
+
                     // For structs, use the internal type_name field for method dispatch.
                     // This allows deftype File(fd) instances to resolve File.method().
                     let type_name = match &receiver {
@@ -783,11 +882,75 @@ impl<'heap> Vm<'heap> {
                 OpCode::GetTag => {
                     let v = self.pop();
                     let tag = match &v {
+                        Value::Int(_) => "Int".to_string(),
+                        Value::Float(_) => "Float".to_string(),
+                        Value::Bool(_) => "Bool".to_string(),
+                        Value::Null => "Null".to_string(),
+                        Value::Str(_) => "String".to_string(),
+                        Value::List(_) => "List".to_string(),
+                        Value::Dict(_) => "Dict".to_string(),
+                        Value::Tuple(_) => "Tuple".to_string(),
+                        Value::Closure(_) => "Fn".to_string(),
+                        Value::Native(_) => "Fn".to_string(),
+                        Value::Module(_) => "Module".to_string(),
                         Value::Struct(s) => unsafe { s.as_ref() }.type_name.clone(),
-                        _ => String::new(),
                     };
                     let tag_val = Value::new_str(self.heap, tag);
                     self.push(tag_val);
+                }
+                OpCode::AssertTag => {
+                    let idx = {
+                        let frame = self.frames.last_mut().unwrap();
+                        frame.read_u16() as usize
+                    };
+                    let expected_tag = self.constant_as_str(idx)?;
+                    // Peek (don't pop) the value on top of the stack.
+                    let v = self.stack.last().cloned().unwrap_or(Value::Null);
+                    let actual_tag: String = match &v {
+                        Value::Int(_) => "Int".to_string(),
+                        Value::Float(_) => "Float".to_string(),
+                        Value::Bool(_) => "Bool".to_string(),
+                        Value::Null => "Null".to_string(),
+                        Value::Str(_) => "String".to_string(),
+                        Value::List(_) => "List".to_string(),
+                        Value::Dict(_) => "Dict".to_string(),
+                        Value::Tuple(_) => "Tuple".to_string(),
+                        Value::Closure(_) | Value::Native(_) => "Fn".to_string(),
+                        Value::Module(_) => "Module".to_string(),
+                        Value::Struct(s) => unsafe { s.as_ref() }.type_name.clone(),
+                    };
+                    if actual_tag != expected_tag {
+                        return self.runtime_error(format!(
+                            "pattern mismatch: expected `{expected_tag}`, got `{actual_tag}`"
+                        ));
+                    }
+                }
+                OpCode::Cast => {
+                    let idx = {
+                        let frame = self.frames.last_mut().unwrap();
+                        frame.read_u16() as usize
+                    };
+                    let target_type = self.constant_as_str(idx)?;
+                    let v = self.pop();
+                    let actual_tag: String = match &v {
+                        Value::Int(_) => "Int".to_string(),
+                        Value::Float(_) => "Float".to_string(),
+                        Value::Bool(_) => "Bool".to_string(),
+                        Value::Null => "Null".to_string(),
+                        Value::Str(_) => "String".to_string(),
+                        Value::List(_) => "List".to_string(),
+                        Value::Dict(_) => "Dict".to_string(),
+                        Value::Tuple(_) => "Tuple".to_string(),
+                        Value::Closure(_) | Value::Native(_) => "Fn".to_string(),
+                        Value::Module(_) => "Module".to_string(),
+                        Value::Struct(s) => unsafe { s.as_ref() }.type_name.clone(),
+                    };
+                    if actual_tag != target_type {
+                        return self.runtime_error(format!(
+                            "cast failed: cannot cast `{actual_tag}` to `{target_type}`"
+                        ));
+                    }
+                    self.push(v);
                 }
                 OpCode::PostInc => {
                     let (slot, base) = {
@@ -816,6 +979,64 @@ impl<'heap> Vm<'heap> {
                     };
                     self.stack[base + slot] = new_val;
                     self.push(old);
+                }
+                OpCode::UseModule => {
+                    // Read path + kind from the instruction stream.
+                    let (path_idx, kind) = {
+                        let frame = self.frames.last_mut().unwrap();
+                        let p = frame.read_u16() as usize;
+                        let k = frame.read_byte();
+                        (p, k)
+                    };
+                    let path = self.constant_as_str(path_idx)?.to_string();
+
+                    // Resolve the module source using the registered loader.
+                    let module_src = self.resolve_module_source(&path)?;
+
+                    // Compile + run the module in an isolated VM that shares our
+                    // heap and builtins, collecting its globals as module exports.
+                    let exports = self.run_module_isolated(&module_src, &path)?;
+
+                    // Spill ALL exports into the caller's globals so that any
+                    // internal dependencies (e.g. `_io_write` used by `println`)
+                    // are resolvable when exported closures are later called.
+                    // Names are inserted with a "do not overwrite" policy — the
+                    // caller's own bindings take priority.
+                    for (k, v) in &exports {
+                        self.globals.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+
+                    if kind == 0 {
+                        // Namespace import: `use io = "@stl/io"` — bind as ObjModule.
+                        let local_name_idx = {
+                            let frame = self.frames.last_mut().unwrap();
+                            frame.read_u16() as usize
+                        };
+                        let local_name = self.constant_as_str(local_name_idx)?.to_string();
+                        let mod_val = Value::Module(self.heap.alloc(ObjModule {
+                            name: path.clone(),
+                            exports,
+                        }));
+                        self.globals.insert(local_name, mod_val);
+                    } else {
+                        // Destructuring import: read count, then (exported_name, local_name) pairs.
+                        let count = {
+                            let frame = self.frames.last_mut().unwrap();
+                            frame.read_u16() as usize
+                        };
+                        for _ in 0..count {
+                            let (exp_idx, loc_idx) = {
+                                let frame = self.frames.last_mut().unwrap();
+                                let e = frame.read_u16() as usize;
+                                let l = frame.read_u16() as usize;
+                                (e, l)
+                            };
+                            let exp_name = self.constant_as_str(exp_idx)?.to_string();
+                            let loc_name = self.constant_as_str(loc_idx)?.to_string();
+                            let val = exports.get(&exp_name).cloned().unwrap_or(Value::Null);
+                            self.globals.insert(loc_name, val);
+                        }
+                    }
                 }
                 OpCode::Nop => {}
             }
@@ -1150,5 +1371,307 @@ impl<'heap> Vm<'heap> {
             message: msg.into(),
             stack_trace,
         })
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bytecode::Chunk;
+    use crate::compiler::compile;
+    use crate::gc::GcHeap;
+    use crate::lexer::lex;
+    use crate::parser::parse_tokens;
+
+    /// Compile source (no type-checking) and run it in a fresh VM.
+    /// Returns the VM so callers can inspect globals.
+    fn run_src(src: &str) -> Result<Vm<'static>, RuntimeError> {
+        // SAFETY: We leak the heap so the VM can hold a `&'static mut GcHeap`.
+        // This is only acceptable inside tests where the leak is intentional.
+        let heap: &'static mut GcHeap = Box::leak(Box::new(GcHeap::new()));
+        let (tokens, lex_errs) = lex(src);
+        assert!(lex_errs.is_empty(), "lex errors: {lex_errs:?}");
+        let (program, parse_errs) = parse_tokens(tokens);
+        assert!(parse_errs.is_empty(), "parse errors: {parse_errs:?}");
+        let chunk: Chunk = compile(program).expect("compile error");
+        let mut vm = Vm::new(heap, "<test>");
+        vm.run(chunk)?;
+        Ok(vm)
+    }
+
+    /// Run `src` and expect a RuntimeError whose message contains `substring`.
+    fn expect_runtime_error(src: &str, substring: &str) {
+        match run_src(src) {
+            Err(err) => assert!(
+                err.message.contains(substring),
+                "expected error containing '{substring}', got: {}",
+                err.message
+            ),
+            Ok(_) => panic!("expected a RuntimeError containing '{substring}', but run succeeded"),
+        }
+    }
+
+    // ── GetTag completeness ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_gettag_int() {
+        // tag() is a builtin — test indirectly: if GetTag returns "Int" for
+        // integers, `42 : Int` must succeed.
+        run_src("def x = 42 : Int;").expect("cast Int should succeed");
+    }
+
+    #[test]
+    fn test_gettag_float() {
+        run_src("def x = 3.14 : Float;").expect("cast Float should succeed");
+    }
+
+    #[test]
+    fn test_gettag_bool() {
+        run_src("def x = true : Bool;").expect("cast Bool should succeed");
+    }
+
+    #[test]
+    fn test_gettag_string() {
+        run_src("def x = \"hello\" : String;").expect("cast String should succeed");
+    }
+
+    #[test]
+    fn test_gettag_null() {
+        run_src("def x = null : Null;").expect("cast Null should succeed");
+    }
+
+    // ── Cast success / failure ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_cast_success_leaves_value_on_stack() {
+        // After a successful cast the value must be accessible.
+        let vm = run_src("def x = 7 : Int;").unwrap();
+        let val = vm.globals.get("x").cloned().unwrap_or(Value::Null);
+        assert_eq!(val, Value::Int(7), "cast Int should preserve the value");
+    }
+
+    #[test]
+    fn test_cast_failure_is_runtime_error() {
+        // Casting a Bool to Int must produce a runtime error.
+        expect_runtime_error("def x = true : Int;", "cast failed");
+    }
+
+    #[test]
+    fn test_cast_failure_string_to_int() {
+        expect_runtime_error("def x = \"hello\" : Int;", "cast failed");
+    }
+
+    // ── Tuple alias constructor ────────────────────────────────────────────────
+
+    #[test]
+    fn test_tuple_alias_constructor_creates_struct() {
+        // `def Pair = (Int, Int); def p = Pair(3, 4);`
+        // If it runs without error the constructor works.
+        let vm = run_src(
+            "def Pair = (Int, Int);\
+             defn main() { def p = Pair(3, 4); def a = p.0; def b = p.1; }",
+        )
+        .unwrap();
+        drop(vm);
+    }
+
+    // ── Enum constructor ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_enum_unit_variant_constructor() {
+        run_src(
+            "def Color = enum(red, green, blue);\
+             defn main() { def c = Color.red(); }",
+        )
+        .expect("enum unit variant construction should succeed");
+    }
+
+    #[test]
+    fn test_enum_payload_variant_constructor() {
+        run_src(
+            "def Opt = enum(some: Int, none);\
+             defn main() { def v = Opt.some(42); }",
+        )
+        .expect("enum payload variant construction should succeed");
+    }
+
+    // ── Union constructor ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_union_constructor_is_identity() {
+        // The union constructor passes its argument through unchanged.
+        let vm = run_src(
+            "def Num = union(Int, Float);\
+             def x = Num(99);",
+        )
+        .unwrap();
+        let val = vm.globals.get("x").cloned().unwrap_or(Value::Null);
+        assert_eq!(val, Value::Int(99), "union constructor should be identity");
+    }
+
+    // ── Global tuple destructuring ─────────────────────────────────────────────
+
+    #[test]
+    fn test_global_tuple_destructure() {
+        let vm = run_src(
+            "def Pair = (Int, Int);\
+             def (a, b) = Pair(10, 20);",
+        )
+        .unwrap();
+        assert_eq!(
+            vm.globals.get("a").cloned().unwrap_or(Value::Null),
+            Value::Int(10),
+            "a should be 10"
+        );
+        assert_eq!(
+            vm.globals.get("b").cloned().unwrap_or(Value::Null),
+            Value::Int(20),
+            "b should be 20"
+        );
+    }
+
+    // ── Local tuple destructuring ──────────────────────────────────────────────
+
+    #[test]
+    fn test_local_tuple_destructure_runs_without_error() {
+        run_src(
+            "def Pair = (Int, Int);\
+             defn main() { let (x, y) = Pair(5, 6); }",
+        )
+        .expect("local tuple destructure should succeed");
+    }
+
+    // ── use / module system (Phase 6) ─────────────────────────────────────────
+
+    /// Namespace import: `use io = "@stl/io"` — the module is bound as a
+    /// `Value::Module` and its exports are accessible via field access.
+    #[test]
+    fn test_use_namespace_import_binds_module() {
+        let vm = run_src(r#"use io = "@stl/io";"#).expect("namespace import should succeed");
+        match vm.globals.get("io") {
+            Some(Value::Module(m)) => {
+                let m = unsafe { m.as_ref() };
+                assert!(
+                    m.exports.contains_key("print"),
+                    "`io` module should export `print`"
+                );
+                assert!(
+                    m.exports.contains_key("println"),
+                    "`io` module should export `println`"
+                );
+            }
+            other => panic!("expected Value::Module for `io`, got: {other:?}"),
+        }
+    }
+
+    /// Namespace import: calling `io.println(...)` through the module value
+    /// must execute without a runtime error.
+    #[test]
+    fn test_use_namespace_import_field_call_runs() {
+        run_src(
+            r#"use io = "@stl/io";
+               defn main() { io.println("hello from namespace"); }"#,
+        )
+        .expect("calling io.println via namespace import should succeed");
+    }
+
+    /// Destructuring import: `use (print, println) = "@stl/io"` brings the
+    /// names directly into scope as top-level globals.
+    #[test]
+    fn test_use_destructuring_import_binds_names() {
+        let vm = run_src(r#"use (print, println) = "@stl/io";"#)
+            .expect("destructuring import should succeed");
+        assert!(
+            vm.globals.contains_key("print"),
+            "`print` should be in globals after destructuring import"
+        );
+        assert!(
+            vm.globals.contains_key("println"),
+            "`println` should be in globals after destructuring import"
+        );
+    }
+
+    /// Destructuring import: the bound names are callable without error.
+    #[test]
+    fn test_use_destructuring_import_call_runs() {
+        run_src(
+            r#"use (println) = "@stl/io";
+               defn main() { println("hello from destructure"); }"#,
+        )
+        .expect("calling println via destructuring import should succeed");
+    }
+
+    /// Rename import: `use (println = log) = "@stl/io"` binds `println` under
+    /// the local alias `log`, while the original name is NOT explicitly inserted
+    /// by the rename itself (though it may appear as a spilled internal dep).
+    #[test]
+    fn test_use_rename_import_binds_under_alias() {
+        let vm =
+            run_src(r#"use (println = log) = "@stl/io";"#).expect("rename import should succeed");
+        assert!(
+            vm.globals.contains_key("log"),
+            "`log` should be in globals after rename import"
+        );
+        // The `log` binding must be callable (i.e. a Closure, not Null).
+        assert!(
+            !matches!(vm.globals.get("log"), Some(Value::Null) | None),
+            "`log` should be a non-Null callable value"
+        );
+    }
+
+    /// Rename import: the alias is callable without error.
+    #[test]
+    fn test_use_rename_import_alias_call_runs() {
+        run_src(
+            r#"use (println = log) = "@stl/io";
+               defn main() { log("hello from alias"); }"#,
+        )
+        .expect("calling log (alias for println) should succeed");
+    }
+
+    /// Unknown module path must produce a runtime error.
+    #[test]
+    fn test_use_unknown_module_is_runtime_error() {
+        expect_runtime_error(r#"use bad = "@stl/nonexistent";"#, "unknown module path");
+    }
+
+    // ── String interpolation runtime correctness ───────────────────────────────
+
+    /// `"$(x)"` must interpolate the value of local variable `x`, not "null".
+    #[test]
+    fn test_string_interp_local_variable() {
+        let vm = run_src(
+            r#"defn greet(name: String) -> String { "Hello $(name)!" }
+                            def result = greet("world");"#,
+        )
+        .expect("should run without error");
+        let result = vm.globals.get("result").expect("expected global `result`");
+        // SAFETY: the VM is alive for the duration of this test.
+        let s = unsafe { result.as_str() }.expect("result should be a string");
+        assert_eq!(
+            s, "Hello world!",
+            "interp should produce correct string, got: {s:?}"
+        );
+    }
+
+    /// String interpolation of an integer local variable.
+    #[test]
+    fn test_string_interp_int_local() {
+        let vm = run_src(
+            r#"defn show(n: Int) -> String { "val: $(n)" }
+                            def result = show(42);"#,
+        )
+        .expect("should run without error");
+        let result = vm.globals.get("result").expect("expected global `result`");
+        // SAFETY: the VM is alive for the duration of this test.
+        let s = unsafe { result.as_str() }.expect("result should be a string");
+        assert_eq!(
+            s, "val: 42",
+            "interp should produce correct string, got: {s:?}"
+        );
     }
 }

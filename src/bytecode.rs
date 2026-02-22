@@ -207,8 +207,31 @@ pub enum OpCode {
     /// Operand: u16 — jump-past-RHS offset.
     Elvis = 0xc4,
     /// Get the variant tag of a struct (its type_name field).
-    /// Pops top of stack, pushes the tag string (or "" for non-structs).
+    /// Pops top of stack, pushes the tag string (or the primitive type name for non-structs).
     GetTag = 0xc5,
+    /// Assert that the top-of-stack value's tag equals the expected tag string constant.
+    /// Operand: u16 — constant pool index of the expected tag string.
+    /// Pops nothing; panics with a descriptive message if the tag does not match.
+    AssertTag = 0xc6,
+    /// Runtime cast / type check.
+    /// Operand: u16 — constant pool index of the target type name string.
+    /// Pops the top-of-stack value; if its tag matches the target type, pushes it back.
+    /// Otherwise raises a runtime error.
+    Cast = 0xc7,
+
+    /// Load (or resolve) a module and bind its exports into scope.
+    ///
+    /// Encoding:
+    ///   UseModule  u16:path_idx  u8:kind  [kind-specific operands]
+    ///
+    /// kind = 0  — namespace import: `use io = "@stl/io"`
+    ///   Additional operands: u16:local_name_idx
+    ///   Effect: runs the module, wraps its exports in an ObjModule, DefineGlobal local_name.
+    ///
+    /// kind = 1  — destructuring import: `use (print, read = my_read) = "@stl/io"`
+    ///   Additional operands: u16:count, then for each import: u16:exported_name_idx u16:local_name_idx
+    ///   Effect: runs the module, looks up each exported name, DefineGlobal local_name.
+    UseModule = 0xc8,
 
     /// No-operation (used as a placeholder during patching).
     Nop = 0xff,
@@ -277,6 +300,9 @@ impl TryFrom<u8> for OpCode {
             0xc3 => Ok(OpCode::PostDec),
             0xc4 => Ok(OpCode::Elvis),
             0xc5 => Ok(OpCode::GetTag),
+            0xc6 => Ok(OpCode::AssertTag),
+            0xc7 => Ok(OpCode::Cast),
+            0xc8 => Ok(OpCode::UseModule),
             0xff => Ok(OpCode::Nop),
             other => Err(other),
         }
@@ -554,6 +580,35 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) 
         | OpCode::GetIndex
         | OpCode::SetIndex
         | OpCode::Nop => (format!("{op:?}"), 1),
+
+        // u16 operand — AssertTag / Cast: expected type name
+        OpCode::AssertTag | OpCode::Cast => {
+            let idx = chunk.read_u16(offset + 1);
+            let name = chunk
+                .constants
+                .get(idx as usize)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "<oob>".to_string());
+            (format!("{op:?} {name}"), 3)
+        }
+
+        // UseModule: variable-length encoding — just show path + kind
+        OpCode::UseModule => {
+            let path_idx = chunk.read_u16(offset + 1);
+            let kind = chunk.code.get(offset + 3).copied().unwrap_or(0);
+            let path = chunk
+                .constants
+                .get(path_idx as usize)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "<oob>".to_string());
+            let kind_str = if kind == 0 {
+                "namespace"
+            } else {
+                "destructure"
+            };
+            // Report minimum size; disassembler output is best-effort for variable instructions.
+            (format!("{op:?} {path} ({kind_str})"), 4)
+        }
 
         // u8 operand
         OpCode::LoadLocal

@@ -50,9 +50,9 @@ pub enum Item {
 /// A `use` import declaration.
 ///
 /// ```aura
-/// use (println, print) = "@stl/io";    // destructuring import
-/// use io = "@stl/io";                  // namespace import
-/// use (helper) = "./utils";            // relative path
+/// use (println, print) = "@stl/io";            // destructuring import
+/// use (print = my_print) = "@stl/io";           // rename import
+/// use io = "@stl/io";                           // namespace import
 /// ```
 ///
 /// The `path` is a string literal that may:
@@ -61,19 +61,14 @@ pub enum Item {
 #[derive(Debug, Clone, PartialEq)]
 pub struct UseDecl {
     /// The import pattern: what names to bring into scope.
-    pub pattern: UsePattern,
+    ///
+    /// - `Pattern::Bind(name, _)` — namespace import: `use io = "path"`.
+    /// - `Pattern::Struct { fields, .. }` — destructuring import with optional renames:
+    ///   `use (print, read = my_read) = "path"`.
+    pub pattern: Pattern,
     /// The module path string (without quotes).
     pub path: String,
     pub span: Span,
-}
-
-/// The left-hand side of a `use` declaration.
-#[derive(Debug, Clone, PartialEq)]
-pub enum UsePattern {
-    /// `use (x, y, z) = "path"` — import and destructure specific names.
-    Destructure(Vec<String>),
-    /// `use name = "path"` — import as a namespace binding.
-    Namespace(String),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -93,12 +88,10 @@ pub struct Decl {
 /// The concrete kind of a module-level declaration.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DeclKind {
-    /// `def name = expr` — a module-level constant.
+    /// `def name = expr` or `def Name = TypeExpr` — a module-level constant or type alias.
     Def(DefDecl),
     /// `defn name(params) -> RetType { body }` — a named function or method.
     Defn(DefnDecl),
-    /// `deftype Name(fields)` — a named product type.
-    Deftype(DeftypeDecl),
     /// `defmacro name(params) -> RetType { body }` — a compile-time macro.
     /// The body is stored as an AST but macro expansion is a future feature.
     Defmacro(DefmacroDecl),
@@ -106,18 +99,52 @@ pub enum DeclKind {
 
 // ── def ──────────────────────────────────────────────────────────────────────
 
-/// `def name = expr` — a module-level compile-time constant.
+/// `def name = expr` or `def[T] Name = TypeExpr` — a module-level declaration.
+///
+/// `def` is the universal static declaration. It covers:
+/// - Value bindings:   `def pi = 3.14159`
+/// - Type aliases:     `def Person = (name: String, age: Int)`
+/// - Destructuring:    `def (x, y) = compute_coords()`
 ///
 /// Multiple bindings may appear in a single `def`:
 /// ```aura
 /// def pi = 3.14159
-/// def MaxRetries = 3
+/// def[T, E] Result = enum(ok: T, err: E)
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct DefDecl {
-    /// The bindings: one or more `(name, initializer)` pairs.
-    pub bindings: Vec<(String, Expr)>,
+    /// The bindings: one or more `DefBinding` entries.
+    pub bindings: Vec<DefBinding>,
     pub span: Span,
+}
+
+/// A single binding in a `def` declaration.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DefBinding {
+    /// A value binding: `name = expr` (with optional destructuring pattern).
+    ///
+    /// ```aura
+    /// def pi = 3.14159
+    /// def (x, y) = compute()
+    /// def .ok(value) = result
+    /// ```
+    Value {
+        pattern: Pattern,
+        init: Box<Expr>,
+        span: Span,
+    },
+    /// A type alias: `Name = TypeExpr` with optional generic parameters.
+    ///
+    /// ```aura
+    /// def Person = (name: String, age: Int)
+    /// def[T, E] Result = enum(ok: T, err: E)
+    /// ```
+    TypeAlias {
+        name: String,
+        type_params: Vec<String>,
+        ty: TypeExpr,
+        span: Span,
+    },
 }
 
 // ── defn ─────────────────────────────────────────────────────────────────────
@@ -167,37 +194,6 @@ pub struct Param {
     pub span: Span,
 }
 
-// ── deftype ───────────────────────────────────────────────────────────────────
-
-/// `deftype Name(field: Type, ...)` — a named product type (struct).
-///
-/// ```aura
-/// deftype Point(x: Int, y: Int)
-/// deftype Pair[A, B](first: A, second: B)
-/// ```
-///
-/// The compiler automatically generates:
-/// - A constructor function `Name(field = val, ...)`.
-/// - Field accessors `instance.field`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DeftypeDecl {
-    /// The type name.
-    pub name: String,
-    /// Optional generic type parameters.
-    pub type_params: Vec<String>,
-    /// The fields of the struct.
-    pub fields: Vec<TypedField>,
-    pub span: Span,
-}
-
-/// A field in a `deftype` declaration (or an anonymous struct literal).
-#[derive(Debug, Clone, PartialEq)]
-pub struct TypedField {
-    pub name: String,
-    pub ty: TypeExpr,
-    pub span: Span,
-}
-
 // ── defmacro ─────────────────────────────────────────────────────────────────
 
 /// `defmacro name(params) -> RetType { body }` — a compile-time macro declaration.
@@ -219,15 +215,39 @@ pub struct DefmacroDecl {
 // Type expressions
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// A named field with its type, used in struct type expressions, enum variants, and interfaces.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedField {
+    pub name: String,
+    pub ty: TypeExpr,
+    pub span: Span,
+}
+
+/// A variant in an `enum(...)` type expression.
+///
+/// ```aura
+/// enum(ok: T, err: E)   // EnumVariant { name: "ok", ty: Some(T) }
+/// enum(some: T, null)   // EnumVariant { name: "null", ty: None }
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumVariant {
+    /// The variant name (without dot prefix).
+    pub name: String,
+    /// Payload type, if any. `None` for unit variants like `null`.
+    pub ty: Option<TypeExpr>,
+    pub span: Span,
+}
+
 /// A type expression as written in the source.
 ///
 /// ```aura
 /// Int
 /// List[T]
-/// Dict[String, Int]
-/// Func[Int, Bool]
-/// (Int, String)       // tuple type
-/// (x: Int, y: Float)  // named-field tuple (struct type)
+/// (Int, String)                        // tuple type
+/// (x: Int, y: Float)                  // struct type
+/// union(Int, Float)                    // union type
+/// enum(ok: T, err: E)                  // enum type
+/// interface(to_string: Func[(), String]) // interface type
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeExpr {
@@ -241,6 +261,13 @@ pub enum TypeExpr {
     Tuple(Vec<TypeExpr>, Span),
     /// A named-field tuple (struct) type: `(x: Int, y: Float)`.
     Struct(Vec<TypedField>, Span),
+    /// An anonymous tagged union: `union(Int, Float)`.
+    Union(Vec<TypeExpr>, Span),
+    /// A named-variant sum type: `enum(ok: T, err: E, null)`.
+    Enum(Vec<EnumVariant>, Span),
+    /// A structural interface: `interface(to_string: Func[(), String])`.
+    /// An empty interface `interface()` is equivalent to `any`.
+    Interface(Vec<TypedField>, Span),
 }
 
 impl TypeExpr {
@@ -249,6 +276,9 @@ impl TypeExpr {
             TypeExpr::Named { span, .. } => *span,
             TypeExpr::Tuple(_, span) => *span,
             TypeExpr::Struct(_, span) => *span,
+            TypeExpr::Union(_, span) => *span,
+            TypeExpr::Enum(_, span) => *span,
+            TypeExpr::Interface(_, span) => *span,
         }
     }
 }
@@ -305,13 +335,29 @@ pub struct ConstStmt {
     pub span: Span,
 }
 
-/// A single `name [: Type] = expr` binding used by `let` and `const`.
+/// A single `pattern [: Type] = expr` binding used by `let` and `const`.
+///
+/// For the common case of a plain identifier, `pattern` is `Pattern::Bind(name, span)`.
+/// Complex destructuring patterns are allowed and may be fallible at runtime.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalBinding {
-    pub name: String,
+    /// The binding pattern (commonly `Pattern::Bind` for a simple name).
+    pub pattern: Pattern,
+    /// Optional type annotation (applies to the whole pattern).
     pub ty: Option<TypeExpr>,
     pub init: Expr,
     pub span: Span,
+}
+
+impl LocalBinding {
+    /// Returns the bound name when the pattern is a simple `Pattern::Bind`.
+    /// Returns `None` for complex destructuring patterns.
+    pub fn name(&self) -> Option<&str> {
+        match &self.pattern {
+            Pattern::Bind(name, _) => Some(name.as_str()),
+            _ => None,
+        }
+    }
 }
 
 // ── return / break / continue ─────────────────────────────────────────────────
@@ -721,7 +767,12 @@ pub struct ClosureArm {
     pub span: Span,
 }
 
-/// A pattern used in closure arm matching.
+/// A pattern used in closure arm matching, destructuring, and binding.
+///
+/// Patterns appear in:
+/// - Closure arm parameter lists: `{ .ok(v) -> v, .err(e) -> ... }`
+/// - `let` / `const` / `def` left-hand sides: `let (x, y) = coord;`
+/// - `use` import declarations: `use (print, read = my_read) = "path";`
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
     /// A wildcard `_` that matches anything and discards the value.
@@ -730,7 +781,7 @@ pub enum Pattern {
     Literal(Expr),
     /// A binding pattern: matches anything and binds to `name`.
     Bind(String, Span),
-    /// A tuple pattern: `(p1, p2, p3)`.
+    /// A positional tuple pattern: `(p1, p2, p3)`.
     Tuple(Vec<Pattern>, Span),
     /// A dot-identifier variant pattern: `.ok(inner)` or `.null`.
     Variant {
@@ -738,6 +789,53 @@ pub enum Pattern {
         inner: Option<Box<Pattern>>,
         span: Span,
     },
+    /// A struct (named-field) pattern: `(name, age = my_age)`.
+    ///
+    /// Each field either binds under the field's own name or is renamed.
+    Struct {
+        fields: Vec<StructPatternField>,
+        span: Span,
+    },
+    /// A constructor pattern: `TypeName(p1, p2)`.
+    ///
+    /// Optionally casts the value to the named type before destructuring.
+    /// Used for named tuple destructuring: `Coord(x, y)` or `Person(name, age)`.
+    Constructor {
+        type_name: String,
+        inner: Box<Pattern>,
+        span: Span,
+    },
+    /// A type-check pattern: `name: Type`.
+    ///
+    /// Matches if the value is of the given type and binds it to `name`.
+    /// Used in union/interface pattern matching: `{ i: Int -> ..., f: Float -> ... }`.
+    TypeCheck {
+        name: String,
+        ty: TypeExpr,
+        span: Span,
+    },
+    /// A rest pattern: `..rest` or bare `..`.
+    ///
+    /// Collects remaining positional elements into a list.
+    /// `name = None` means discard (`..`).
+    Rest { name: Option<String>, span: Span },
+}
+
+/// A single field entry in a struct pattern.
+///
+/// ```aura
+/// (name, age = my_age)
+/// //^^^  ^^^^^^^^^^^^
+/// //|    field `age` renamed to `my_age`
+/// //field `name` bound under its own name
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructPatternField {
+    /// The field name as it appears in the struct definition.
+    pub name: String,
+    /// The local binding name. `None` means bind under `name` itself.
+    pub binding: Option<String>,
+    pub span: Span,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
