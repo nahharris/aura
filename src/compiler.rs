@@ -177,6 +177,11 @@ impl Compiler {
         self.chunk_mut().emit_op_u16(op, operand, line);
     }
 
+    fn emit_op_u16_u8(&mut self, op: OpCode, operand_u16: u16, operand_u8: u8, line: u32) {
+        self.chunk_mut()
+            .emit_op_u16_u8(op, operand_u16, operand_u8, line);
+    }
+
     fn emit_jump(&mut self, op: OpCode, line: u32) -> usize {
         self.chunk_mut().emit_jump(op, line)
     }
@@ -431,13 +436,14 @@ impl Compiler {
 
         // Each parameter is local slot [0], [1], ...
         // Push field name constants and local values onto the stack in pairs,
-        // then MakeStruct.
+        // then MakeTypedStruct with the type name.
         for (i, name) in field_names.iter().enumerate() {
             let name_idx = ctor_chunk.add_str(name);
             ctor_chunk.emit_op_u16(OpCode::Const, name_idx, line);
             ctor_chunk.emit_op_u8(OpCode::LoadLocal, i as u8, line);
         }
-        ctor_chunk.emit_op_u16(OpCode::MakeStruct, arity as u16, line);
+        let type_name_idx = ctor_chunk.add_str(&ctor_name);
+        ctor_chunk.emit_op_u16_u16(OpCode::MakeTypedStruct, type_name_idx, arity as u16, line);
         ctor_chunk.emit_op(OpCode::Return, line);
 
         let proto = FnProto {
@@ -640,6 +646,12 @@ impl Compiler {
                 // creates a tagged value from the dot-ident at runtime.
                 let idx = self.chunk_mut().add_str(format!(".{name}"));
                 self.emit_u16(OpCode::Const, idx, span.line);
+            }
+            Expr::Builtin { name, span } => {
+                // builtin("name") loads the native function from globals
+                // Natives are registered as globals at VM startup
+                let idx = self.chunk_mut().add_str(&name);
+                self.emit_u16(OpCode::LoadGlobal, idx, span.line);
             }
 
             // ── Binary operations ─────────────────────────────────────────────
@@ -1003,10 +1015,36 @@ impl Compiler {
         trailing: Vec<TrailingArg>,
         line: u32,
     ) {
-        // Push callee.
+        // Check if this is a method call (obj.method(args))
+        if let Expr::FieldAccess {
+            object,
+            field,
+            span: _,
+        } = callee
+        {
+            // Method call: compile as CallMethod
+            // Stack: ... receiver arg0 arg1 ... argN-1
+            self.compile_expr(*object);
+
+            let mut arg_count = args.len();
+            for arg in args {
+                self.compile_expr(arg.value);
+            }
+
+            for trail in trailing {
+                arg_count += 1;
+                let block_expr = Expr::Block(trail.block.block);
+                self.compile_expr(block_expr);
+            }
+
+            let method_idx = self.chunk_mut().add_str(&field);
+            self.emit_op_u16_u8(OpCode::CallMethod, method_idx, arg_count as u8, line);
+            return;
+        }
+
+        // Regular call: push callee, then args, then Call
         self.compile_expr(callee);
 
-        // Push positional/named arguments.
         let mut arg_count = args.len();
         for arg in args {
             self.compile_expr(arg.value);
@@ -1112,8 +1150,23 @@ impl Compiler {
                         self.emit(OpCode::Pop, arm_line);
                         fail_patches.push(patch);
                     }
-                    _ => {
-                        // Other patterns (tuple, variant) not yet implemented; skip.
+                    Pattern::Variant {
+                        name,
+                        inner: _,
+                        span: _,
+                    } => {
+                        // Check if arg[i] is a struct with type_name == name.
+                        self.emit_u8(OpCode::LoadLocal, i as u8, arm_line);
+                        self.emit(OpCode::GetTag, arm_line);
+                        let name_idx = self.chunk_mut().add_str(name);
+                        self.emit_u16(OpCode::Const, name_idx, arm_line);
+                        self.emit(OpCode::CmpEq, arm_line);
+                        let patch = self.emit_jump(OpCode::JumpIfFalse, arm_line);
+                        self.emit(OpCode::Pop, arm_line);
+                        fail_patches.push(patch);
+                    }
+                    Pattern::Tuple(_, _) => {
+                        // Tuple patterns not yet implemented; skip.
                     }
                 }
             }
@@ -1130,11 +1183,36 @@ impl Compiler {
 
             // Bind pattern variables.
             for (i, pattern) in arm.patterns.iter().enumerate() {
-                if let Pattern::Bind(name, _span) = pattern {
-                    // LoadLocal arg[i] → stays on stack as the local.
-                    self.emit_u8(OpCode::LoadLocal, i as u8, arm_line);
-                    let depth = self.frame().scope_depth;
-                    self.declare_local(name.clone(), depth);
+                match pattern {
+                    Pattern::Bind(name, _span) => {
+                        // LoadLocal arg[i] → stays on stack as the local.
+                        self.emit_u8(OpCode::LoadLocal, i as u8, arm_line);
+                        let depth = self.frame().scope_depth;
+                        self.declare_local(name.clone(), depth);
+                    }
+                    Pattern::Variant {
+                        inner: Some(inner_pat),
+                        ..
+                    } => {
+                        // Extract inner value and bind if needed.
+                        match inner_pat.as_ref() {
+                            Pattern::Bind(name, _) => {
+                                // LoadLocal arg[i], then GetField "value" to extract inner.
+                                self.emit_u8(OpCode::LoadLocal, i as u8, arm_line);
+                                let value_idx = self.chunk_mut().add_str("value");
+                                self.emit_u16(OpCode::GetField, value_idx, arm_line);
+                                let depth = self.frame().scope_depth;
+                                self.declare_local(name.clone(), depth);
+                            }
+                            Pattern::Wildcard(_) => {
+                                // Matched but no binding needed.
+                            }
+                            _ => {
+                                // Nested patterns inside variants not yet supported.
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
 
