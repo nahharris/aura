@@ -155,6 +155,29 @@ impl<'heap> Vm<'heap> {
         self.dispatch()
     }
 
+    /// Execute a chunk as a library module (no main call).
+    ///
+    /// This runs the chunk's top-level code to register globals but does not
+    /// look for or call a `main` function. Used for loading STL modules.
+    pub fn run_module(&mut self, chunk: Chunk, name: &str) -> VmResult<()> {
+        let proto = FnProto {
+            name: name.into(),
+            arity: 0,
+            chunk,
+            upvalues: Vec::new(),
+        };
+        let closure = ObjClosure {
+            proto,
+            upvalues: Vec::new(),
+        };
+        self.frames.push(CallFrame {
+            closure,
+            ip: 0,
+            stack_base: 0,
+        });
+        self.dispatch()
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Main dispatch loop
     // ─────────────────────────────────────────────────────────────────────────
@@ -501,6 +524,48 @@ impl<'heap> Vm<'heap> {
                     })?;
                     self.push(result);
                 }
+                OpCode::CallMethod => {
+                    let (method_name_idx, arg_count) = {
+                        let frame = self.frames.last_mut().unwrap();
+                        let idx = frame.read_u16() as usize;
+                        let count = frame.read_byte() as usize;
+                        (idx, count)
+                    };
+                    let method_name = self.constant_as_str(method_name_idx)?;
+                    let receiver_idx = self.stack.len() - 1 - arg_count;
+                    let receiver = self.stack[receiver_idx].clone();
+                    // For structs, use the internal type_name field for method dispatch.
+                    // This allows deftype File(fd) instances to resolve File.method().
+                    let type_name = match &receiver {
+                        Value::Struct(s) => {
+                            let s = unsafe { s.as_ref() };
+                            if s.type_name.is_empty() {
+                                "Struct"
+                            } else {
+                                &s.type_name
+                            }
+                        }
+                        _ => receiver.type_name(),
+                    };
+                    let full_name = format!("{}.{}", type_name, method_name);
+
+                    let callee =
+                        self.globals
+                            .get(&full_name)
+                            .cloned()
+                            .ok_or_else(|| RuntimeError {
+                                message: format!(
+                                    "no method `{}` on type {}",
+                                    method_name, type_name
+                                ),
+                                stack_trace: Vec::new(),
+                            })?;
+
+                    // Insert callee before receiver: stack becomes [..., callee, receiver, args...]
+                    // Then call with arg_count + 1 (receiver is first arg)
+                    self.stack.insert(receiver_idx, callee);
+                    self.call_value(arg_count + 1)?;
+                }
                 OpCode::Return => {
                     let return_val = self.pop();
                     let frame = self.frames.pop().unwrap();
@@ -601,6 +666,27 @@ impl<'heap> Vm<'heap> {
                     let val = Value::new_struct(self.heap, "", fields);
                     self.push(val);
                 }
+                OpCode::MakeTypedStruct => {
+                    let (type_name_idx, field_count) = {
+                        let frame = self.frames.last_mut().unwrap();
+                        let type_idx = frame.read_u16() as usize;
+                        let count = frame.read_u16() as usize;
+                        (type_idx, count)
+                    };
+                    let type_name = self.constant_as_str(type_name_idx)?.to_string();
+                    let base = self.stack.len() - field_count * 2;
+                    let pairs: Vec<Value> = self.stack.drain(base..).collect();
+                    let mut fields: Vec<(String, Value)> = Vec::new();
+                    for chunk in pairs.chunks(2) {
+                        let name = match &chunk[0] {
+                            Value::Str(s) => unsafe { s.as_ref().value.clone() },
+                            other => format!("{other}"),
+                        };
+                        fields.push((name, chunk[1].clone()));
+                    }
+                    let val = Value::new_struct(self.heap, type_name, fields);
+                    self.push(val);
+                }
 
                 // ── Field / index ────────────────────────────────────────────
                 OpCode::GetField => {
@@ -693,6 +779,15 @@ impl<'heap> Vm<'heap> {
                     } else {
                         self.push(v);
                     }
+                }
+                OpCode::GetTag => {
+                    let v = self.pop();
+                    let tag = match &v {
+                        Value::Struct(s) => unsafe { s.as_ref() }.type_name.clone(),
+                        _ => String::new(),
+                    };
+                    let tag_val = Value::new_str(self.heap, tag);
+                    self.push(tag_val);
                 }
                 OpCode::PostInc => {
                     let (slot, base) = {
