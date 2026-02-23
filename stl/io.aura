@@ -19,23 +19,23 @@ def _to_str   = builtin("to_str");
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Print a value to stdout (no trailing newline).
-pub defn print(value: Any) -> Void {
+pub def print(value: Any) -> Void {
     let _ = _io_write(1, _to_str(value));
 }
 
 /// Print a value to stdout followed by a newline.
-pub defn println(value: Any) -> Void {
+pub def println(value: Any) -> Void {
     let _ = _io_write(1, _to_str(value));
     let _ = _io_write(1, "\n");
 }
 
 /// Print a value to stderr (no trailing newline).
-pub defn eprint(value: Any) -> Void {
+pub def eprint(value: Any) -> Void {
     let _ = _io_write(2, _to_str(value));
 }
 
 /// Print a value to stderr followed by a newline.
-pub defn eprintln(value: Any) -> Void {
+pub def eprintln(value: Any) -> Void {
     let _ = _io_write(2, _to_str(value));
     let _ = _io_write(2, "\n");
 }

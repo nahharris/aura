@@ -31,55 +31,55 @@ def _str_parse_float = builtin("str_parse_float");
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Returns the number of characters in the string.
-pub defn String.len(self: String) -> Int { _str_len(self) }
+pub def String.len(self: String) -> Int { _str_len(self) }
 
 /// Returns `true` if the string has zero characters.
-pub defn String.isEmpty(self: String) -> Bool { _str_len(self) == 0 }
+pub def String.isEmpty(self: String) -> Bool { _str_len(self) == 0 }
 
 /// Returns `true` if the string contains `needle` as a substring.
-pub defn String.contains(self: String, needle: String) -> Bool { _str_contains(self, needle) }
+pub def String.contains(self: String, needle: String) -> Bool { _str_contains(self, needle) }
 
 /// Returns `true` if the string starts with `prefix`.
-pub defn String.startsWith(self: String, prefix: String) -> Bool { _str_starts_with(self, prefix) }
+pub def String.startsWith(self: String, prefix: String) -> Bool { _str_starts_with(self, prefix) }
 
 /// Returns `true` if the string ends with `suffix`.
-pub defn String.endsWith(self: String, suffix: String) -> Bool { _str_ends_with(self, suffix) }
+pub def String.endsWith(self: String, suffix: String) -> Bool { _str_ends_with(self, suffix) }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Transformation
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Returns the string converted to upper case.
-pub defn String.upper(self: String) -> String { _str_upper(self) }
+pub def String.upper(self: String) -> String { _str_upper(self) }
 
 /// Returns the string converted to lower case.
-pub defn String.lower(self: String) -> String { _str_lower(self) }
+pub def String.lower(self: String) -> String { _str_lower(self) }
 
 /// Returns the string with leading and trailing whitespace removed.
-pub defn String.trim(self: String) -> String { _str_trim(self) }
+pub def String.trim(self: String) -> String { _str_trim(self) }
 
 /// Returns a new string with all occurrences of `from` replaced by `to`.
-pub defn String.replace(self: String, from: String, to: String) -> String { _str_replace(self, from, to) }
+pub def String.replace(self: String, from: String, to: String) -> String { _str_replace(self, from, to) }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Slicing / Splitting / Joining
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Returns the substring from index `start` (inclusive) to `end` (exclusive).
-pub defn String.slice(self: String, start: Int, end: Int) -> String { _str_slice(self, start, end) }
+pub def String.slice(self: String, start: Int, end: Int) -> String { _str_slice(self, start, end) }
 
 /// Splits the string on `sep` and returns a `List` of parts.
-pub defn String.split(self: String, sep: String) -> List { _str_split(self, sep) }
+pub def String.split(self: String, sep: String) -> List { _str_split(self, sep) }
 
 /// Joins a list of strings with `self` as the separator.
-pub defn String.join(self: String, parts: List) -> String { _str_join(self, parts) }
+pub def String.join(self: String, parts: List) -> String { _str_join(self, parts) }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Parsing
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Parses the string as an integer. Returns `null` if parsing fails.
-pub defn String.parseInt(self: String) -> Any { _str_parse_int(self) }
+pub def String.parseInt(self: String) -> Any { _str_parse_int(self) }
 
 /// Parses the string as a float. Returns `null` if parsing fails.
-pub defn String.parseFloat(self: String) -> Any { _str_parse_float(self) }
+pub def String.parseFloat(self: String) -> Any { _str_parse_float(self) }
