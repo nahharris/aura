@@ -7,11 +7,11 @@
 // Functions
 // ─────────────────────────────────────────────────────────────────────────────
 
-defn add(a: Int, b: Int) -> Int {
+def add(a: Int, b: Int) -> Int {
     a + b
 }
 
-defn greet(name: String) -> String {
+def greet(name: String) -> String {
     "Hello, $(name)!"
 }
 
@@ -28,13 +28,13 @@ def fizzbuzz = {
 };
 
 // Higher-order function: applies a transformation closure to a value
-defn transform(value: Int, f: Any) -> Any { f(value) }
+def transform(value: Int, f: Any) -> Any { f(value) }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Main entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
-defn main() -> Void {
+def main() -> Void {
     // Basic output
     println(greet("World"));
 
@@ -43,7 +43,7 @@ defn main() -> Void {
     println("3 + 4 = $(sum)");
 
     // String interpolation
-    const pi = 3.14159;
+    def pi = 3.14159;
     println("Pi is approximately $(pi)");
 
     // FizzBuzz loop (1..=15)
@@ -56,7 +56,7 @@ defn main() -> Void {
 
     // List and higher-order functions
     let nums = [1, 2, 3, 4, 5];
-    let squares = nums.map({ x -> x * x });
+    let squares = nums.map { x -> x * x };
     println("squares: $(squares)");
 
     let evens = nums.filter({ x -> x % 2 == 0 });
