@@ -132,6 +132,14 @@ impl<'heap> Vm<'heap> {
         let _ = idx;
     }
 
+    /// Insert a plain value directly into the global environment.
+    ///
+    /// Used by [`crate::builtins::register_all`] to seed prelude constants
+    /// (`true`, `false`, `null`) that are plain values rather than native fns.
+    pub fn set_global(&mut self, name: &str, val: Value) {
+        self.globals.insert(name.to_string(), val);
+    }
+
     /// Execute the module-level [`Chunk`].
     ///
     /// The chunk is wrapped in a synthetic zero-argument closure and pushed as
@@ -189,6 +197,7 @@ impl<'heap> Vm<'heap> {
     /// - Other paths produce a runtime error (filesystem loading is a future feature).
     fn resolve_module_source(&self, path: &str) -> VmResult<String> {
         match path {
+            "@stl/core" => Ok(include_str!("../stl/core.aura").to_string()),
             "@stl/io" => Ok(include_str!("../stl/io.aura").to_string()),
             "@stl/string" => Ok(include_str!("../stl/string.aura").to_string()),
             "@stl/list" => Ok(include_str!("../stl/list.aura").to_string()),
@@ -885,6 +894,7 @@ impl<'heap> Vm<'heap> {
                         Value::Int(_) => "Int".to_string(),
                         Value::Float(_) => "Float".to_string(),
                         Value::Bool(_) => "Bool".to_string(),
+                        Value::Char(_) => "Char".to_string(),
                         Value::Null => "Null".to_string(),
                         Value::Str(_) => "String".to_string(),
                         Value::List(_) => "List".to_string(),
@@ -910,6 +920,7 @@ impl<'heap> Vm<'heap> {
                         Value::Int(_) => "Int".to_string(),
                         Value::Float(_) => "Float".to_string(),
                         Value::Bool(_) => "Bool".to_string(),
+                        Value::Char(_) => "Char".to_string(),
                         Value::Null => "Null".to_string(),
                         Value::Str(_) => "String".to_string(),
                         Value::List(_) => "List".to_string(),
@@ -936,6 +947,7 @@ impl<'heap> Vm<'heap> {
                         Value::Int(_) => "Int".to_string(),
                         Value::Float(_) => "Float".to_string(),
                         Value::Bool(_) => "Bool".to_string(),
+                        Value::Char(_) => "Char".to_string(),
                         Value::Null => "Null".to_string(),
                         Value::Str(_) => "String".to_string(),
                         Value::List(_) => "List".to_string(),
@@ -1244,6 +1256,7 @@ impl<'heap> Vm<'heap> {
             Some(Constant::Int(n)) => Ok(Value::Int(n)),
             Some(Constant::Float(f)) => Ok(Value::Float(f)),
             Some(Constant::Bool(b)) => Ok(Value::Bool(b)),
+            Some(Constant::Char(c)) => Ok(Value::Char(c)),
             Some(Constant::Null) => Ok(Value::Null),
             Some(Constant::Str(s)) => Ok(Value::new_str(self.heap, s)),
             Some(Constant::FnProto(p)) => {
@@ -1473,7 +1486,7 @@ mod tests {
         // If it runs without error the constructor works.
         let vm = run_src(
             "def Pair = (Int, Int);\
-             defn main() { def p = Pair(3, 4); def a = p.0; def b = p.1; }",
+             def main() { def p = Pair(3, 4); def a = p.0; def b = p.1; }",
         )
         .unwrap();
         drop(vm);
@@ -1485,7 +1498,7 @@ mod tests {
     fn test_enum_unit_variant_constructor() {
         run_src(
             "def Color = enum(red, green, blue);\
-             defn main() { def c = Color.red(); }",
+             def main() { def c = Color.red(); }",
         )
         .expect("enum unit variant construction should succeed");
     }
@@ -1494,7 +1507,7 @@ mod tests {
     fn test_enum_payload_variant_constructor() {
         run_src(
             "def Opt = enum(some: Int, none);\
-             defn main() { def v = Opt.some(42); }",
+             def main() { def v = Opt.some(42); }",
         )
         .expect("enum payload variant construction should succeed");
     }
@@ -1540,7 +1553,7 @@ mod tests {
     fn test_local_tuple_destructure_runs_without_error() {
         run_src(
             "def Pair = (Int, Int);\
-             defn main() { let (x, y) = Pair(5, 6); }",
+             def main() { let (x, y) = Pair(5, 6); }",
         )
         .expect("local tuple destructure should succeed");
     }
@@ -1574,7 +1587,7 @@ mod tests {
     fn test_use_namespace_import_field_call_runs() {
         run_src(
             r#"use io = "@stl/io";
-               defn main() { io.println("hello from namespace"); }"#,
+               def main() { io.println("hello from namespace"); }"#,
         )
         .expect("calling io.println via namespace import should succeed");
     }
@@ -1600,7 +1613,7 @@ mod tests {
     fn test_use_destructuring_import_call_runs() {
         run_src(
             r#"use (println) = "@stl/io";
-               defn main() { println("hello from destructure"); }"#,
+               def main() { println("hello from destructure"); }"#,
         )
         .expect("calling println via destructuring import should succeed");
     }
@@ -1628,7 +1641,7 @@ mod tests {
     fn test_use_rename_import_alias_call_runs() {
         run_src(
             r#"use (println = log) = "@stl/io";
-               defn main() { log("hello from alias"); }"#,
+               def main() { log("hello from alias"); }"#,
         )
         .expect("calling log (alias for println) should succeed");
     }
@@ -1645,7 +1658,7 @@ mod tests {
     #[test]
     fn test_string_interp_local_variable() {
         let vm = run_src(
-            r#"defn greet(name: String) -> String { "Hello $(name)!" }
+            r#"def greet(name: String) -> String { "Hello $(name)!" }
                             def result = greet("world");"#,
         )
         .expect("should run without error");
@@ -1662,7 +1675,7 @@ mod tests {
     #[test]
     fn test_string_interp_int_local() {
         let vm = run_src(
-            r#"defn show(n: Int) -> String { "val: $(n)" }
+            r#"def show(n: Int) -> String { "val: $(n)" }
                             def result = show(42);"#,
         )
         .expect("should run without error");

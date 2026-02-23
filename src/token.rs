@@ -134,12 +134,15 @@ impl fmt::Display for Token {
 /// The complete set of token kinds in the Aura language.
 ///
 /// Variants are grouped by category in declaration order:
-/// - **Literals** — integer, float, string (with optional interpolation), bool, null
+/// - **Literals** — integer, float, string (with optional interpolation)
 /// - **Identifiers and special names** — plain identifier, dot-identifier, atom
 /// - **Keywords** — reserved words that cannot be identifiers
 /// - **Operators** — arithmetic, comparison, logical, assignment, special
 /// - **Punctuation** — delimiters and separators
 /// - **Synthetic** — `Newline` (implicit semicolon carrier), `Eof`
+///
+/// Note: `true`, `false`, and `null` are **not** keywords — they lex as plain
+/// [`Ident`](TokenKind::Ident) tokens and resolve to prelude globals at runtime.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     // ── Literals ──────────────────────────────────────────────────────────────
@@ -156,14 +159,9 @@ pub enum TokenKind {
     /// `"Hello, $(name)!"` becomes `Str(vec![Raw("Hello, "), Interp(tokens_for_name), Raw("!")])`.
     Str(Vec<StringPart>),
 
-    /// The literal `true`.
-    True,
-
-    /// The literal `false`.
-    False,
-
-    /// The literal `null`.
-    Null,
+    /// A character literal, e.g. `'x'`, `'\n'`, `'\0'`.
+    /// The stored value is the decoded character (escape sequences are resolved).
+    Char(char),
 
     // ── Identifiers / special names ───────────────────────────────────────────
     /// A plain identifier, e.g. `foo`, `myVar`, `_unused`.
@@ -179,18 +177,16 @@ pub enum TokenKind {
     Atom(String),
 
     // ── Keywords ──────────────────────────────────────────────────────────────
-    // The `def`-family names (def, defn, deftype, defmacro) are NOT keywords;
-    // they are ordinary identifiers that happen to be recognized by the parser.
+    // The `def`-family names (def, defmacro, etc.) are NOT keywords;
+    // they are ordinary identifiers recognized by the parser.
     // Only the following identifiers are reserved and may not be used as names.
     /// `let`
     Let,
-    /// `const`
-    Const,
-    /// `fn` — kept as a keyword for forward-compat, but `defn` is the preferred form
+    /// `fn` — kept as a keyword for forward-compat
     Fn,
-    /// `type` — kept for forward-compat; `deftype` is the preferred form
+    /// `type` — kept for forward-compat
     Type,
-    /// `macro` — kept for forward-compat; `defmacro` is the preferred form
+    /// `macro` — kept for forward-compat
     Macro,
     /// `pub`
     Pub,
@@ -254,6 +250,8 @@ pub enum TokenKind {
     Colon,
     /// `->`  (closure arrow, return-type arrow)
     Arrow,
+    /// `=>`  (match arm separator)
+    FatArrow,
     /// `~`   (guard separator in multi-arm closures)
     Tilde,
 
@@ -293,14 +291,11 @@ impl fmt::Display for TokenKind {
             TokenKind::Int(n) => write!(f, "integer `{n}`"),
             TokenKind::Float(n) => write!(f, "float `{n}`"),
             TokenKind::Str(_) => write!(f, "string literal"),
-            TokenKind::True => write!(f, "`true`"),
-            TokenKind::False => write!(f, "`false`"),
-            TokenKind::Null => write!(f, "`null`"),
+            TokenKind::Char(c) => write!(f, "char literal `'{c}'`"),
             TokenKind::Ident(s) => write!(f, "identifier `{s}`"),
             TokenKind::DotIdent(s) => write!(f, "`.{s}`"),
             TokenKind::Atom(s) => write!(f, "atom `'{s}`"),
             TokenKind::Let => write!(f, "`let`"),
-            TokenKind::Const => write!(f, "`const`"),
             TokenKind::Fn => write!(f, "`fn`"),
             TokenKind::Type => write!(f, "`type`"),
             TokenKind::Macro => write!(f, "`macro`"),
@@ -334,6 +329,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Dot => write!(f, "`.`"),
             TokenKind::Colon => write!(f, "`:`"),
             TokenKind::Arrow => write!(f, "`->`"),
+            TokenKind::FatArrow => write!(f, "`=>`"),
             TokenKind::Tilde => write!(f, "`~`"),
             TokenKind::LParen => write!(f, "`(`"),
             TokenKind::RParen => write!(f, "`)`"),
@@ -379,18 +375,15 @@ pub enum StringPart {
 
 /// Map a bare identifier string to its keyword [`TokenKind`], if it is one.
 ///
-/// Returns `None` for non-reserved identifiers (including `def`-family names
-/// like `defn`, `deftype`, `defmacro`, which are not reserved keywords in Aura).
+/// Returns `None` for non-reserved identifiers, including `def`-family names
+/// (`def`, `defmacro`) and the prelude globals `true`, `false`, `null` (which
+/// lex as plain [`Ident`](TokenKind::Ident) tokens).
 pub fn keyword(s: &str) -> Option<TokenKind> {
     match s {
         "let" => Some(TokenKind::Let),
-        "const" => Some(TokenKind::Const),
         "fn" => Some(TokenKind::Fn),
         "type" => Some(TokenKind::Type),
         "macro" => Some(TokenKind::Macro),
-        "true" => Some(TokenKind::True),
-        "false" => Some(TokenKind::False),
-        "null" => Some(TokenKind::Null),
         "pub" => Some(TokenKind::Pub),
         "use" => Some(TokenKind::Use),
         "return" => Some(TokenKind::Return),
@@ -423,10 +416,12 @@ mod tests {
     #[test]
     fn test_keyword_recognition() {
         assert_eq!(keyword("let"), Some(TokenKind::Let));
-        assert_eq!(keyword("const"), Some(TokenKind::Const));
-        assert_eq!(keyword("true"), Some(TokenKind::True));
-        assert_eq!(keyword("false"), Some(TokenKind::False));
-        assert_eq!(keyword("null"), Some(TokenKind::Null));
+        // const is no longer a keyword
+        assert_eq!(keyword("const"), None);
+        // true/false/null are NOT keywords — they lex as plain Ident
+        assert_eq!(keyword("true"), None);
+        assert_eq!(keyword("false"), None);
+        assert_eq!(keyword("null"), None);
         // def-family are NOT reserved keywords
         assert_eq!(keyword("defn"), None);
         assert_eq!(keyword("deftype"), None);

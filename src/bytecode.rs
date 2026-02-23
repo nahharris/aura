@@ -325,6 +325,8 @@ pub enum Constant {
     Float(f64),
     /// A string literal (UTF-8, owned).
     Str(String),
+    /// A character literal.
+    Char(char),
     /// A boolean literal.
     Bool(bool),
     /// The null literal.
@@ -339,6 +341,7 @@ impl fmt::Display for Constant {
             Constant::Int(n) => write!(f, "{n}"),
             Constant::Float(n) => write!(f, "{n}"),
             Constant::Str(s) => write!(f, "{s:?}"),
+            Constant::Char(c) => write!(f, "'{c}'"),
             Constant::Bool(b) => write!(f, "{b}"),
             Constant::Null => write!(f, "null"),
             Constant::FnProto(p) => write!(f, "<fn {}>", p.name),

@@ -38,6 +38,8 @@ pub enum Value {
     Float(f64),
     /// Boolean.
     Bool(bool),
+    /// A Unicode character.
+    Char(char),
     /// The null value.
     Null,
     /// A heap-allocated string.
@@ -66,6 +68,7 @@ impl PartialEq for Value {
             (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
             (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
             (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::Char(a), Value::Char(b)) => a == b,
             (Value::Null, Value::Null) => true,
             (Value::Str(a), Value::Str(b)) => {
                 // SAFETY: strings are alive as long as they're on the stack.
@@ -95,6 +98,7 @@ impl fmt::Display for Value {
                 }
             }
             Value::Bool(b) => write!(f, "{b}"),
+            Value::Char(c) => write!(f, "{c}"),
             Value::Null => write!(f, "null"),
             Value::Str(s) => {
                 // SAFETY: value is alive (on the stack or in a live object).
@@ -179,6 +183,7 @@ impl Value {
             Value::Bool(b) => *b,
             Value::Int(n) => *n != 0,
             Value::Float(n) => *n != 0.0,
+            Value::Char(c) => *c != '\0',
             _ => true,
         }
     }
@@ -195,6 +200,7 @@ impl Value {
             Value::Int(_) => "Int",
             Value::Float(_) => "Float",
             Value::Bool(_) => "Bool",
+            Value::Char(_) => "Char",
             Value::Null => "Null",
             Value::Str(_) => "String",
             Value::List(_) => "List",
@@ -250,7 +256,7 @@ impl GcTrace for Value {
             Value::Native(p) => heap.mark(p.as_dyn_trace()),
             Value::Module(p) => heap.mark(p.as_dyn_trace()),
             // Scalars have no heap children.
-            Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Null => {}
+            Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Char(_) | Value::Null => {}
         }
     }
 

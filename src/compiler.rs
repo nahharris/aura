@@ -340,15 +340,16 @@ impl Compiler {
 
     /// Compile a full [`Program`] and return the module-level [`Chunk`].
     pub fn compile_program(mut self, program: Program) -> Result<Chunk, Vec<CompileError>> {
-        // Detect whether the program defines a top-level `defn main`.
+        // Detect whether the program defines a top-level `def main(...)`.
         let has_main = program.items.iter().any(|item| {
-            matches!(
-                item,
-                Item::Decl(Decl {
-                    kind: DeclKind::Defn(DefnDecl { name, receiver: None, .. }),
-                    ..
-                }) if name == "main"
-            )
+            if let Item::Decl(decl) = item {
+                if let DeclKind::Def(def_decl) = &decl.kind {
+                    return def_decl.bindings.iter().any(|b| {
+                        matches!(b, DefBinding::FuncDef { name, receiver: None, .. } if name == "main")
+                    });
+                }
+            }
+            false
         });
 
         for item in program.items {
@@ -388,7 +389,6 @@ impl Compiler {
     fn compile_decl(&mut self, decl: Decl) {
         match decl.kind {
             DeclKind::Def(d) => self.compile_def(d),
-            DeclKind::Defn(d) => self.compile_defn(d),
             DeclKind::Defmacro(_) => {
                 // defmacro is parsed but not yet compiled; ignore silently.
             }
@@ -458,6 +458,24 @@ impl Compiler {
                 } => {
                     // Type aliases generate a constructor function (same as the old deftype).
                     self.compile_type_alias_ctor(name, ty, span);
+                }
+                DefBinding::FuncDef {
+                    receiver,
+                    name,
+                    params,
+                    body,
+                    span,
+                    ..
+                } => {
+                    // Function definition — compile like the old defn.
+                    let full_name = match &receiver {
+                        Some(recv) => format!("{}.{}", recv, name),
+                        None => name.clone(),
+                    };
+                    let proto = self.compile_fn(full_name.clone(), &params, body, span);
+                    self.emit_const(Constant::FnProto(Box::new(proto)), span.line);
+                    let name_idx = self.chunk_mut().add_str(&full_name);
+                    self.emit_u16(OpCode::DefineGlobal, name_idx, span.line);
                 }
             }
         }
@@ -800,26 +818,6 @@ impl Compiler {
         }
     }
 
-    fn compile_defn(&mut self, defn: DefnDecl) {
-        let span = defn.span;
-        let full_name = match &defn.receiver {
-            Some(recv) => format!("{}.{}", recv, defn.name),
-            None => defn.name.clone(),
-        };
-
-        // Build the function proto by compiling the body in a new frame.
-        let proto = self.compile_fn(full_name.clone(), &defn.params, defn.body, span);
-
-        // Emit Closure instruction (captures no upvalues at module level normally).
-        self.emit_const(Constant::FnProto(Box::new(proto)), span.line);
-        // Wrap in a closure object (even if no upvalues).
-        let uv_count = 0u16; // module-level defns have no upvalues to capture.
-        let _ = uv_count; // used by VM at runtime
-                          // Emit DefineGlobal.
-        let name_idx = self.chunk_mut().add_str(&full_name);
-        self.emit_u16(OpCode::DefineGlobal, name_idx, span.line);
-    }
-
     // ─────────────────────────────────────────────────────────────────────────
     // Function compilation helper
     // ─────────────────────────────────────────────────────────────────────────
@@ -859,6 +857,7 @@ impl Compiler {
         match stmt {
             Stmt::Let(s) => self.compile_let(s),
             Stmt::Const(s) => self.compile_const(s),
+            Stmt::Def(s) => self.compile_def_stmt(s),
             Stmt::Return(s) => self.compile_return(s),
             Stmt::Break(s) => self.compile_break(s),
             Stmt::Continue(s) => self.compile_continue(s),
@@ -885,6 +884,48 @@ impl Compiler {
             let span = binding.span;
             self.compile_expr(binding.init);
             self.compile_pattern_binding_local(binding.pattern, span.line);
+        }
+    }
+
+    fn compile_def_stmt(&mut self, s: DefStmt) {
+        // Local `def` inside a block: compile each binding as a local binding.
+        for binding in s.bindings {
+            match binding {
+                DefBinding::Value { pattern, init, .. } => {
+                    let span = init.span();
+                    self.compile_expr(*init);
+                    self.compile_pattern_binding_local(pattern, span.line);
+                }
+                DefBinding::FuncDef {
+                    receiver,
+                    name,
+                    params,
+                    body,
+                    span,
+                    ..
+                } => {
+                    // Local function definition — compiles to a closure local.
+                    let full_name = match &receiver {
+                        Some(recv) => format!("{}.{}", recv, name),
+                        None => name.clone(),
+                    };
+                    let proto = self.compile_fn(full_name.clone(), &params, body, span);
+                    let proto_idx = self
+                        .chunk_mut()
+                        .add_constant(Constant::FnProto(Box::new(proto)));
+                    self.emit_u16(OpCode::Closure, proto_idx, span.line);
+                    let depth = self.frame().scope_depth;
+                    self.declare_local(full_name, depth);
+                }
+                DefBinding::TypeAlias { name, ty, span, .. } => {
+                    // Local type alias — compile a constructor local.
+                    // For simplicity we just emit null (type aliases are not meaningful locally).
+                    let _ = (name, ty);
+                    self.emit(OpCode::Null, span.line);
+                    // Discard — no local binding needed.
+                    self.emit(OpCode::Pop, span.line);
+                }
+            }
         }
     }
 
@@ -986,17 +1027,12 @@ impl Compiler {
                 _ => self.emit_const(Constant::Int(n), line),
             },
             Expr::Float(f, _) => self.emit_const(Constant::Float(f), line),
-            Expr::Bool(b, _) => {
-                if b {
-                    self.emit(OpCode::True, line);
-                } else {
-                    self.emit(OpCode::False, line);
-                }
-            }
-            Expr::Null(_) => self.emit(OpCode::Null, line),
 
             // ── String literals ───────────────────────────────────────────────
             Expr::Str(parts, _) => self.compile_str(parts, line),
+
+            // ── Char literals ─────────────────────────────────────────────────
+            Expr::Char(c, _) => self.emit_const(Constant::Char(c), line),
 
             // ── Names ─────────────────────────────────────────────────────────
             Expr::Ident(name, span) => self.resolve_name(&name, span),
@@ -1524,10 +1560,46 @@ impl Compiler {
                         // Always matches; bind is handled below.
                     }
                     Pattern::Literal(lit_expr) => {
-                        // Compare arg[i] == literal.
-                        self.emit_u8(OpCode::LoadLocal, i as u8, arm_line);
-                        self.compile_expr(lit_expr.clone());
-                        self.emit(OpCode::CmpEq, arm_line);
+                        // Special-case: `[]` empty list pattern — check length == 0.
+                        let is_empty_list = matches!(
+                            &lit_expr,
+                            Expr::List { items, .. } if items.is_empty()
+                        );
+                        if is_empty_list {
+                            // Compound check: is_list(arg[i]) && list_len(arg[i]) == 0
+                            // Emits a single boolean result on the stack (one fail_patch).
+                            //
+                            // Bytecode layout:
+                            //   GetTag(arg)
+                            //   CmpEq "List"         ; stack: [is_list: bool]
+                            //   JumpIfFalse done     ; if not a list, skip length check
+                            //   Pop                  ; pop true (it is a list)
+                            //   list_len(arg) == 0   ; stack: [len_is_zero: bool]
+                            //   [done]:              ; stack: [bool] — one result either way
+                            self.emit_u8(OpCode::LoadLocal, i as u8, arm_line);
+                            self.emit(OpCode::GetTag, arm_line);
+                            let list_tag_idx = self.chunk_mut().add_str("List");
+                            self.emit_u16(OpCode::Const, list_tag_idx, arm_line);
+                            self.emit(OpCode::CmpEq, arm_line);
+                            // JumpIfFalse → skip to 'done' (will be patched below)
+                            let skip_patch = self.emit_jump(OpCode::JumpIfFalse, arm_line);
+                            // It IS a list: pop the true result, then check length.
+                            self.emit(OpCode::Pop, arm_line);
+                            let fn_idx = self.chunk_mut().add_str("list_len");
+                            self.emit_u16(OpCode::LoadGlobal, fn_idx, arm_line);
+                            self.emit_u8(OpCode::LoadLocal, i as u8, arm_line);
+                            self.emit_u8(OpCode::Call, 1, arm_line);
+                            self.emit_const(Constant::Int(0), arm_line);
+                            self.emit(OpCode::CmpEq, arm_line);
+                            // Patch the skip jump to here (both paths merge here with one bool).
+                            self.patch_jump(skip_patch);
+                            // Now stack has exactly one bool; handled by the normal fail_patch below.
+                        } else {
+                            // Compare arg[i] == literal.
+                            self.emit_u8(OpCode::LoadLocal, i as u8, arm_line);
+                            self.compile_expr(lit_expr.clone());
+                            self.emit(OpCode::CmpEq, arm_line);
+                        }
                         let patch = self.emit_jump(OpCode::JumpIfFalse, arm_line);
                         self.emit(OpCode::Pop, arm_line);
                         fail_patches.push(patch);
@@ -1852,14 +1924,14 @@ mod tests {
 
     #[test]
     fn test_compile_defn() {
-        let chunk = compile_src("defn add(a, b) { a + b }");
+        let chunk = compile_src("def add(a, b) { a + b }");
         assert!(!chunk.code.is_empty());
     }
 
     #[test]
     fn test_compile_main_is_called() {
         // When main is defined, it should be auto-called (chunk is non-trivial).
-        let chunk = compile_src("defn main() { def x = 1; }");
+        let chunk = compile_src("def main() { def x = 1; }");
         assert!(!chunk.code.is_empty());
     }
 
@@ -1921,7 +1993,7 @@ mod tests {
         // We verify that the function body chunk does NOT consist solely of
         // Null + StrConcat (the broken behaviour) by checking that the inner
         // FnProto chunk has no Null constant.
-        let chunk = compile_src(r#"defn greet(name: String) -> String { "Hello $(name)!" }"#);
+        let chunk = compile_src(r#"def greet(name: String) -> String { "Hello $(name)!" }"#);
         // Find the FnProto for `greet`.
         let greet_proto = chunk
             .constants

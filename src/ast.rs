@@ -39,7 +39,7 @@ pub struct Program {
 pub enum Item {
     /// `use (x, y) = "path";` — module import with optional destructuring.
     Use(UseDecl),
-    /// Any declaration: `def`, `defn`, `deftype`, `defmacro`, or a `pub`-prefixed one.
+    /// Any declaration: `def`, `defmacro`, or a `pub`-prefixed one.
     Decl(Decl),
 }
 
@@ -88,10 +88,9 @@ pub struct Decl {
 /// The concrete kind of a module-level declaration.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DeclKind {
-    /// `def name = expr` or `def Name = TypeExpr` — a module-level constant or type alias.
+    /// `def name = expr`, `def name(params) { body }`, or `def Name = TypeExpr`.
+    /// The single unified declaration form.
     Def(DefDecl),
-    /// `defn name(params) -> RetType { body }` — a named function or method.
-    Defn(DefnDecl),
     /// `defmacro name(params) -> RetType { body }` — a compile-time macro.
     /// The body is stored as an AST but macro expansion is a future feature.
     Defmacro(DefmacroDecl),
@@ -99,12 +98,14 @@ pub enum DeclKind {
 
 // ── def ──────────────────────────────────────────────────────────────────────
 
-/// `def name = expr` or `def[T] Name = TypeExpr` — a module-level declaration.
+/// `def name = expr`, `def name(params) { body }`, or `def[T] Name = TypeExpr`.
 ///
-/// `def` is the universal static declaration. It covers:
+/// `def` is the universal declaration keyword. It covers:
 /// - Value bindings:   `def pi = 3.14159`
 /// - Type aliases:     `def Person = (name: String, age: Int)`
 /// - Destructuring:    `def (x, y) = compute_coords()`
+/// - Function defs:    `def add(a: Int, b: Int) -> Int { a + b }`
+/// - Method defs:      `def Point.distance(self, other: Point) -> Float { ... }`
 ///
 /// Multiple bindings may appear in a single `def`:
 /// ```aura
@@ -141,30 +142,65 @@ pub enum DefBinding {
     /// ```
     TypeAlias {
         name: String,
-        type_params: Vec<String>,
+        type_params: Vec<TypeParam>,
         ty: TypeExpr,
+        span: Span,
+    },
+    /// A function or method definition: `def name(params) -> RetType { body }`.
+    ///
+    /// ```aura
+    /// def add(a: Int, b: Int) -> Int { a + b }
+    /// def[T: Show] show(t: T) { println(t.to_string()) }
+    /// def Point.distance(self, other: Point) -> Float { ... }
+    /// ```
+    FuncDef {
+        /// Optional receiver type name for method declarations (e.g., `"Point"`).
+        receiver: Option<String>,
+        /// The function's own name.
+        name: String,
+        /// Optional generic type parameters with optional constraints.
+        type_params: Vec<TypeParam>,
+        /// The parameter list.
+        params: Vec<Param>,
+        /// Optional declared return type.
+        return_type: Option<TypeExpr>,
+        /// The function body.
+        body: Block,
         span: Span,
     },
 }
 
-// ── defn ─────────────────────────────────────────────────────────────────────
+/// A generic type parameter with optional interface constraints.
+///
+/// ```aura
+/// def[T] foo(t: T) { ... }              // unconstrained
+/// def[T: Show] foo(t: T) { ... }        // single constraint
+/// def[T: (Show, Eq)] foo(t: T) { ... }  // multi-constraint tuple
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeParam {
+    /// The type parameter name, e.g. `"T"`.
+    pub name: String,
+    /// Interface constraints for this type param (empty = unconstrained).
+    pub constraints: Vec<TypeExpr>,
+    pub span: Span,
+}
+
+// ── defn (legacy internal — no longer parsed, kept for compiler compatibility) ──
 
 /// `defn name(params) -> RetType { body }` — a named function or method.
 ///
-/// The optional receiver prefix (`Point.distanceTo`) makes this a method.
-///
-/// ```aura
-/// defn add(a: Int, b: Int) -> Int { a + b }
-/// defn Point.distanceTo(self, other: Point) -> Float { ... }
-/// ```
+/// **Deprecated**: `defn` is no longer valid source syntax. This struct is
+/// retained only for internal compiler paths that have not yet been migrated
+/// to `DefBinding::FuncDef`. New code must not produce or consume this type.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DefnDecl {
     /// Optional receiver type name for method declarations (e.g., `"Point"`).
     pub receiver: Option<String>,
     /// The function's own name.
     pub name: String,
-    /// Optional generic type parameters (e.g., `[T, U]`).
-    pub type_params: Vec<String>,
+    /// Optional generic type parameters.
+    pub type_params: Vec<TypeParam>,
     /// The parameter list.
     pub params: Vec<Param>,
     /// Optional declared return type.
@@ -204,7 +240,7 @@ pub struct Param {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DefmacroDecl {
     pub name: String,
-    pub type_params: Vec<String>,
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
     pub body: Option<Block>,
@@ -292,8 +328,10 @@ impl TypeExpr {
 pub enum Stmt {
     /// `let x = expr, y = expr;` — mutable local binding(s).
     Let(LetStmt),
-    /// `const x = expr;` — immutable local binding.
+    /// `const x = expr;` — immutable local binding (legacy; prefer `def`).
     Const(ConstStmt),
+    /// `def x = expr;` or `def f(params) { body }` — local immutable binding or local fn.
+    Def(DefStmt),
     /// `return value` or `return 'label value` — exit a scope with a value.
     Return(ReturnStmt),
     /// `break` or `break 'label value` — exit a loop.
@@ -310,6 +348,7 @@ impl Stmt {
         match self {
             Stmt::Let(s) => s.span,
             Stmt::Const(s) => s.span,
+            Stmt::Def(s) => s.span,
             Stmt::Return(s) => s.span,
             Stmt::Break(s) => s.span,
             Stmt::Continue(s) => s.span,
@@ -332,6 +371,16 @@ pub struct LetStmt {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConstStmt {
     pub bindings: Vec<LocalBinding>,
+    pub span: Span,
+}
+
+/// `def x = expr;` or `def f(params) { body }` — local immutable binding or local function.
+///
+/// Mirrors the top-level `DefDecl` but appears inside a block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DefStmt {
+    /// One or more bindings (value, type alias, or function def).
+    pub bindings: Vec<DefBinding>,
     pub span: Span,
 }
 
@@ -400,6 +449,9 @@ pub struct ExprStmt {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// An expression — any syntactic construct that produces a value.
+///
+/// Note: `true`, `false`, and `null` are no longer dedicated `Expr` variants.
+/// They lex as `Ident` tokens and resolve to prelude globals at runtime.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     // ── Literals ─────────────────────────────────────────────────────────────
@@ -407,12 +459,10 @@ pub enum Expr {
     Int(i64, Span),
     /// A floating-point literal: `3.14`.
     Float(f64, Span),
-    /// A boolean literal: `true` or `false`.
-    Bool(bool, Span),
-    /// The `null` literal.
-    Null(Span),
     /// A string literal, potentially with interpolation segments.
     Str(Vec<StringPart>, Span),
+    /// A character literal: `'a'`, `'\n'`, `'\0'`.
+    Char(char, Span),
 
     // ── Names ────────────────────────────────────────────────────────────────
     /// A plain identifier: `foo`, `x`, `add`.
@@ -558,9 +608,8 @@ impl Expr {
         match self {
             Expr::Int(_, s) => *s,
             Expr::Float(_, s) => *s,
-            Expr::Bool(_, s) => *s,
-            Expr::Null(s) => *s,
             Expr::Str(_, s) => *s,
+            Expr::Char(_, s) => *s,
             Expr::Ident(_, s) => *s,
             Expr::DotIdent(_, s) => *s,
             Expr::Builtin { span, .. } => *span,

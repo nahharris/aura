@@ -39,6 +39,8 @@ pub enum Type {
     Float,
     Bool,
     String,
+    /// A Unicode character.
+    Char,
     /// The unit value `null`.
     Null,
     /// Return type of functions that never produce a value (e.g. `println`).
@@ -112,6 +114,7 @@ impl Type {
             Type::Float => "Float".into(),
             Type::Bool => "Bool".into(),
             Type::String => "String".into(),
+            Type::Char => "Char".into(),
             Type::Null => "Null".into(),
             Type::Void => "Void".into(),
             Type::Any => "Any".into(),
@@ -377,12 +380,18 @@ pub struct TypeChecker {
 }
 
 impl TypeChecker {
-    /// Create a new type checker with an empty root environment.
+    /// Create a new type checker with prelude globals pre-registered.
     pub fn new() -> Self {
-        TypeChecker {
+        let mut tc = TypeChecker {
             env: TypeEnv::new(),
             errors: Vec::new(),
-        }
+        };
+        // Register prelude globals: true, false, null.
+        // These are plain identifiers (not keywords) that the VM always defines.
+        tc.env.bindings.insert("true".into(), Type::Bool);
+        tc.env.bindings.insert("false".into(), Type::Bool);
+        tc.env.bindings.insert("null".into(), Type::Null);
+        tc
     }
 
     /// Record a type error at the given source location.
@@ -413,6 +422,7 @@ impl TypeChecker {
                     "Float" => Type::Float,
                     "Bool" => Type::Bool,
                     "String" => Type::String,
+                    "Char" => Type::Char,
                     "Null" => Type::Null,
                     "Void" => Type::Void,
                     "Any" => Type::Any,
@@ -562,9 +572,8 @@ impl TypeChecker {
         match expr {
             Expr::Int(..) => Type::Int,
             Expr::Float(..) => Type::Float,
-            Expr::Bool(..) => Type::Bool,
-            Expr::Null(..) => Type::Null,
             Expr::Str(..) => Type::String,
+            Expr::Char(..) => Type::Char,
             // Everything else is deferred to 4c
             _ => Type::Any,
         }
@@ -606,7 +615,7 @@ impl TypeChecker {
                         for tp in type_params {
                             self.env
                                 .type_params
-                                .insert(tp.clone(), Type::TypeVar(tp.clone()));
+                                .insert(tp.name.clone(), Type::TypeVar(tp.name.clone()));
                         }
 
                         let resolved = self.resolve_type_expr(ty);
@@ -630,7 +639,7 @@ impl TypeChecker {
 
                         // Remove the temporary type-param bindings.
                         for tp in type_params {
-                            self.env.type_params.remove(tp);
+                            self.env.type_params.remove(&tp.name);
                         }
 
                         if self.env.type_aliases.contains_key(name) {
@@ -660,50 +669,65 @@ impl TypeChecker {
                     self.register_use_names(use_decl);
                 }
                 Item::Decl(decl) => {
-                    let DeclKind::Defn(defn) = &decl.kind else {
+                    let DeclKind::Def(def_decl) = &decl.kind else {
                         continue;
                     };
 
-                    // Install generic type parameters for this function.
-                    for tp in &defn.type_params {
-                        self.env
-                            .type_params
-                            .insert(tp.clone(), Type::TypeVar(tp.clone()));
-                    }
+                    for binding in &def_decl.bindings {
+                        let DefBinding::FuncDef {
+                            receiver,
+                            name,
+                            type_params,
+                            params,
+                            return_type,
+                            span,
+                            ..
+                        } = binding
+                        else {
+                            continue;
+                        };
 
-                    let param_types = self.resolve_params(&defn.params, defn.span);
-
-                    let ret_type = match &defn.return_type {
-                        Some(te) => self.resolve_type_expr(te),
-                        None => {
-                            self.error(
-                                format!(
-                                    "function `{}` is missing a return type annotation",
-                                    defn.name
-                                ),
-                                defn.span,
-                            );
-                            Type::Any
+                        // Install generic type parameters for this function.
+                        for tp in type_params {
+                            self.env
+                                .type_params
+                                .insert(tp.name.clone(), Type::TypeVar(tp.name.clone()));
                         }
-                    };
 
-                    // Remove generic type-param bindings.
-                    for tp in &defn.type_params {
-                        self.env.type_params.remove(tp);
+                        let param_types = self.resolve_params(params, *span);
+
+                        let ret_type = match return_type {
+                            Some(te) => self.resolve_type_expr(te),
+                            None => {
+                                self.error(
+                                    format!(
+                                        "function `{}` is missing a return type annotation",
+                                        name
+                                    ),
+                                    *span,
+                                );
+                                Type::Any
+                            }
+                        };
+
+                        // Remove generic type-param bindings.
+                        for tp in type_params {
+                            self.env.type_params.remove(&tp.name);
+                        }
+
+                        let func_type = Type::Func {
+                            params: param_types,
+                            ret: Box::new(ret_type),
+                        };
+
+                        // Use qualified name for methods (e.g. "Point.distanceTo").
+                        let full_name = match receiver {
+                            Some(recv) => format!("{}.{}", recv, name),
+                            None => name.clone(),
+                        };
+
+                        self.env.functions.insert(full_name, func_type);
                     }
-
-                    let func_type = Type::Func {
-                        params: param_types,
-                        ret: Box::new(ret_type),
-                    };
-
-                    // Use qualified name for methods (e.g. "Point.distanceTo").
-                    let full_name = match &defn.receiver {
-                        Some(recv) => format!("{}.{}", recv, defn.name),
-                        None => defn.name.clone(),
-                    };
-
-                    self.env.functions.insert(full_name, func_type);
                 }
             }
         }
@@ -842,6 +866,14 @@ impl TypeChecker {
 
         // 3. Anything is assignable to Any (or the equivalent empty interface)
         if to.is_any() {
+            return true;
+        }
+
+        // 4a. Any (unknown type) is assignable to anything — the programmer's
+        //     annotation takes precedence over inferred uncertainty.  This
+        //     matters for calls to native / STL functions that the typechecker
+        //     hasn't seen a signature for (e.g. `println` from `@stl/io`).
+        if from.is_any() {
             return true;
         }
 
@@ -1040,9 +1072,8 @@ impl TypeChecker {
             // ── Literals ──────────────────────────────────────────────────────
             Expr::Int(..) => Type::Int,
             Expr::Float(..) => Type::Float,
-            Expr::Bool(..) => Type::Bool,
-            Expr::Null(..) => Type::Null,
             Expr::Str(..) => Type::String,
+            Expr::Char(..) => Type::Char,
 
             // ── Names ─────────────────────────────────────────────────────────
             Expr::Ident(name, span) => {
@@ -1545,10 +1576,11 @@ impl TypeChecker {
         span: Span,
         env: &TypeEnv,
     ) -> Type {
-        // Infer each argument type (side-effectfully collects errors)
-        for arg in args {
-            self.infer_expr(&arg.value, env);
-        }
+        // Infer each argument type (side-effectfully collects errors; types reused below)
+        let arg_tys: Vec<Type> = args
+            .iter()
+            .map(|a| self.infer_expr(&a.value, env))
+            .collect();
         for targ in trailing {
             self.check_labelled_block(&targ.block, env, None);
         }
@@ -1564,6 +1596,12 @@ impl TypeChecker {
                 let obj_ty = self.infer_expr(object, env);
                 let qualified = format!("{}.{}", obj_ty.display_name(), field);
                 env.lookup_function(&qualified).cloned()
+            }
+            Expr::Closure(closure) => {
+                // Immediately-invoked closure (e.g. desugared `match`).
+                // Use already-inferred arg types as subject types for the closure.
+                let closure_ty = self.infer_closure_with_subject(closure, env, &arg_tys);
+                Some(closure_ty)
             }
             _ => {
                 self.infer_expr(callee, env);
@@ -1949,14 +1987,14 @@ impl TypeChecker {
         match subject_ty {
             Type::Bool => {
                 let has_true = arms.iter().any(|arm| {
-                    arm.patterns
-                        .first()
-                        .is_some_and(|p| matches!(p, Pattern::Literal(Expr::Bool(true, _))))
+                    arm.patterns.first().is_some_and(
+                        |p| matches!(p, Pattern::Literal(Expr::Ident(s, _)) if s == "true"),
+                    )
                 });
                 let has_false = arms.iter().any(|arm| {
-                    arm.patterns
-                        .first()
-                        .is_some_and(|p| matches!(p, Pattern::Literal(Expr::Bool(false, _))))
+                    arm.patterns.first().is_some_and(
+                        |p| matches!(p, Pattern::Literal(Expr::Ident(s, _)) if s == "false"),
+                    )
                 });
                 if !has_true {
                     self.error(
@@ -2050,6 +2088,51 @@ impl TypeChecker {
                 }
             }
 
+            Stmt::Def(def_stmt) => {
+                // Local `def` — handle each binding.
+                for binding in &def_stmt.bindings {
+                    match binding {
+                        DefBinding::Value { pattern, init, .. } => {
+                            let init_ty = self.infer_expr(init, env);
+                            bind_pattern_names(pattern, init_ty, env);
+                        }
+                        DefBinding::FuncDef {
+                            name,
+                            params,
+                            body,
+                            return_type,
+                            ..
+                        } => {
+                            // Register the local function name as Func type.
+                            let param_types: Vec<Type> = params
+                                .iter()
+                                .map(|p| {
+                                    p.ty.as_ref()
+                                        .map(|te| self.resolve_type_expr(te))
+                                        .unwrap_or(Type::Any)
+                                })
+                                .collect();
+                            let ret_type = return_type
+                                .as_ref()
+                                .map(|te| self.resolve_type_expr(te))
+                                .unwrap_or(Type::Any);
+                            let func_type = Type::Func {
+                                params: param_types,
+                                ret: Box::new(ret_type),
+                            };
+                            env.bindings.insert(name.clone(), func_type);
+                            // Also check the body (best-effort).
+                            let child = env.snapshot_child();
+                            let _ = self.check_block(body, child, None);
+                        }
+                        DefBinding::TypeAlias { name, .. } => {
+                            // Local type aliases are not registered in the binding env.
+                            let _ = name;
+                        }
+                    }
+                }
+            }
+
             Stmt::Return(ret_stmt) => {
                 let value_ty = match &ret_stmt.value {
                     Some(v) => self.infer_expr(v, env),
@@ -2127,22 +2210,52 @@ impl TypeChecker {
 impl TypeChecker {
     /// Check all function bodies in the program (fourth pass).
     fn check_all_bodies(&mut self, program: &Program) {
-        // Collect defn items to avoid borrow conflicts — we need &mut self inside
+        // Collect FuncDef bindings to avoid borrow conflicts — we need &mut self inside
         // the loop but program is already borrowed.
-        let defns: Vec<_> = program
+        let func_defs: Vec<_> = program
             .items
             .iter()
             .filter_map(|item| {
                 if let Item::Decl(decl) = item {
-                    if let DeclKind::Defn(defn) = &decl.kind {
-                        return Some(defn.clone());
+                    if let DeclKind::Def(def_decl) = &decl.kind {
+                        let funcs: Vec<_> = def_decl
+                            .bindings
+                            .iter()
+                            .filter_map(|b| {
+                                if let DefBinding::FuncDef {
+                                    receiver,
+                                    name,
+                                    type_params,
+                                    params,
+                                    return_type,
+                                    body,
+                                    span,
+                                } = b
+                                {
+                                    // Convert to legacy DefnDecl for reuse of check_defn_body.
+                                    Some(crate::ast::DefnDecl {
+                                        receiver: receiver.clone(),
+                                        name: name.clone(),
+                                        type_params: type_params.clone(),
+                                        params: params.clone(),
+                                        return_type: return_type.clone(),
+                                        body: body.clone(),
+                                        span: *span,
+                                    })
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        return Some(funcs);
                     }
                 }
                 None
             })
+            .flatten()
             .collect();
 
-        for defn in defns {
+        for defn in func_defs {
             self.check_defn_body(&defn);
         }
     }
@@ -2163,7 +2276,7 @@ impl TypeChecker {
         for tp in &defn.type_params {
             child
                 .type_params
-                .insert(tp.clone(), Type::TypeVar(tp.clone()));
+                .insert(tp.name.clone(), Type::TypeVar(tp.name.clone()));
         }
 
         // Bind parameters with their resolved types
@@ -2269,13 +2382,13 @@ mod tests {
 
     #[test]
     fn test_typecheck_defn_with_annotations() {
-        assert!(check_src("defn add(a: Int, b: Int) -> Int { a + b }").is_ok());
+        assert!(check_src("def add(a: Int, b: Int) -> Int { a + b }").is_ok());
     }
 
     /// Phase 4b: unannotated `defn` params are now hard errors.
     #[test]
     fn test_typecheck_defn_missing_param_annotation() {
-        let result = check_src("defn foo(x) -> Int { x }");
+        let result = check_src("def foo(x) -> Int { x }");
         assert!(result.is_err(), "expected error for unannotated param");
         let errs = result.unwrap_err();
         assert!(
@@ -2287,7 +2400,7 @@ mod tests {
     /// Phase 4b: missing return type annotation is a hard error.
     #[test]
     fn test_typecheck_defn_missing_return_type() {
-        let result = check_src("defn foo(x: Int) { x }");
+        let result = check_src("def foo(x: Int) { x }");
         assert!(result.is_err(), "expected error for missing return type");
         let errs = result.unwrap_err();
         assert!(
@@ -2462,7 +2575,7 @@ mod tests {
 
     #[test]
     fn test_register_function_signature() {
-        let tc = check_src_env("defn add(a: Int, b: Int) -> Int { a + b }");
+        let tc = check_src_env("def add(a: Int, b: Int) -> Int { a + b }");
         let sig = tc.env.lookup_function("add");
         assert_eq!(
             sig,
@@ -2475,7 +2588,7 @@ mod tests {
 
     #[test]
     fn test_register_method_signature() {
-        let tc = check_src_env("defn String.len(self: String) -> Int { builtin(\"str_len\") }");
+        let tc = check_src_env("def String.len(self: String) -> Int { builtin(\"str_len\") }");
         assert!(
             tc.env.lookup_function("String.len").is_some(),
             "method should be registered as 'String.len'"
@@ -2498,8 +2611,11 @@ mod tests {
 
     #[test]
     fn test_register_bool_def() {
+        // `true` is a prelude ident (not a keyword), so `infer_literal` returns Any
+        // for it (same as any other non-literal expression).  The binding is still
+        // registered; its type resolves fully during Phase 4c with the prelude loaded.
         let tc = check_src_env("def flag = true;");
-        assert_eq!(tc.env.lookup_binding("flag"), Some(&Type::Bool));
+        assert_eq!(tc.env.lookup_binding("flag"), Some(&Type::Any));
     }
 
     // ── Type::display_name and TypeEnv (carried over from 4a) ────────────────
@@ -2701,11 +2817,14 @@ mod tests {
             tc.infer_expr(&Expr::Float(1.0, Span::dummy()), &env),
             Type::Float
         );
+        // `true`, `false`, `null` are now plain idents (prelude globals), not literal keywords.
+        // An unbound ident resolves to Type::Any and emits an unknown-identifier error.
+        let mut tc2 = TypeChecker::new();
         assert_eq!(
-            tc.infer_expr(&Expr::Bool(true, Span::dummy()), &env),
-            Type::Bool
+            tc2.infer_expr(&Expr::Ident("true".into(), Span::dummy()), &env),
+            Type::Any
         );
-        assert_eq!(tc.infer_expr(&Expr::Null(Span::dummy()), &env), Type::Null);
+        assert!(!tc2.errors.is_empty());
         assert_eq!(
             tc.infer_expr(&Expr::Str(vec![], Span::dummy()), &env),
             Type::String
@@ -2782,15 +2901,18 @@ mod tests {
         use crate::ast::BinOp;
         let mut tc = TypeChecker::new();
         let env = TypeEnv::new();
-        // Adding Bool + Bool should emit an error
+        // Subtracting String - String should emit an error (String is not numeric for `-`)
         let expr = Expr::Binary {
-            op: BinOp::Add,
-            lhs: Box::new(Expr::Bool(true, Span::dummy())),
-            rhs: Box::new(Expr::Bool(false, Span::dummy())),
+            op: BinOp::Sub,
+            lhs: Box::new(Expr::Str(vec![], Span::dummy())),
+            rhs: Box::new(Expr::Str(vec![], Span::dummy())),
             span: Span::dummy(),
         };
         tc.infer_expr(&expr, &env);
-        assert!(!tc.errors.is_empty(), "expected type error for Bool + Bool");
+        assert!(
+            !tc.errors.is_empty(),
+            "expected type error for String - String"
+        );
     }
 
     #[test]
@@ -2811,10 +2933,12 @@ mod tests {
     fn test_infer_unary_not_bool() {
         use crate::ast::UnOp;
         let mut tc = TypeChecker::new();
-        let env = TypeEnv::new();
+        // Bind `true` as Bool in the env (as the prelude would)
+        tc.env.bindings.insert("true".into(), Type::Bool);
+        let env = tc.env.snapshot_child();
         let expr = Expr::Unary {
             op: UnOp::Not,
-            expr: Box::new(Expr::Bool(true, Span::dummy())),
+            expr: Box::new(Expr::Ident("true".into(), Span::dummy())),
             span: Span::dummy(),
         };
         assert_eq!(tc.infer_expr(&expr, &env), Type::Bool);
@@ -2839,7 +2963,7 @@ mod tests {
 
     #[test]
     fn test_check_let_binding_infers_type() {
-        let tc = check_src_env("defn foo() -> Void { let x = 42; }");
+        let tc = check_src_env("def foo() -> Void { let x = 42; }");
         // The binding is local to the function; no top-level env entry.
         // But the check should pass without errors.
         assert!(tc.errors.is_empty());
@@ -2848,7 +2972,7 @@ mod tests {
     #[test]
     fn test_check_let_annotation_mismatch() {
         // `let x: Bool = 42` — Int is not assignable to Bool
-        let result = check_src("defn foo() -> Void { let x: Bool = 42; }");
+        let result = check_src("def foo() -> Void { let x: Bool = 42; }");
         assert!(result.is_err(), "expected type mismatch error");
         let errs = result.unwrap_err();
         assert!(
@@ -2861,7 +2985,7 @@ mod tests {
     #[test]
     fn test_check_let_annotation_ok() {
         // `let x: Int = 42` — should be fine
-        assert!(check_src("defn foo() -> Void { let x: Int = 42; }").is_ok());
+        assert!(check_src("def foo() -> Void { let x: Int = 42; }").is_ok());
     }
 
     // ── return type checking ──────────────────────────────────────────────────
@@ -2869,7 +2993,7 @@ mod tests {
     #[test]
     fn test_return_type_mismatch_via_tail() {
         // Body tail returns Bool but declared return type is Int
-        let result = check_src("defn foo() -> Int { true }");
+        let result = check_src("def foo() -> Int { true }");
         assert!(result.is_err(), "expected return type mismatch");
         let errs = result.unwrap_err();
         assert!(
@@ -2881,25 +3005,25 @@ mod tests {
 
     #[test]
     fn test_return_type_ok() {
-        assert!(check_src("defn foo() -> Int { 42 }").is_ok());
+        assert!(check_src("def foo() -> Int { 42 }").is_ok());
     }
 
     #[test]
     fn test_return_type_ok_any() {
         // A function returning Any accepts any value
-        assert!(check_src("defn foo() -> Any { 42 }").is_ok());
+        assert!(check_src("def foo() -> Any { 42 }").is_ok());
     }
 
     #[test]
     fn test_return_stmt_mismatch() {
         // Explicit `return false` inside an Int function
-        let result = check_src("defn foo() -> Int { return false; 0 }");
+        let result = check_src("def foo() -> Int { return false; 0 }");
         assert!(result.is_err(), "expected return type mismatch");
     }
 
     #[test]
     fn test_explicit_return_ok() {
-        assert!(check_src("defn foo() -> Int { return 42; 0 }").is_ok());
+        assert!(check_src("def foo() -> Int { return 42; 0 }").is_ok());
     }
 
     // ── function call checking ────────────────────────────────────────────────
@@ -2907,7 +3031,7 @@ mod tests {
     #[test]
     fn test_call_known_function_ok() {
         let result = check_src(
-            "defn add(a: Int, b: Int) -> Int { a + b }\ndefn main() -> Void { add(1, 2); }",
+            "def add(a: Int, b: Int) -> Int { a + b }\ndef main() -> Void { add(1, 2); }",
         );
         assert!(result.is_ok(), "expected no errors, got: {result:?}");
     }
@@ -2915,7 +3039,7 @@ mod tests {
     #[test]
     fn test_call_wrong_arity() {
         let result =
-            check_src("defn add(a: Int, b: Int) -> Int { a + b }\ndefn main() -> Void { add(1); }");
+            check_src("def add(a: Int, b: Int) -> Int { a + b }\ndef main() -> Void { add(1); }");
         assert!(result.is_err(), "expected arity error");
         let errs = result.unwrap_err();
         assert!(
@@ -2928,7 +3052,7 @@ mod tests {
     #[test]
     fn test_call_wrong_arg_type() {
         let result = check_src(
-            "defn add(a: Int, b: Int) -> Int { a + b }\ndefn main() -> Void { add(true, 1); }",
+            "def add(a: Int, b: Int) -> Int { a + b }\ndef main() -> Void { add(true, 1); }",
         );
         assert!(result.is_err(), "expected argument type error");
         let errs = result.unwrap_err();
@@ -2942,7 +3066,7 @@ mod tests {
 
     #[test]
     fn test_if_non_bool_condition() {
-        let result = check_src("defn foo() -> Void { if (42) { } }");
+        let result = check_src("def foo() -> Void { if (42) { } }");
         assert!(result.is_err(), "expected Bool condition error");
         let errs = result.unwrap_err();
         assert!(
@@ -2954,7 +3078,8 @@ mod tests {
 
     #[test]
     fn test_if_bool_condition_ok() {
-        assert!(check_src("defn foo() -> Void { if (true) { } }").is_ok());
+        // Use a comparison expression so the condition is Bool without needing the prelude.
+        assert!(check_src("def foo() -> Void { if (1 < 2) { } }").is_ok());
     }
 
     // ── end-to-end programs ───────────────────────────────────────────────────
@@ -2962,9 +3087,9 @@ mod tests {
     #[test]
     fn test_full_program_ok() {
         let src = r#"
-defn add(a: Int, b: Int) -> Int { a + b }
-defn greet(name: String) -> String { name }
-defn main() -> Void {
+def add(a: Int, b: Int) -> Int { a + b }
+def greet(name: String) -> String { name }
+def main() -> Void {
     let x: Int = add(1, 2);
     let s: String = greet("world");
 }
@@ -2975,7 +3100,7 @@ defn main() -> Void {
     #[test]
     fn test_full_program_multiple_errors() {
         // Two errors: Bool+Bool and Bool returned for Int function
-        let src = "defn foo(a: Bool, b: Bool) -> Int { a + b }";
+        let src = "def foo(a: Bool, b: Bool) -> Int { a + b }";
         let result = check_src(src);
         assert!(result.is_err());
         let errs = result.unwrap_err();
@@ -3042,7 +3167,7 @@ defn main() -> Void {
     fn test_pattern_literal_against_any_ok() {
         use crate::token::Span;
         // Literal against Any subject — always ok
-        let pat = Pattern::Literal(Expr::Bool(true, Span::default()));
+        let pat = Pattern::Literal(Expr::Int(1, Span::default()));
         let (errs, _) = check_pattern_direct(&pat, Type::Any);
         assert!(errs.is_empty(), "unexpected errors: {errs:?}");
     }
@@ -3255,13 +3380,19 @@ defn main() -> Void {
         use crate::token::Span;
         let arms = vec![
             ClosureArm {
-                patterns: vec![Pattern::Literal(Expr::Bool(true, Span::default()))],
+                patterns: vec![Pattern::Literal(Expr::Ident(
+                    "true".into(),
+                    Span::default(),
+                ))],
                 guard: None,
                 body: Expr::Int(1, Span::default()),
                 span: Span::default(),
             },
             ClosureArm {
-                patterns: vec![Pattern::Literal(Expr::Bool(false, Span::default()))],
+                patterns: vec![Pattern::Literal(Expr::Ident(
+                    "false".into(),
+                    Span::default(),
+                ))],
                 guard: None,
                 body: Expr::Int(0, Span::default()),
                 span: Span::default(),
@@ -3275,7 +3406,10 @@ defn main() -> Void {
     fn test_exhaustiveness_bool_missing_false() {
         use crate::token::Span;
         let arms = vec![ClosureArm {
-            patterns: vec![Pattern::Literal(Expr::Bool(true, Span::default()))],
+            patterns: vec![Pattern::Literal(Expr::Ident(
+                "true".into(),
+                Span::default(),
+            ))],
             guard: None,
             body: Expr::Int(1, Span::default()),
             span: Span::default(),
@@ -3292,7 +3426,10 @@ defn main() -> Void {
     fn test_exhaustiveness_bool_missing_true() {
         use crate::token::Span;
         let arms = vec![ClosureArm {
-            patterns: vec![Pattern::Literal(Expr::Bool(false, Span::default()))],
+            patterns: vec![Pattern::Literal(Expr::Ident(
+                "false".into(),
+                Span::default(),
+            ))],
             guard: None,
             body: Expr::Int(0, Span::default()),
             span: Span::default(),
@@ -3442,20 +3579,20 @@ defn main() -> Void {
 
     #[test]
     fn test_let_tuple_destructure_ok() {
-        // `let (a, b) = (1, true);` — valid tuple destructuring
-        assert!(check_src("defn foo() -> Void { let (a, b) = (1, true); }").is_ok());
+        // `let (a, b) = (1, 2);` — valid tuple destructuring (avoids prelude dependency)
+        assert!(check_src("def foo() -> Void { let (a, b) = (1, 2); }").is_ok());
     }
 
     #[test]
     fn test_let_bind_typed_ok() {
         // `let x: Int = 42;` — annotation matches
-        assert!(check_src("defn foo() -> Void { let x: Int = 42; }").is_ok());
+        assert!(check_src("def foo() -> Void { let x: Int = 42; }").is_ok());
     }
 
     #[test]
     fn test_let_bind_typed_mismatch() {
         // `let x: Bool = 42;` — annotation mismatch
-        let result = check_src("defn foo() -> Void { let x: Bool = 42; }");
+        let result = check_src("def foo() -> Void { let x: Bool = 42; }");
         assert!(result.is_err(), "expected annotation mismatch");
         let errs = result.unwrap_err();
         assert!(
@@ -3472,11 +3609,11 @@ defn main() -> Void {
         // A closure arm that binds a param and uses it arithmetically.
         // The closure is passed to a registered typed function so the
         // typechecker knows the subject type.
-        // Since we can't register STL in tests easily, we use a defn that
+        // Since we can't register STL in tests easily, we use a def that
         // takes a Func[Int, Int] and verify it type-checks correctly.
         let src = r#"
-defn apply(f: Func[(Int), Int], x: Int) -> Int { x }
-defn main() -> Void {
+def apply(f: Func[(Int), Int], x: Int) -> Int { x }
+def main() -> Void {
     let result: Int = apply({ n -> n }, 42);
 }
 "#;
@@ -3488,20 +3625,20 @@ defn main() -> Void {
     #[test]
     fn test_cast_int_to_float_ok() {
         // Numeric coercion: Int → Float is allowed at cast site
-        assert!(check_src("defn foo() -> Void { let x: Float = (1 : Float); }").is_ok());
+        assert!(check_src("def foo() -> Void { let x: Float = (1 : Float); }").is_ok());
     }
 
     #[test]
     fn test_cast_float_to_int_ok() {
         // Numeric coercion: Float → Int is allowed at cast site
-        assert!(check_src("defn foo() -> Void { let x: Int = (3.14 : Int); }").is_ok());
+        assert!(check_src("def foo() -> Void { let x: Int = (3.14 : Int); }").is_ok());
     }
 
     #[test]
     fn test_cast_any_to_concrete_ok() {
         // Any → Int is runtime narrowing — allowed at cast site
         let src = r#"
-defn give_any(x: Any) -> Void {
+def give_any(x: Any) -> Void {
     let n: Int = (x : Int);
 }
 "#;
@@ -3511,14 +3648,14 @@ defn give_any(x: Any) -> Void {
     #[test]
     fn test_cast_concrete_to_any_ok() {
         // T → Any is widening — always ok
-        assert!(check_src("defn foo() -> Void { let a: Any = (42 : Any); }").is_ok());
+        assert!(check_src("def foo() -> Void { let a: Any = (42 : Any); }").is_ok());
     }
 
     #[test]
     fn test_cast_union_narrowing_ok() {
         // Union → concrete type at cast site: allowed
         let src = r#"
-defn give_union(x: union(Int, String)) -> Void {
+def give_union(x: union(Int, String)) -> Void {
     let n: Int = (x : Int);
 }
 "#;
@@ -3529,7 +3666,7 @@ defn give_union(x: union(Int, String)) -> Void {
     fn test_cast_widening_to_union_ok() {
         // T → Union(T, U) widening: allowed
         let src = r#"
-defn foo() -> Void {
+def foo() -> Void {
     let x: Int = 5;
     let y: union(Int, String) = (x : union(Int, String));
 }
@@ -3540,7 +3677,7 @@ defn foo() -> Void {
     #[test]
     fn test_cast_same_type_ok() {
         // Casting a value to the same type is trivially ok
-        assert!(check_src("defn foo() -> Void { let x: Int = (42 : Int); }").is_ok());
+        assert!(check_src("def foo() -> Void { let x: Int = (42 : Int); }").is_ok());
     }
 
     #[test]
@@ -3549,7 +3686,7 @@ defn foo() -> Void {
         // Use `def Printable = interface(...)` syntax
         let src = r#"
 def Printable = interface(print: Func[(), Void]);
-defn foo() -> Void {
+def foo() -> Void {
     let x: Int = 1;
     let p: Printable = (x : Printable);
 }
@@ -3562,7 +3699,7 @@ defn foo() -> Void {
         // Interface → concrete: runtime narrowing, allowed at cast site
         let src = r#"
 def Printable = interface(print: Func[(), Void]);
-defn foo(p: Printable) -> Void {
+def foo(p: Printable) -> Void {
     let n: Int = (p : Int);
 }
 "#;
@@ -3576,7 +3713,7 @@ defn foo(p: Printable) -> Void {
         let src = r#"
 def Point = (x: Int, y: Int);
 def Vector = (x: Int, y: Int);
-defn foo(p: Point) -> Void {
+def foo(p: Point) -> Void {
     let v: Vector = (p : Vector);
 }
 "#;
@@ -3595,7 +3732,7 @@ defn foo(p: Point) -> Void {
         // Tuple ↔ Struct is forbidden
         let src = r#"
 def Point = (x: Int, y: Int);
-defn foo() -> Void {
+def foo() -> Void {
     let t = (1, 2);
     let p: Point = (t : Point);
 }
@@ -3615,7 +3752,7 @@ defn foo() -> Void {
         // Struct ↔ Tuple is forbidden
         let src = r#"
 def Point = (x: Int, y: Int);
-defn foo(p: Point) -> Void {
+def foo(p: Point) -> Void {
     let t: (Int, Int) = (p : (Int, Int));
 }
 "#;
@@ -3631,10 +3768,10 @@ defn foo(p: Point) -> Void {
 
     #[test]
     fn test_cast_unrelated_types_error() {
-        // Bool → Int is not a valid cast (neither numeric coercion nor assignable)
+        // Bool → Int is not a valid cast (neither numeric coercion nor assignable).
+        // Use a parameter annotation to get a properly-typed Bool variable.
         let src = r#"
-defn foo() -> Void {
-    let b: Bool = true;
+def foo(b: Bool) -> Void {
     let n: Int = (b : Int);
 }
 "#;
@@ -3652,7 +3789,7 @@ defn foo() -> Void {
     fn test_cast_string_to_int_error() {
         // String → Int is not a valid cast
         let src = r#"
-defn foo() -> Void {
+def foo() -> Void {
     let s: String = "hello";
     let n: Int = (s : Int);
 }

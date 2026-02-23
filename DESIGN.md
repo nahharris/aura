@@ -31,9 +31,13 @@ An identifier starts with a letter or `_`, followed by any number of letters, di
 identifier ::= (letter | "_") (letter | digit | "_")*
 ```
 
-**Reserved keywords:** `let`, `const`, `fn`, `type`, `macro`, `true`, `false`, `null`
+**Reserved keywords:** `let`, `fn`, `type`, `macro`, `pub`, `use`, `return`, `break`, `continue`, `self`
 
-The `def`-family macro names (`def`, `defn`, `defmacro`) are not reserved keywords; they are ordinary identifiers that happen to name built-in macros.
+The following are **not** reserved keywords — they lex as plain identifiers and are recognised contextually:
+- Declaration starters: `def`, `defmacro`
+- Built-in control forms: `if`, `cases`, `loop`, `while`, `do`, `then`, `else`
+- Type-expression forms: `union`, `enum`, `interface`
+- Other contextual names: `builtin`, `const`, `true`, `false`, `null`
 
 ### Dot-identifiers
 
@@ -293,10 +297,10 @@ let y = x : Float;         // cast
 
 ### Generics
 
-Type parameters on declarations use square brackets after the `def`/`defn` name.
+Type parameters on declarations use square brackets after the `def` name.
 
 ```aura
-defn identity[T](x: T) -> T { x }
+def identity[T](x: T) -> T { x }
 def[A, B] Pair = (first: A, second: B)
 ```
 
@@ -402,7 +406,7 @@ defmacro let(
 
 ### `const` — Immutable Local Binding
 
-`const` is identical to `let` except the binding cannot be reassigned after declaration.
+`const` is identical to `let` except the binding cannot be reassigned after declaration. It is not a reserved keyword — it is an ordinary identifier recognised contextually as a declaration macro.
 
 ```aura
 const pi = 3.14159;
@@ -576,7 +580,7 @@ When pattern matching is not needed, the parameter list may be written outside t
 (a: Int, b: Int) -> Int { a + b }
 ```
 
-This form is useful when declaring named functions via `defn` (see [Function Declarations](#function-declarations)).
+This form is useful when declaring named functions via `def` (see [Function Declarations](#function-declarations)).
 
 ### Closures and Captures
 
@@ -593,18 +597,20 @@ Operators are listed from **lowest** to **highest** precedence. All binary opera
 | Precedence | Operator(s) | Description |
 |---|---|---|
 | 1 (lowest) | `=` | Assignment (right-associative) |
-| 2 | `\|\|` | Logical OR |
-| 3 | `&&` | Logical AND |
-| 4 | `==`  `!=` | Equality / Inequality |
-| 5 | `<`  `>`  `<=`  `>=` | Comparison |
-| 6 | `+`  `-` | Addition / Subtraction |
-| 7 | `*`  `/`  `%` | Multiplication / Division / Remainder |
-| 8 | `-` (unary)  `!` | Negation / Logical NOT |
-| 9 | `++`  `--` | Post-increment / Post-decrement (mutating, postfix) |
-| 10 | `!!` | Force-unwrap (postfix) |
-| 11 | `?.` | Safe navigation (postfix) |
-| 12 | `.` | Method call / field access (postfix) |
-| 13 (highest) | `( )` `[ ]` | Function call / index access (postfix) |
+| 2 | `?:` | Elvis / null-coalescing |
+| 3 | `\|\|` | Logical OR |
+| 4 | `&&` | Logical AND |
+| 5 | `==`  `!=` | Equality / Inequality |
+| 6 | `<`  `>`  `<=`  `>=` | Comparison |
+| 7 | `..` | Range |
+| 8 | `+`  `-` | Addition / Subtraction |
+| 9 | `*`  `/`  `%` | Multiplication / Division / Remainder |
+| 10 | `:` | Cast / type annotation (postfix) |
+| 11 | `++`  `--` | Post-increment / Post-decrement (postfix) |
+| 12 | `!!` | Force-unwrap (postfix) |
+| 13 | `?.` | Safe navigation (postfix) |
+| 14 | `.` | Method call / field access (postfix) |
+| 15 (highest) | `( )` `[ ]` | Function call / index access (postfix) |
 
 ### Special Operators
 
@@ -673,7 +679,7 @@ Labelled blocks are used as jump targets for `return`, `break`, and `continue` w
 task 'worker: { doWork(); } finally 'cleanup: { releaseResources(); }
 ```
 
-**Implicit label for `defn` bodies.** The body block of a `defn` declaration has an implicit atom equal to the function's name. Writing `return 'fnName value` inside the body is equivalent to `return value` — both target the enclosing function. This means no explicit label is ever needed on a `defn` body block.
+**Implicit label for `def` function bodies.** The body block of a `def` function declaration has an implicit atom equal to the function's name. Writing `return 'fnName value` inside the body is equivalent to `return value` — both target the enclosing function. This means no explicit label is ever needed on a `def` body block.
 
 ---
 
@@ -698,7 +704,7 @@ add(b = 2, a = 1)
 A parameter may have a separate *internal* name (used inside the function body) and an *external label* (used at the call site). The syntax is `internal_name external_label: Type`.
 
 ```aura
-defn add(a first: Int, b second: Int) -> Int {
+def add(a first: Int, b second: Int) -> Int {
     a + b
 }
 
@@ -721,7 +727,7 @@ Rules:
 4. Continuation trailing closures must begin on the **same line** as the preceding `}` (due to the implicit-semicolon rule after `}`).
 
 ```aura
-defn do2(value: Int, this: Func[Int, Void], that: Func[Int, Void])
+def do2(value: Int, this: Func[Int, Void], that: Func[Int, Void])
 
 // All three forms are equivalent:
 do2(1, this = { v -> print(v); }, that = { v -> print(v); })
@@ -889,7 +895,7 @@ defmacro loop(
 
 ### `return`
 
-Exits a labelled scope with a value. In the common case, `return` targets the enclosing `defn` body, whose implicit atom is the function's name.
+Exits a labelled scope with a value. In the common case, `return` targets the enclosing `def` function body, whose implicit atom is the function's name.
 
 ```aura
 return value
@@ -904,7 +910,7 @@ return 'label value
 Because control-flow bodies are inlined, `return` inside an `if` branch or a `.each` closure exits the *enclosing function*, not the branch or closure itself.
 
 ```aura
-defn firstPositive(xs: List[Int]) -> Option[Int] {
+def firstPositive(xs: List[Int]) -> Option[Int] {
     xs.each { x ->
         if (x > 0) {
             return .some(x);
@@ -979,7 +985,7 @@ loop {
 `return`, `break`, and `continue` each resolve their target scope using the following rules:
 
 1. **Unlabelled jump** — targets the *nearest* enclosing scope of the appropriate kind:
-   - `return` targets the nearest enclosing `defn` body.
+   - `return` targets the nearest enclosing `def` function body.
    - `break` and `continue` target the nearest enclosing `loop` body.
 
 2. **Labelled jump** (`return 'label`, `break 'label`, `continue 'label`) — walks outward through enclosing scopes and targets the first block whose atom matches `'label`. A compile error is raised if no matching label is found.
@@ -992,7 +998,7 @@ loop {
 
 ### Module-level vs Local
 
-Declarations that use the `def`-family macros (`def`, `defn`, `defmacro`) are *static* — they exist at module scope, are resolved at compile time, and cannot appear inside function bodies or loops (they are not expressions that produce a value). `let` and `const` are *dynamic* — they exist inside local scopes.
+Declarations that use the `def`-family macros (`def`, `defmacro`) are *static* — they exist at module scope, are resolved at compile time, and may also appear inside function bodies. `let` and `const` are *dynamic* — they exist inside local scopes.
 
 ### `def` — Static Value and Type Declarations
 
@@ -1040,10 +1046,10 @@ defmacro def(
 
 ### Function Declarations
 
-`defn` declares a named function at module scope or as a method on a type.
+`def` declares both static value bindings and named functions. A function declaration is distinguished by the presence of a parameter list after the name.
 
 ```aura
-defn add(a: Int, b: Int) -> Int {
+def add(a: Int, b: Int) -> Int {
     a + b
 }
 ```
@@ -1053,7 +1059,7 @@ The return type after `->` is optional when it can be inferred. The body is a bl
 **Method declaration:** prefix the name with the receiver type and `.`:
 
 ```aura
-defn Point.distanceTo(self, other: Point) -> Float {
+def Point.distanceTo(self, other: Point) -> Float {
     let dx = self.x - other.x;
     let dy = self.y - other.y;
     ((dx * dx) + (dy * dy)) : Float  // cast to Float before sqrt
@@ -1065,7 +1071,7 @@ defn Point.distanceTo(self, other: Point) -> Float {
 Macro definition:
 
 ```aura
-defmacro defn[T, U](
+defmacro def[T, U](
     name: Identifier,
     body: Expr[Func[T, U]]
 ) -> Stmt
@@ -1118,7 +1124,7 @@ The fields passed to `.render` must match the interpolation identifiers in the t
 Each source file is a module. A module is a named collection of static declarations. Declarations are private by default; `pub` makes them visible to importing modules.
 
 ```aura
-pub defn greet(name: String) -> String {
+pub def greet(name: String) -> String {
     "Hello, $(name)!"
 }
 ```
@@ -1168,17 +1174,16 @@ Module paths:
 | Macro | Kind | Purpose |
 |---|---|---|
 | `let` | Dynamic | Mutable local binding |
-| `const` | Dynamic | Immutable local binding |
+| `const` | Dynamic | Immutable local binding (contextual identifier, not a keyword) |
 | `return` | Dynamic | Exit a scope (optionally with atom target) |
 | `break` | Dynamic | Exit a `loop` with a result value; sugar over `return .break(value)` |
 | `continue` | Dynamic | Begin next loop iteration; sugar over `return .continue()` |
-| `if` | Control | Two-branch conditional expression |
-| `cases` | Control | Multi-branch conditional expression |
-| `loop` | Control | Indefinite or conditional loop |
-| `def` | Static | Module-level constant, type alias, or destructuring binding |
-| `defn` | Static | Named function or method |
+| `if` | Control | Two-branch conditional expression (contextual identifier) |
+| `cases` | Control | Multi-branch conditional expression (contextual identifier) |
+| `loop` | Control | Indefinite or conditional loop (contextual identifier) |
+| `def` | Static | Module-level constant, type alias, function, or destructuring binding |
 | `defmacro` | Static | Compile-time macro |
-| `enum` | Type | Named-variant sum type expression |
-| `union` | Type | Anonymous union type expression |
-| `interface` | Type | Structural contract (interface) type expression |
+| `enum` | Type | Named-variant sum type expression (contextual identifier) |
+| `union` | Type | Anonymous union type expression (contextual identifier) |
+| `interface` | Type | Structural contract (interface) type expression (contextual identifier) |
 | `template` | Value | Lazy string template |

@@ -250,6 +250,8 @@ impl<'src> Lexer<'src> {
             '=' => {
                 if self.eat('=') {
                     TokenKind::EqEq
+                } else if self.eat('>') {
+                    TokenKind::FatArrow
                 } else {
                     TokenKind::Eq
                 }
@@ -325,9 +327,57 @@ impl<'src> Lexer<'src> {
             ':' => TokenKind::Colon,
             '/' => TokenKind::Slash,
 
-            // ── Atom: 'identifier ────────────────────────────────────────────
+            // ── Atom: 'identifier  OR  Char literal: 'x' / '\n' ─────────────
             '\'' => {
-                if self
+                // Disambiguate between atom labels ('name) and char literals ('x', '\n').
+                //
+                // Rules (applied in order):
+                // 1. 'peek() == '\\'`  → escape char literal: '\n', '\0', etc.
+                // 2. peek2() == '\''   → single-char literal: 'x'
+                // 3. peek() is alphabetic or '_'  → atom label: 'outer
+                // 4. Otherwise → error
+
+                if self.peek() == Some('\\') {
+                    // Escape char literal '\X'
+                    self.advance(); // consume '\'
+                    let ch = match self.advance() {
+                        Some('n') => '\n',
+                        Some('t') => '\t',
+                        Some('r') => '\r',
+                        Some('0') => '\0',
+                        Some('\\') => '\\',
+                        Some('\'') => '\'',
+                        Some(c) => {
+                            let span = self.make_span(start_pos, start_line, start_col);
+                            self.errors.push(LexError {
+                                message: format!("unknown char escape `\\{c}`"),
+                                span,
+                            });
+                            c
+                        }
+                        None => {
+                            let span = self.make_span(start_pos, start_line, start_col);
+                            self.errors.push(LexError {
+                                message: "unterminated char escape at end of file".into(),
+                                span,
+                            });
+                            '\0'
+                        }
+                    };
+                    if !self.eat('\'') {
+                        let span = self.make_span(start_pos, start_line, start_col);
+                        self.errors.push(LexError {
+                            message: "expected closing `'` after char literal".into(),
+                            span,
+                        });
+                    }
+                    TokenKind::Char(ch)
+                } else if self.peek2() == Some('\'') && self.peek() != Some('\'') {
+                    // Single-char literal 'X'
+                    let ch = self.advance().unwrap(); // consume the char
+                    self.advance(); // consume closing '\''
+                    TokenKind::Char(ch)
+                } else if self
                     .peek()
                     .map(|c| c.is_alphabetic() || c == '_')
                     .unwrap_or(false)
@@ -672,18 +722,26 @@ mod tests {
 
     #[test]
     fn test_keywords() {
-        let k = kinds("let const true false null pub use return break continue self");
+        // `const`, `true`, `false`, `null` are no longer reserved keywords;
+        // they lex as plain identifiers. The prelude provides them as globals.
+        let k = kinds("let pub use return break continue self");
         assert_eq!(k[0], TokenKind::Let);
-        assert_eq!(k[1], TokenKind::Const);
-        assert_eq!(k[2], TokenKind::True);
-        assert_eq!(k[3], TokenKind::False);
-        assert_eq!(k[4], TokenKind::Null);
-        assert_eq!(k[5], TokenKind::Pub);
-        assert_eq!(k[6], TokenKind::Use);
-        assert_eq!(k[7], TokenKind::Return);
-        assert_eq!(k[8], TokenKind::Break);
-        assert_eq!(k[9], TokenKind::Continue);
-        assert_eq!(k[10], TokenKind::SelfKw);
+        assert_eq!(k[1], TokenKind::Pub);
+        assert_eq!(k[2], TokenKind::Use);
+        assert_eq!(k[3], TokenKind::Return);
+        assert_eq!(k[4], TokenKind::Break);
+        assert_eq!(k[5], TokenKind::Continue);
+        assert_eq!(k[6], TokenKind::SelfKw);
+    }
+
+    #[test]
+    fn test_former_keywords_are_now_idents() {
+        // `const`, `true`, `false`, `null` were demoted from keywords to plain idents.
+        let k = kinds("const true false null");
+        assert_eq!(k[0], TokenKind::Ident("const".into()));
+        assert_eq!(k[1], TokenKind::Ident("true".into()));
+        assert_eq!(k[2], TokenKind::Ident("false".into()));
+        assert_eq!(k[3], TokenKind::Ident("null".into()));
     }
 
     #[test]

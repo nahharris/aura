@@ -6,8 +6,8 @@
 //! # Structure
 //!
 //! - **Top level**: [`Parser::parse_program`] → `Vec<Item>`
-//! - **Declarations**: `parse_item`, `parse_decl`, `parse_defn`, `parse_deftype`, etc.
-//! - **Statements**: `parse_stmt`, `parse_let`, `parse_const`, `parse_return`, etc.
+//! - **Declarations**: `parse_item`, `parse_decl`, `parse_def`, `parse_defmacro`, etc.
+//! - **Statements**: `parse_stmt`, `parse_let`, `parse_def_stmt`, `parse_return`, etc.
 //! - **Expressions**: [`Parser::parse_expr`] uses Pratt precedence climbing;
 //!   each precedence level is a `parse_bp` call with a minimum binding power.
 //! - **Primaries**: `parse_primary` dispatches on the current token to literals,
@@ -213,16 +213,11 @@ impl Parser {
                 TokenKind::Pub
                 | TokenKind::Use
                 | TokenKind::Let
-                | TokenKind::Const
                 | TokenKind::Return
                 | TokenKind::Break
                 | TokenKind::Continue => break,
-                // `def`, `defn`, `deftype`, `defmacro` are plain identifiers.
-                TokenKind::Ident(s)
-                    if matches!(s.as_str(), "def" | "defn" | "deftype" | "defmacro") =>
-                {
-                    break
-                }
+                // `def`, `defmacro` are plain identifiers.
+                TokenKind::Ident(s) if matches!(s.as_str(), "def" | "defmacro") => break,
                 _ => {
                     self.advance();
                 }
@@ -236,7 +231,7 @@ impl Parser {
             self.cur_kind(),
             TokenKind::Ident(s) if matches!(
                 s.as_str(),
-                "def" | "defn" | "defmacro"
+                "def" | "defmacro"
             )
         )
     }
@@ -346,13 +341,12 @@ impl Parser {
             self.advance();
             match name.as_str() {
                 "def" => DeclKind::Def(self.parse_def(start)?),
-                "defn" => DeclKind::Defn(self.parse_defn(start)?),
                 "defmacro" => DeclKind::Defmacro(self.parse_defmacro(start)?),
                 _ => unreachable!(),
             }
         } else {
             return Err(self.error(format!(
-                "expected declaration (`def`, `defn`, `defmacro`), found {}",
+                "expected declaration (`def`, `defmacro`), found {}",
                 self.cur_kind()
             )));
         };
@@ -365,24 +359,25 @@ impl Parser {
 
     /// Parse the body of a `def` declaration (after consuming the `def` keyword).
     ///
+    /// Handles value bindings, type aliases, and function/method definitions:
     /// ```aura
     /// def pi = 3.14159
     /// def a = 1, b = 2
     /// def[T] Result = enum(ok: T, err: String)
     /// def Point = (x: Int, y: Int)
+    /// def add(a: Int, b: Int) -> Int { a + b }
+    /// def[T: Show] show(t: T) { println(t.to_string()) }
+    /// def Point.distance(self, other: Point) -> Float { ... }
     /// ```
     fn parse_def(&mut self, start: Span) -> Result<DefDecl, ParseError> {
         let mut bindings = Vec::new();
         loop {
             let b_start = self.cur_span();
 
-            // Optional generic type parameters: `[T, U]` — presence implies type alias.
-            let type_params = self.parse_type_params()?;
+            // Optional generic type parameters: `[T, U: Bound]`
+            let type_params = self.parse_type_params_constrained()?;
 
             // Destructuring global binding: `def (a, b) = expr`
-            // Detected when current token is `(` and (after peeking inside) it does NOT look like
-            // a type alias: i.e. the first element inside is NOT `ident:` (struct alias) and NOT
-            // an uppercase-starting ident (tuple type alias).
             if type_params.is_empty() && self.check(&TokenKind::LParen) {
                 let saved = self.cursor;
                 self.advance(); // consume `(`
@@ -395,7 +390,6 @@ impl Parser {
                 self.cursor = saved;
 
                 if !is_named_field && !is_positional_tuple {
-                    // It's a destructuring pattern binding: `def (a, b) = expr`
                     let pattern = self.parse_pattern()?;
                     self.expect(TokenKind::Eq)?;
                     let value = self.parse_expr(0)?;
@@ -412,28 +406,64 @@ impl Parser {
                 }
             }
 
+            // Parse optional receiver prefix: `Type.name` or just `name`.
             let name = self.expect_ident()?;
+            let (receiver, func_name) = if self.eat(TokenKind::Dot) {
+                let method_name = self.expect_ident()?;
+                (Some(name), method_name)
+            } else if let TokenKind::DotIdent(method_name) = self.cur_kind().clone() {
+                self.advance();
+                (Some(name), method_name)
+            } else {
+                (None, name)
+            };
+
+            // If followed by `(`, this is a function/method definition.
+            if self.check(&TokenKind::LParen) {
+                let params = self.parse_param_list()?;
+                let return_type = if self.eat(TokenKind::Arrow) {
+                    Some(self.parse_type_expr()?)
+                } else {
+                    None
+                };
+                let body = self.parse_block()?;
+                self.eat_terminators();
+                let b_span = b_start.merge(self.cur_span());
+                bindings.push(DefBinding::FuncDef {
+                    receiver,
+                    name: func_name,
+                    type_params,
+                    params,
+                    return_type,
+                    body,
+                    span: b_span,
+                });
+                // FuncDef bindings don't use comma-chaining; stop after one.
+                break;
+            }
+
+            // Not a function def — must be `=` for a value or type alias.
+            // (receiver.name without `(` is not valid; just use `func_name` as binding name
+            //  and let `=` follow normally.)
+            let full_name = if let Some(recv) = receiver {
+                // `Receiver.name = ...` is not a valid non-function def; error.
+                return Err(self.error(format!(
+                    "expected `(` for method definition after `{recv}.{func_name}`"
+                )));
+            } else {
+                func_name
+            };
+
             self.expect(TokenKind::Eq)?;
 
-            // Determine whether the RHS is a type expression or a value expression.
-            // Rules:
-            // 1. If type_params were present → type alias.
-            // 2. If RHS starts with `union`, `enum`, or `interface` ident → type alias.
-            // 3. If RHS is `(` and peek-ahead sees `ident :` → struct type alias.
-            // 4. If RHS is `(` and the first element starts with an uppercase ident → tuple type alias.
-            //    (Heuristic: type names start with uppercase, value idents with lowercase.)
-            // 5. Otherwise → value binding.
             let is_type_alias = !type_params.is_empty()
                 || matches!(self.cur_kind(), TokenKind::Ident(s) if matches!(s.as_str(), "union" | "enum" | "interface"))
                 || (self.check(&TokenKind::LParen)
                     && {
-                        // Save cursor, consume `(`, inspect first token.
                         let saved = self.cursor;
-                        self.advance(); // consume `(`
+                        self.advance();
                         let is_named_field = matches!(self.cur_kind(), TokenKind::Ident(_))
                             && matches!(self.peek_kind(), TokenKind::Colon);
-                        // Positional tuple type: first element is an uppercase-starting ident
-                        // (type name convention).
                         let is_positional_tuple = matches!(
                             self.cur_kind(),
                             TokenKind::Ident(s) if s.chars().next().map(char::is_uppercase).unwrap_or(false)
@@ -442,22 +472,20 @@ impl Parser {
                         is_named_field || is_positional_tuple
                     });
 
-            let b_span = b_start.merge(self.cur_span());
             if is_type_alias {
                 let ty = self.parse_type_expr()?;
                 let b_span2 = b_start.merge(self.cur_span());
                 bindings.push(DefBinding::TypeAlias {
-                    name,
+                    name: full_name,
                     type_params,
                     ty,
                     span: b_span2,
                 });
             } else {
-                let _ = b_span;
                 let value = self.parse_expr(0)?;
                 let b_span2 = b_start.merge(self.cur_span());
                 bindings.push(DefBinding::Value {
-                    pattern: Pattern::Bind(name, b_start),
+                    pattern: Pattern::Bind(full_name, b_start),
                     init: Box::new(value),
                     span: b_span2,
                 });
@@ -472,58 +500,7 @@ impl Parser {
         Ok(DefDecl { bindings, span })
     }
 
-    // ── defn ──────────────────────────────────────────────────────────────────
-
-    /// Parse the body of a `defn` declaration.
-    ///
-    /// ```aura
-    /// defn add(a: Int, b: Int) -> Int { a + b }
-    /// defn Point.distanceTo(self, other: Point) -> Float { ... }
-    /// defn identity[T](x: T) -> T { x }
-    /// ```
-    fn parse_defn(&mut self, start: Span) -> Result<DefnDecl, ParseError> {
-        // Parse optional receiver prefix: `Type.name` or just `name`.
-        let first = self.expect_ident()?;
-        let (receiver, name) = if self.eat(TokenKind::Dot) {
-            // `Type.name` with separate Dot and Ident tokens
-            let method_name = self.expect_ident()?;
-            (Some(first), method_name)
-        } else if let TokenKind::DotIdent(method_name) = self.cur_kind().clone() {
-            // `Type.name` with combined DotIdent token
-            self.advance();
-            (Some(first), method_name)
-        } else {
-            (None, first)
-        };
-
-        // Optional generic type parameters: `[T, U]`.
-        let type_params = self.parse_type_params()?;
-
-        // Parameter list.
-        let params = self.parse_param_list()?;
-
-        // Optional return type: `-> Type`.
-        let return_type = if self.eat(TokenKind::Arrow) {
-            Some(self.parse_type_expr()?)
-        } else {
-            None
-        };
-
-        // Function body (a block).
-        let body = self.parse_block()?;
-
-        self.eat_terminators();
-        let span = start.merge(self.cur_span());
-        Ok(DefnDecl {
-            receiver,
-            name,
-            type_params,
-            params,
-            return_type,
-            body,
-            span,
-        })
-    }
+    // ── defn (removed — parse_defn no longer exists) ──────────────────────────
 
     // ── defmacro ──────────────────────────────────────────────────────────────
 
@@ -531,7 +508,7 @@ impl Parser {
     /// AST block but is not expanded by the current implementation.
     fn parse_defmacro(&mut self, start: Span) -> Result<DefmacroDecl, ParseError> {
         let name = self.expect_ident()?;
-        let type_params = self.parse_type_params()?;
+        let type_params = self.parse_type_params_constrained()?;
         let params = self.parse_param_list()?;
         let return_type = if self.eat(TokenKind::Arrow) {
             Some(self.parse_type_expr()?)
@@ -559,15 +536,47 @@ impl Parser {
     // Parameter and type helpers
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Parse an optional `[T, U]` type parameter list after a name.
-    fn parse_type_params(&mut self) -> Result<Vec<String>, ParseError> {
+    /// Parse an optional `[T, U: Bound, V: (B1, B2)]` type parameter list.
+    ///
+    /// Each type parameter has an optional constraint after `:`:
+    /// - `T` — unconstrained
+    /// - `T: Show` — single constraint
+    /// - `T: (Show, Eq)` — multiple constraints (tuple syntax)
+    fn parse_type_params_constrained(&mut self) -> Result<Vec<TypeParam>, ParseError> {
         if !self.check(&TokenKind::LBracket) {
             return Ok(Vec::new());
         }
         self.advance(); // consume `[`
         let mut params = Vec::new();
         while !self.check(&TokenKind::RBracket) && !self.at_eof() {
-            params.push(self.expect_ident()?);
+            let p_start = self.cur_span();
+            let name = self.expect_ident()?;
+            let constraints = if self.eat(TokenKind::Colon) {
+                if self.check(&TokenKind::LParen) {
+                    // Multi-constraint: `T: (B1, B2)`
+                    self.advance(); // consume `(`
+                    let mut cs = Vec::new();
+                    while !self.check(&TokenKind::RParen) && !self.at_eof() {
+                        cs.push(self.parse_type_expr()?);
+                        if !self.eat(TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(TokenKind::RParen)?;
+                    cs
+                } else {
+                    // Single constraint: `T: Bound`
+                    vec![self.parse_type_expr()?]
+                }
+            } else {
+                Vec::new()
+            };
+            let p_span = p_start.merge(self.cur_span());
+            params.push(TypeParam {
+                name,
+                constraints,
+                span: p_span,
+            });
             if !self.eat(TokenKind::Comma) {
                 break;
             }
@@ -781,10 +790,10 @@ impl Parser {
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
         match self.cur_kind() {
             TokenKind::Let => Ok(Stmt::Let(self.parse_let()?)),
-            TokenKind::Const => Ok(Stmt::Const(self.parse_const()?)),
             TokenKind::Return => Ok(Stmt::Return(self.parse_return()?)),
             TokenKind::Break => Ok(Stmt::Break(self.parse_break()?)),
             TokenKind::Continue => Ok(Stmt::Continue(self.parse_continue()?)),
+            TokenKind::Ident(s) if s == "def" => Ok(Stmt::Def(self.parse_def_stmt()?)),
             _ => Ok(Stmt::Expr(self.parse_expr_stmt()?)),
         }
     }
@@ -799,14 +808,17 @@ impl Parser {
         Ok(LetStmt { bindings, span })
     }
 
-    /// Parse `const x [: T] = expr;`
-    fn parse_const(&mut self) -> Result<ConstStmt, ParseError> {
+    /// Parse `def x = expr;` or `def f(params) { body }` as a local statement.
+    fn parse_def_stmt(&mut self) -> Result<DefStmt, ParseError> {
         let start = self.cur_span();
-        self.expect(TokenKind::Const)?;
-        let bindings = self.parse_local_bindings()?;
-        self.eat_terminators();
+        // consume `def` identifier
+        self.expect_ident()?; // "def"
+        let def_decl = self.parse_def(start)?;
         let span = start.merge(self.cur_span());
-        Ok(ConstStmt { bindings, span })
+        Ok(DefStmt {
+            bindings: def_decl.bindings,
+            span,
+        })
     }
 
     /// Parse the shared `name [: Type] = expr, ...` part of `let` / `const`.
@@ -953,12 +965,8 @@ impl Parser {
             // it's not terminated by `;`, it becomes the tail expression.
             let is_let_or_control = matches!(
                 self.cur_kind(),
-                TokenKind::Let
-                    | TokenKind::Const
-                    | TokenKind::Return
-                    | TokenKind::Break
-                    | TokenKind::Continue
-            );
+                TokenKind::Let | TokenKind::Return | TokenKind::Break | TokenKind::Continue
+            ) || matches!(self.cur_kind(), TokenKind::Ident(s) if s == "def");
 
             if is_let_or_control {
                 let stmt = self.parse_stmt()?;
@@ -1005,7 +1013,13 @@ impl Parser {
         })
     }
 
-    /// Parse an optional `'atom:` label followed by a block.
+    /// Parse an optional `'atom:` label followed by a block or closure.
+    ///
+    /// The `{ }` content may be either a plain block *or* a closure arm
+    /// (`{ params -> body }`).  `parse_block_or_closure` handles both;
+    /// when the result is a closure we wrap it as the tail expression of
+    /// an otherwise-empty `Block` so that the caller receives a uniform
+    /// `LabelledBlock` regardless of which form was written.
     fn parse_labelled_block(&mut self) -> Result<LabelledBlock, ParseError> {
         let start = self.cur_span();
         let label = if let TokenKind::Atom(name) = self.cur_kind().clone() {
@@ -1016,7 +1030,20 @@ impl Parser {
         } else {
             None
         };
-        let block = self.parse_block()?;
+        let expr = self.parse_block_or_closure()?;
+        let block = match expr {
+            Expr::Block(b) => b,
+            // Closure form `{ params -> body }`: wrap as tail of an empty block
+            // so that the rest of the compiler sees a uniform Block type.
+            other => {
+                let s = other.span();
+                Block {
+                    stmts: vec![],
+                    tail: Some(Box::new(other)),
+                    span: s,
+                }
+            }
+        };
         let span = start.merge(self.cur_span());
         Ok(LabelledBlock { label, block, span })
     }
@@ -1284,7 +1311,59 @@ impl Parser {
                 // Trailing lambda continuation: if the next token is an identifier
                 // followed by a `{`, it might be a continuation trailing arg.
                 // This is handled in `parse_call_args` / primary call parsing.
-                _ => break,
+                //
+                // Trailing lambda WITHOUT parens: `expr { ... }` or `expr label { ... }`.
+                // Only trigger at top-level expression context (min_bp == 0).
+                _ => {
+                    // `expr { ... }` — implicit no-arg call with one trailing lambda.
+                    if min_bp == 0 && self.check(&TokenKind::LBrace) {
+                        let t_start = self.cur_span();
+                        let block = self.parse_labelled_block()?;
+                        let t_span = t_start.merge(block.span);
+                        let trailing = vec![TrailingArg {
+                            label: None,
+                            block,
+                            span: t_span,
+                        }];
+                        let span = lhs.span().merge(t_span);
+                        lhs = Expr::Call {
+                            callee: Box::new(lhs),
+                            args: vec![],
+                            trailing,
+                            span,
+                        };
+                        continue;
+                    }
+                    // `expr label { ... }` — implicit no-arg call with one labelled trailing lambda.
+                    if min_bp == 0 {
+                        if let TokenKind::Ident(label_name) = self.cur_kind().clone() {
+                            let next = self.peek_kind().clone();
+                            if matches!(next, TokenKind::LBrace | TokenKind::Atom(_)) {
+                                self.advance(); // consume label name
+                                let t_start = self.cur_span();
+                                let block = self.parse_labelled_block()?;
+                                let t_span = t_start.merge(block.span);
+                                let trailing = vec![TrailingArg {
+                                    label: Some(label_name),
+                                    block,
+                                    span: t_span,
+                                }];
+                                let span = lhs.span().merge(t_span);
+                                lhs = Expr::Call {
+                                    callee: Box::new(lhs),
+                                    args: vec![],
+                                    trailing,
+                                    span,
+                                };
+                                // Continue to pick up further trailing args via parse_trailing_args
+                                // logic — but since we're in the Pratt loop, just continue
+                                // and let subsequent iterations handle more `{ }` or `label { }`.
+                                continue;
+                            }
+                        }
+                    }
+                    break;
+                }
             }
 
             let _ = op_span; // avoid unused warning
@@ -1338,24 +1417,14 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Float(n, start))
             }
-            TokenKind::True => {
-                self.advance();
-                Ok(Expr::Bool(true, start))
-            }
-            TokenKind::False => {
-                self.advance();
-                Ok(Expr::Bool(false, start))
-            }
-            TokenKind::Null => {
-                self.advance();
-                Ok(Expr::Null(start))
-            }
             TokenKind::Str(parts) => {
                 self.advance();
                 Ok(Expr::Str(parts, start))
             }
-
-            // ── Dot-identifier variant constructor ────────────────────────────
+            TokenKind::Char(c) => {
+                self.advance();
+                Ok(Expr::Char(c, start))
+            }
             TokenKind::DotIdent(name) => {
                 self.advance();
                 Ok(Expr::DotIdent(name, start))
@@ -1370,6 +1439,7 @@ impl Parser {
                     "if" => self.parse_if(ident_span),
                     "cases" => self.parse_cases(ident_span),
                     "loop" => self.parse_loop(ident_span),
+                    "match" => self.parse_match(ident_span),
                     "builtin" => self.parse_builtin(ident_span),
                     _ => Ok(Expr::Ident(name, ident_span)),
                 }
@@ -1454,12 +1524,8 @@ impl Parser {
 
             let is_control = matches!(
                 self.cur_kind(),
-                TokenKind::Let
-                    | TokenKind::Const
-                    | TokenKind::Return
-                    | TokenKind::Break
-                    | TokenKind::Continue
-            );
+                TokenKind::Let | TokenKind::Return | TokenKind::Break | TokenKind::Continue
+            ) || matches!(self.cur_kind(), TokenKind::Ident(s) if s == "def");
 
             if is_control {
                 stmts.push(self.parse_stmt()?);
@@ -1472,8 +1538,8 @@ impl Parser {
             if self.eat(TokenKind::Semicolon) {
                 let span = expr.span();
                 stmts.push(Stmt::Expr(ExprStmt { expr, span }));
-            } else {
-                // Tail expression.
+            } else if self.check(&TokenKind::RBrace) || self.at_eof() {
+                // Tail expression — forms the block's return value.
                 self.expect(TokenKind::RBrace)?;
                 let span = start.merge(self.cur_span());
                 return Ok(Expr::Block(Block {
@@ -1481,6 +1547,13 @@ impl Parser {
                     tail: Some(Box::new(expr)),
                     span,
                 }));
+            } else {
+                // No terminator and not at `}` — treat as an expr statement
+                // (e.g. `if (...) { ... }` followed by more statements on the
+                // next line, separated only by a newline-after-`}` which was
+                // already consumed above).
+                let span = expr.span();
+                stmts.push(Stmt::Expr(ExprStmt { expr, span }));
             }
         }
 
@@ -1660,21 +1733,23 @@ impl Parser {
                 self.advance();
                 Ok(Pattern::Literal(Expr::Float(n, start)))
             }
-            TokenKind::True => {
-                self.advance();
-                Ok(Pattern::Literal(Expr::Bool(true, start)))
-            }
-            TokenKind::False => {
-                self.advance();
-                Ok(Pattern::Literal(Expr::Bool(false, start)))
-            }
-            TokenKind::Null => {
-                self.advance();
-                Ok(Pattern::Literal(Expr::Null(start)))
-            }
             TokenKind::Str(parts) => {
                 self.advance();
                 Ok(Pattern::Literal(Expr::Str(parts, start)))
+            }
+            TokenKind::Char(c) => {
+                self.advance();
+                Ok(Pattern::Literal(Expr::Char(c, start)))
+            }
+            TokenKind::LBracket => {
+                // Only `[]` (empty list) is supported as a literal pattern.
+                self.advance(); // consume `[`
+                self.expect(TokenKind::RBracket)?;
+                let span = start.merge(self.cur_span());
+                Ok(Pattern::Literal(Expr::List {
+                    items: vec![],
+                    span,
+                }))
             }
             TokenKind::LParen => {
                 self.advance();
@@ -1822,15 +1897,15 @@ impl Parser {
         Ok(Expr::List { items, span })
     }
 
-    /// Parse the optional preliminary `let`/`const` statements in a collection item.
+    /// Parse the optional preliminary `let` statements in a collection item.
     /// These are scoped to the item only (e.g., `let x = 0; x++; x`).
     fn parse_collection_item_stmts(&mut self) -> Result<Vec<Stmt>, ParseError> {
         let mut stmts = Vec::new();
-        // Consume as many `let` / `const` / expr `;` pairs as appear before
+        // Consume as many `let` / expr `;` pairs as appear before
         // the final expression.  We can't easily distinguish "stmt before value"
         // from "the value itself" without speculative parsing, so we use a
-        // simple heuristic: if `let` or `const` is present, it's always a stmt.
-        while matches!(self.cur_kind(), TokenKind::Let | TokenKind::Const) {
+        // simple heuristic: if `let` is present, it's always a stmt.
+        while matches!(self.cur_kind(), TokenKind::Let) {
             stmts.push(self.parse_stmt()?);
         }
         Ok(stmts)
@@ -2129,6 +2204,85 @@ impl Parser {
         }))
     }
 
+    /// Parse a `match (scrutinee) with { pattern => expr, ... }` expression.
+    ///
+    /// Desugars into an immediately-invoked multi-arm closure:
+    /// `({ pat -> expr, ... })(scrutinee)`
+    fn parse_match(&mut self, start: Span) -> Result<Expr, ParseError> {
+        // Scrutinee in `( )`.
+        self.expect(TokenKind::LParen)?;
+        let scrutinee = self.parse_expr(0)?;
+        self.expect(TokenKind::RParen)?;
+
+        // Expect the `with` keyword (parsed as an identifier).
+        match self.cur_kind().clone() {
+            TokenKind::Ident(s) if s == "with" => {
+                self.advance();
+            }
+            _ => {
+                return Err(self.error(format!(
+                    "expected `with` after match scrutinee, found {}",
+                    self.cur_kind()
+                )));
+            }
+        }
+
+        // Parse `{ arm, arm, ... }` where each arm uses `=>` as separator.
+        self.expect(TokenKind::LBrace)?;
+        let mut arms = Vec::new();
+        loop {
+            while self.eat(TokenKind::Semicolon) || self.eat(TokenKind::Newline) {}
+            if self.check(&TokenKind::RBrace) || self.at_eof() {
+                break;
+            }
+
+            let arm = self.parse_match_arm()?;
+            arms.push(arm);
+
+            // Arms are comma-separated; trailing comma is allowed.
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+            while self.eat(TokenKind::Newline) {}
+        }
+        self.expect(TokenKind::RBrace)?;
+
+        let closure_span = start.merge(self.cur_span());
+        let closure = Expr::Closure(Closure {
+            arms,
+            span: closure_span,
+        });
+
+        // Desugar: call the closure with the scrutinee as the sole argument.
+        let arg = Arg {
+            label: None,
+            span: scrutinee.span(),
+            value: scrutinee,
+        };
+        let span = start.merge(self.cur_span());
+        Ok(Expr::Call {
+            callee: Box::new(closure),
+            args: vec![arg],
+            trailing: vec![],
+            span,
+        })
+    }
+
+    /// Parse one match arm: `pattern => expr`  (uses `=>` instead of `->`)
+    fn parse_match_arm(&mut self) -> Result<ClosureArm, ParseError> {
+        let start = self.cur_span();
+        let pattern = self.parse_pattern()?;
+        self.expect(TokenKind::FatArrow)?;
+        let body = self.parse_expr(0)?;
+        let span = start.merge(body.span());
+        Ok(ClosureArm {
+            patterns: vec![pattern],
+            guard: None,
+            body,
+            span,
+        })
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Utility
     // ─────────────────────────────────────────────────────────────────────────
@@ -2266,7 +2420,7 @@ pub fn parse_tokens(tokens: Vec<crate::token::Token>) -> (Program, Vec<ParseErro
 ///
 /// Used by the compiler's string-interpolation handler to extract the expression
 /// inside `$(…)`.  The tokens are wrapped in a synthetic
-/// `defn __interp__() { <tokens> }` token stream (no source text involved) so
+/// `def __interp__() { <tokens> }` token stream (no source text involved) so
 /// the parser can resolve them as a tail expression or expression statement.
 /// Returns `None` if the tokens do not produce a parseable expression (e.g. empty
 /// interpolation or parse errors).
@@ -2275,10 +2429,10 @@ pub fn parse_expr_from_tokens(tokens: Vec<crate::token::Token>) -> Option<Expr> 
 
     let dummy = Span::dummy();
 
-    // Build a wrapper token stream: `defn __interp__() { <tokens> }` + Eof.
-    // `defn` and `__interp__` are plain identifiers (not keywords in Aura).
+    // Build a wrapper token stream: `def __interp__() { <tokens> }` + Eof.
+    // `def` and `__interp__` are plain identifiers (not keywords in Aura).
     let mut wrapped: Vec<Token> = vec![
-        Token::new(TokenKind::Ident("defn".into()), dummy),
+        Token::new(TokenKind::Ident("def".into()), dummy),
         Token::new(TokenKind::Ident("__interp__".into()), dummy),
         Token::new(TokenKind::LParen, dummy),
         Token::new(TokenKind::RParen, dummy),
@@ -2295,12 +2449,14 @@ pub fn parse_expr_from_tokens(tokens: Vec<crate::token::Token>) -> Option<Expr> 
 
     // Extract the tail expression or last expression statement from the body.
     if let Some(Item::Decl(d)) = prog.items.into_iter().next() {
-        if let DeclKind::Defn(f) = d.kind {
-            if let Some(tail) = f.body.tail {
-                return Some(*tail);
-            }
-            if let Some(Stmt::Expr(es)) = f.body.stmts.into_iter().last() {
-                return Some(es.expr);
+        if let DeclKind::Def(def_decl) = d.kind {
+            if let Some(DefBinding::FuncDef { body, .. }) = def_decl.bindings.into_iter().next() {
+                if let Some(tail) = body.tail {
+                    return Some(*tail);
+                }
+                if let Some(Stmt::Expr(es)) = body.stmts.into_iter().last() {
+                    return Some(es.expr);
+                }
             }
         }
     }
@@ -2330,17 +2486,19 @@ mod tests {
     }
 
     fn parse_expr_ok(src: &str) -> Expr {
-        // Wrap in a defn to parse as a top-level expression.
-        let wrapped = format!("defn __test__() {{ {src} }}");
+        // Wrap in a def to parse as a top-level expression.
+        let wrapped = format!("def __test__() {{ {src} }}");
         let prog = parse_ok(&wrapped);
         let decl = &prog.items[0];
         if let Item::Decl(d) = decl {
-            if let DeclKind::Defn(f) = &d.kind {
-                if let Some(tail) = &f.body.tail {
-                    return *tail.clone();
-                }
-                if let Some(Stmt::Expr(es)) = f.body.stmts.last() {
-                    return es.expr.clone();
+            if let DeclKind::Def(def_decl) = &d.kind {
+                if let Some(DefBinding::FuncDef { body, .. }) = def_decl.bindings.first() {
+                    if let Some(tail) = &body.tail {
+                        return *tail.clone();
+                    }
+                    if let Some(Stmt::Expr(es)) = body.stmts.last() {
+                        return es.expr.clone();
+                    }
                 }
             }
         }
@@ -2363,13 +2521,15 @@ mod tests {
 
     #[test]
     fn test_parse_bool_literals() {
-        assert!(matches!(parse_expr_ok("true"), Expr::Bool(true, _)));
-        assert!(matches!(parse_expr_ok("false"), Expr::Bool(false, _)));
+        // true/false are now plain identifiers (prelude globals), not keywords.
+        assert!(matches!(parse_expr_ok("true"), Expr::Ident(s, _) if s == "true"));
+        assert!(matches!(parse_expr_ok("false"), Expr::Ident(s, _) if s == "false"));
     }
 
     #[test]
     fn test_parse_null() {
-        assert!(matches!(parse_expr_ok("null"), Expr::Null(_)));
+        // null is now a plain identifier (prelude global), not a keyword.
+        assert!(matches!(parse_expr_ok("null"), Expr::Ident(s, _) if s == "null"));
     }
 
     #[test]
@@ -2402,27 +2562,31 @@ mod tests {
 
     #[test]
     fn test_parse_let_stmt() {
-        let prog = parse_ok("defn f() { let x = 42; }");
+        let prog = parse_ok("def f() { let x = 42; }");
         if let Item::Decl(d) = &prog.items[0] {
-            if let DeclKind::Defn(f) = &d.kind {
-                assert!(matches!(f.body.stmts[0], Stmt::Let(_)));
-                return;
+            if let DeclKind::Def(def_decl) = &d.kind {
+                if let Some(DefBinding::FuncDef { body, .. }) = def_decl.bindings.first() {
+                    assert!(matches!(body.stmts[0], Stmt::Let(_)));
+                    return;
+                }
             }
         }
         panic!("unexpected parse result");
     }
 
     #[test]
-    fn test_parse_defn() {
-        let prog = parse_ok("defn add(a: Int, b: Int) -> Int { a + b }");
+    fn test_parse_def_func() {
+        let prog = parse_ok("def add(a: Int, b: Int) -> Int { a + b }");
         assert_eq!(prog.items.len(), 1);
         if let Item::Decl(d) = &prog.items[0] {
-            if let DeclKind::Defn(f) = &d.kind {
-                assert_eq!(f.name, "add");
-                assert_eq!(f.params.len(), 2);
-                assert_eq!(f.params[0].internal, "a");
-                assert_eq!(f.params[1].internal, "b");
-                return;
+            if let DeclKind::Def(def_decl) = &d.kind {
+                if let Some(DefBinding::FuncDef { name, params, .. }) = def_decl.bindings.first() {
+                    assert_eq!(name, "add");
+                    assert_eq!(params.len(), 2);
+                    assert_eq!(params[0].internal, "a");
+                    assert_eq!(params[1].internal, "b");
+                    return;
+                }
             }
         }
         panic!("unexpected parse result");
@@ -2520,25 +2684,27 @@ mod tests {
     fn test_parse_trailing_lambda() {
         let prog = parse_ok(
             r#"
-            defn main() {
+            def main() {
                 do_stuff(12) task { doWork(); } finally { cleanup(); }
             }
         "#,
         );
         if let Item::Decl(d) = &prog.items[0] {
-            if let DeclKind::Defn(f) = &d.kind {
-                // The call has no trailing `;`, so it lands in `body.tail`.
-                if let Some(tail) = &f.body.tail {
-                    if let Expr::Call { trailing, .. } = tail.as_ref() {
-                        assert_eq!(trailing.len(), 2);
-                        return;
+            if let DeclKind::Def(def_decl) = &d.kind {
+                if let Some(DefBinding::FuncDef { body, .. }) = def_decl.bindings.first() {
+                    // The call has no trailing `;`, so it lands in `body.tail`.
+                    if let Some(tail) = &body.tail {
+                        if let Expr::Call { trailing, .. } = tail.as_ref() {
+                            assert_eq!(trailing.len(), 2);
+                            return;
+                        }
                     }
-                }
-                // Fallback: also accept it as a stmt (with semicolon).
-                if let Some(Stmt::Expr(es)) = f.body.stmts.first() {
-                    if let Expr::Call { trailing, .. } = &es.expr {
-                        assert_eq!(trailing.len(), 2);
-                        return;
+                    // Fallback: also accept it as a stmt (with semicolon).
+                    if let Some(Stmt::Expr(es)) = body.stmts.first() {
+                        if let Expr::Call { trailing, .. } = &es.expr {
+                            assert_eq!(trailing.len(), 2);
+                            return;
+                        }
                     }
                 }
             }
@@ -2576,12 +2742,14 @@ mod tests {
 
     #[test]
     fn test_parse_return_with_label() {
-        let prog = parse_ok("defn f() { return 'outer 42; }");
+        let prog = parse_ok("def f() { return 'outer 42; }");
         if let Item::Decl(d) = &prog.items[0] {
-            if let DeclKind::Defn(f) = &d.kind {
-                if let Stmt::Return(r) = &f.body.stmts[0] {
-                    assert_eq!(r.label, Some("outer".into()));
-                    return;
+            if let DeclKind::Def(def_decl) = &d.kind {
+                if let Some(DefBinding::FuncDef { body, .. }) = def_decl.bindings.first() {
+                    if let Stmt::Return(r) = &body.stmts[0] {
+                        assert_eq!(r.label, Some("outer".into()));
+                        return;
+                    }
                 }
             }
         }
@@ -2623,5 +2791,59 @@ mod tests {
         // Empty token list should return None (no expression to parse).
         let expr = parse_expr_from_tokens(vec![]);
         assert!(expr.is_none(), "expected None for empty token list");
+    }
+
+    /// Regression test: trailing-lambda-without-parens on a method call must parse
+    /// without errors and produce a `Call` with exactly one trailing closure arg.
+    ///
+    /// Before the fix, `parse_labelled_block` called `parse_block` which did not
+    /// recognise `{ x -> x * x }` as a closure arm, causing a parse error that
+    /// triggered error-recovery and left the parser in a broken state.
+    #[test]
+    fn test_parse_trailing_closure_on_method_call_no_parens() {
+        let prog = parse_ok(
+            r#"
+            def main() {
+                nums.map { x -> x * x }
+            }
+        "#,
+        );
+        if let Item::Decl(d) = &prog.items[0] {
+            if let DeclKind::Def(def_decl) = &d.kind {
+                if let Some(DefBinding::FuncDef { body, .. }) = def_decl.bindings.first() {
+                    // The call is the tail expression of the function body.
+                    let call_expr = body
+                        .tail
+                        .as_deref()
+                        .or_else(|| {
+                            body.stmts.last().and_then(|s| {
+                                if let Stmt::Expr(es) = s {
+                                    Some(&es.expr)
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                        .expect("expected a tail or statement expression");
+
+                    if let Expr::Call { trailing, .. } = call_expr {
+                        assert_eq!(
+                            trailing.len(),
+                            1,
+                            "expected exactly one trailing closure arg"
+                        );
+                        // The trailing arg's block must have a Closure as its tail expression.
+                        let trail_block = &trailing[0].block.block;
+                        assert!(
+                            matches!(trail_block.tail.as_deref(), Some(Expr::Closure(_))),
+                            "expected trailing block tail to be a Closure, got: {:?}",
+                            trail_block.tail
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+        panic!("unexpected parse result");
     }
 }

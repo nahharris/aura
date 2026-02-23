@@ -30,7 +30,16 @@ use crate::vm::Vm;
 ///
 /// After this call every built-in is available as a global variable with the
 /// same name as the registered identifier.
+///
+/// Also registers the three prelude constants `true`, `false`, and `null`.
+/// These were formerly keywords but are now plain identifiers resolved via
+/// the global environment.
 pub fn register_all(vm: &mut Vm) {
+    // ── Prelude constants (formerly keywords) ─────────────────────────────────
+    vm.set_global("true", Value::Bool(true));
+    vm.set_global("false", Value::Bool(false));
+    vm.set_global("null", Value::Null);
+
     // ── Core ──────────────────────────────────────────────────────────────────
     vm.register_native("type_of", core_type_of);
     vm.register_native("to_str", core_to_str);
@@ -223,6 +232,7 @@ fn core_type_of(args: &[Value]) -> Result<Value, String> {
         Value::Int(_) => "Int",
         Value::Float(_) => "Float",
         Value::Bool(_) => "Bool",
+        Value::Char(_) => "Char",
         Value::Null => "Null",
         Value::Str(_) => "String",
         Value::List(_) => "List",
