@@ -1,0 +1,45 @@
+pub def[T] Option = enum(null: Void, some: T);
+
+pub def[T] Option[T].truthy(self) -> Bool {
+    .some(_) -> .true,
+    _ -> .false
+}
+
+pub def[T] Option[T].is_some(self) -> Bool {
+    .some(_) -> .true,
+    _ -> .false
+}
+
+pub def[T] Option[T].is_none(self) -> Bool {
+    !self.is_some()
+}
+
+pub def[T] Option[T].unwrap(self) -> T {
+    .some(x) -> x,
+    .null(_) -> .panic("unwrap called on None")
+}
+
+pub def[T] Option[T].unwrap_or(self, default: T) -> T {
+    .some(x) -> x,
+    .null(_) -> default
+}
+
+pub def[T] Option[T].unwrap_or_else(self, default: Func[(), T]) -> T {
+    .some(x) -> x,
+    .null(_) -> default()
+}
+
+pub def[T] Option[T].and(self, other: Option[T]) -> Option[T] {
+    .null -> .null,
+    _ -> other,
+}
+
+pub def[T] Option[T].or(self, other: Option[T]) -> Option[T] {
+    .null -> other,
+    _ -> self
+}
+
+pub def[T, U] Option[T].flat_map(self, f: Func[T, Option[U]]) -> Option[U] {
+    .some(x) -> f(x),
+    .null -> .null
+}

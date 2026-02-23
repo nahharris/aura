@@ -1,0 +1,70 @@
+pub def[T, E] Result = enum(err: E, ok: T);
+
+pub def[T, E] Result[T, E].is_ok(self) -> Bool {
+    .ok(_) -> .true,
+    _ -> .false
+}
+
+pub def[T, E] Result[T, E].is_err(self) -> Bool {
+    !self.is_ok()
+}
+
+pub def[T, E] Result[T, E].ok(self) -> Option[T] {
+    .ok(v) -> .some(v),
+    _ -> .null
+}
+
+pub def[T, E] Result[T, E].err(self) -> Option[E] {
+    .err(e) -> .some(e),
+    _ -> .null
+}
+
+pub def[T, E] Result[T, E].unwrap(self) -> T {
+    .ok(v) -> v,
+    _ -> panic("unwrap called on Err")
+}
+
+pub def[T, E] Result[T, E].unwrap_or(self, default: T) -> T {
+    .ok(v) -> v,
+    _ -> default
+}
+
+pub def[T, E] Result[T, E].unwrap_or_else(self, default: Func[(), T]) -> T {
+    .ok(v) -> v,
+    _ -> default()
+}
+
+pub def[T, E] Result[T, E].unwrap_err(self) -> E {
+    .err(e) -> e,
+    _ -> panic("unwrap_err called on Ok")
+}
+
+pub def[T, E] Result[T, E].unwrap_err_or(self, default: E) -> E {
+    .err(e) -> e,
+    _ -> default
+}
+
+pub def[T, E] Result[T, E].unwrap_err_or_else(self, default: Func[(), E]) -> E {
+    .err(e) -> e,
+    _ -> default()
+}
+
+pub def[T, E, U] Result[T, E].map(self, f: Func[T, U]) -> Result[U, E] {
+    .ok(v) -> .ok(f(v)),
+    .err(e) -> .err(e)
+}
+
+pub def[T, E, F] Result[T, E].map_err(self, f: Func[E, F]) -> Result[T, F] {
+    .ok(v) -> .ok(v),
+    .err(e) -> .err(f(e))
+}
+
+pub def[T, E, U] Result[T, E].and_then(self, f: Func[T, Result[U, F]]) -> Result[U, F] {
+    .ok(v) -> f(v),
+    .err(e) -> .err(e)
+}
+
+pub def[T, E, F] Result[T, E].or_else(self, f: Func[E, Result[T, F]]) -> Result[T, F] {
+    .ok(v) -> .ok(v),
+    .err(e) -> f(e)
+}

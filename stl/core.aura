@@ -1,0 +1,22 @@
+// stl/core.aura — Core general-purpose utilities for Aura.
+//
+// These functions are thin but give names to common patterns, making
+// call-site intent explicit and enabling point-free and pipeline styles.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pattern dispatch
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Apply a pattern-matching closure to `value`.
+///
+/// This is the named form of `f(value)` — it makes the intent explicit
+/// and allows trailing-lambda syntax:
+///
+///   match(status) with {
+///       200       -> "ok",
+///       404       -> "not found",
+///       n         -> "other: $(n)",
+///   }
+///
+/// The external label `with` mirrors ML-family `match x with` idiom.
+pub def[T, U] match(value: T, f with: Func[T, U]) -> U { f(value) }

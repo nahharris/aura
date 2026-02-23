@@ -1,0 +1,43 @@
+// stl/bool.aura — Boolean type definition and utilities for Aura.
+//
+// `Bool` is an enum with two unit variants.
+// Variant tag order is significant: `false` is tag 0, `true` is tag 1.
+// This mirrors the design spec: Bool = enum(false: (), true: ()).
+//
+// The prelude globals `true` and `false` are seeded as `Value::Bool` by the VM
+// before any Aura source is executed; they do not need to be re-exported here.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Type definition
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The boolean type.  Variant order: `false` = tag 0, `true` = tag 1.
+pub def Bool = enum(false: (), true: ());
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Utility functions
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Returns the logical negation of `b`.
+pub def Bool.not(self: Bool) -> Bool {
+    .true -> .false,
+    .false -> .true
+}
+
+/// Returns `true` if both `self` and `other` are `true`.
+pub def Bool.and(self: Bool, other: Bool) -> Bool {
+    .true -> other,
+    .false -> .false
+}
+
+/// Returns `true` if either `self` or `other` is `true`.
+pub def Bool.or(self: Bool, other: Bool) -> Bool {
+    .true -> .true,
+    .false -> other
+}
+
+/// Converts the boolean to its string representation ("true" or "false").
+pub def Bool.toString(self: Bool) -> String {
+    .true -> "true",
+    .false -> "false"
+}
