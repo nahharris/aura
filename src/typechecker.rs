@@ -1732,8 +1732,8 @@ impl TypeChecker {
     /// Infer the return type of a single closure arm.
     ///
     /// `subject_ty` is the type of the value being matched against.  When
-    /// checking a closure used as a match function (e.g. the argument to a
-    /// `match(val) { ... }` call), this is the scrutinee type.  When the
+    /// checking a closure applied to a scrutinee (e.g. `{ pat -> e }(val)`),
+    /// this is the scrutinee type.  When the
     /// closure is used as a plain function literal the subject type is `Any`.
     fn infer_closure_arm(&mut self, arm: &ClosureArm, env: &TypeEnv, subject_tys: &[Type]) -> Type {
         let mut child = env.snapshot_child();
@@ -2346,23 +2346,26 @@ pub fn check(program: &Program) -> Result<(), Vec<TypeError>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::Program;
     use crate::lexer::lex;
     use crate::parser::parse_tokens;
 
-    fn check_src(src: &str) -> Result<(), Vec<TypeError>> {
+    fn program_from_source(src: &str) -> Program {
         let (tokens, lex_errs) = lex(src);
         assert!(lex_errs.is_empty(), "lex errors: {lex_errs:?}");
         let (program, parse_errs) = parse_tokens(tokens);
         assert!(parse_errs.is_empty(), "parse errors: {parse_errs:?}");
+        program
+    }
+
+    fn check_src(src: &str) -> Result<(), Vec<TypeError>> {
+        let program = program_from_source(src);
         check(&program)
     }
 
     /// Run the checker and return the `TypeChecker` so tests can inspect `env`.
     fn check_src_env(src: &str) -> TypeChecker {
-        let (tokens, lex_errs) = lex(src);
-        assert!(lex_errs.is_empty(), "lex errors: {lex_errs:?}");
-        let (program, parse_errs) = parse_tokens(tokens);
-        assert!(parse_errs.is_empty(), "parse errors: {parse_errs:?}");
+        let program = program_from_source(src);
         let mut checker = TypeChecker::new();
         checker.check_program(&program);
         checker

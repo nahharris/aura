@@ -250,8 +250,6 @@ impl<'src> Lexer<'src> {
             '=' => {
                 if self.eat('=') {
                     TokenKind::EqEq
-                } else if self.eat('>') {
-                    TokenKind::FatArrow
                 } else {
                     TokenKind::Eq
                 }

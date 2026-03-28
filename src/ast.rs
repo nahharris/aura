@@ -328,7 +328,7 @@ impl TypeExpr {
 pub enum Stmt {
     /// `let x = expr, y = expr;` — mutable local binding(s).
     Let(LetStmt),
-    /// `const x = expr;` — immutable local binding (legacy; prefer `def`).
+    /// `const x = expr;` — immutable local binding (contextual `const` keyword).
     Const(ConstStmt),
     /// `def x = expr;` or `def f(params) { body }` — local immutable binding or local fn.
     Def(DefStmt),

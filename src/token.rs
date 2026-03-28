@@ -9,6 +9,16 @@
 //! owned `String` rather than borrowed slices, which avoids lifetime parameters
 //! in the parser and compiler. The performance cost is negligible given that
 //! lexing is not the bottleneck in any real workload.
+//!
+//! # Keyword policy (audit)
+//!
+//! | Category | Examples |
+//! |----------|----------|
+//! | Structural / module / jump keywords | `let`, `pub`, `use`, `return`, `break`, `continue` |
+//! | Reserved / forward-compat / `self` | `fn`, `type`, `macro`, `self` |
+//! | Contextual only (plain [`TokenKind::Ident`]) | `def`, `defmacro`, `if`, `cases`, `loop`, `const`, … |
+//!
+//! Keep this reserved set small; surfaces that can be macros should stay as identifiers.
 
 use std::fmt;
 
@@ -250,8 +260,6 @@ pub enum TokenKind {
     Colon,
     /// `->`  (closure arrow, return-type arrow)
     Arrow,
-    /// `=>`  (match arm separator)
-    FatArrow,
     /// `~`   (guard separator in multi-arm closures)
     Tilde,
 
@@ -329,7 +337,6 @@ impl fmt::Display for TokenKind {
             TokenKind::Dot => write!(f, "`.`"),
             TokenKind::Colon => write!(f, "`:`"),
             TokenKind::Arrow => write!(f, "`->`"),
-            TokenKind::FatArrow => write!(f, "`=>`"),
             TokenKind::Tilde => write!(f, "`~`"),
             TokenKind::LParen => write!(f, "`(`"),
             TokenKind::RParen => write!(f, "`)`"),

@@ -136,6 +136,10 @@ pub fn run_source(src: &str, file_path: &str) -> AuraResult<()> {
 /// This runs the STL files to register their globals before user code executes.
 /// Only the minimal set of modules needed by the type checker is loaded:
 /// string, list, and io.
+///
+/// **Policy:** STL sources use [`parse_source`] and [`compile_program`] but
+/// **skip** [`typecheck_program`], so loosely typed bootstrap code does not
+/// produce false-positive diagnostics for user programs.
 fn load_stl(vm: &mut vm::Vm) -> AuraResult<()> {
     let modules: [(&str, &str); 3] = [
         ("stl/string", include_str!("../stl/string.aura")),

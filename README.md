@@ -35,12 +35,12 @@ def Point = (x: Int, y: Int)
 def[T, E] Result = enum(ok: T, err: E)
 def[T] Option = enum(some: T, null: ())
 
-// Pattern matching
+// Pattern matching (multi-arm closure + call)
 def factorial(n: Int) -> Int {
-    match (n) with {
-        0 => 1,
-        _ => n * factorial(n - 1)
-    }
+    {
+        0 -> 1,
+        _ -> n * factorial(n - 1)
+    }(n)
 }
 
 // Methods

@@ -7,16 +7,16 @@
 // Pattern dispatch
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Apply a pattern-matching closure to `value`.
+/// Apply a pattern-matching closure to `value` (`f(value)`).
 ///
-/// This is the named form of `f(value)` — it makes the intent explicit
-/// and allows trailing-lambda syntax:
+/// Pattern matching uses the same multi-arm closure syntax as everywhere else:
 ///
-///   match(status) with {
-///       200       -> "ok",
-///       404       -> "not found",
-///       n         -> "other: $(n)",
-///   }
+///   {
+///       200 -> "ok",
+///       404 -> "not found",
+///       n   -> "other: $(n)",
+///   }(status)
 ///
-/// The external label `with` mirrors ML-family `match x with` idiom.
+/// The parameter label `with` names the closure argument for readable calls:
+/// `match(status, f with: { ... })`.
 pub def[T, U] match(value: T, f with: Func[T, U]) -> U { f(value) }

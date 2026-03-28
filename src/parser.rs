@@ -12,6 +12,7 @@
 //!   each precedence level is a `parse_bp` call with a minimum binding power.
 //! - **Primaries**: `parse_primary` dispatches on the current token to literals,
 //!   identifiers, closures, collection literals, control-flow forms, and calls.
+//! - **Submodules**: `pratt` (binding powers), `pattern` (`parse_pattern`).
 //!
 //! # Pratt Operator Precedences (binding power pairs, left and right)
 //!
@@ -40,6 +41,11 @@
 
 use crate::ast::*;
 use crate::token::{Span, StringPart, Token, TokenKind};
+
+mod pattern;
+mod pratt;
+
+use pratt::{infix_binding_power, token_to_binop};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Error type
@@ -794,6 +800,7 @@ impl Parser {
             TokenKind::Break => Ok(Stmt::Break(self.parse_break()?)),
             TokenKind::Continue => Ok(Stmt::Continue(self.parse_continue()?)),
             TokenKind::Ident(s) if s == "def" => Ok(Stmt::Def(self.parse_def_stmt()?)),
+            TokenKind::Ident(s) if s == "const" => Ok(Stmt::Const(self.parse_const()?)),
             _ => Ok(Stmt::Expr(self.parse_expr_stmt()?)),
         }
     }
@@ -806,6 +813,17 @@ impl Parser {
         self.eat_terminators();
         let span = start.merge(self.cur_span());
         Ok(LetStmt { bindings, span })
+    }
+
+    /// Parse `const x [: T] = expr, y = expr;` (contextual `const`, not a lexer keyword).
+    fn parse_const(&mut self) -> Result<ConstStmt, ParseError> {
+        let start = self.cur_span();
+        // `const` — parse_stmt dispatches here only for Ident("const").
+        self.expect_ident()?;
+        let bindings = self.parse_local_bindings()?;
+        self.eat_terminators();
+        let span = start.merge(self.cur_span());
+        Ok(ConstStmt { bindings, span })
     }
 
     /// Parse `def x = expr;` or `def f(params) { body }` as a local statement.
@@ -966,7 +984,10 @@ impl Parser {
             let is_let_or_control = matches!(
                 self.cur_kind(),
                 TokenKind::Let | TokenKind::Return | TokenKind::Break | TokenKind::Continue
-            ) || matches!(self.cur_kind(), TokenKind::Ident(s) if s == "def");
+            ) || matches!(
+                self.cur_kind(),
+                TokenKind::Ident(s) if s == "def" || s == "const"
+            );
 
             if is_let_or_control {
                 let stmt = self.parse_stmt()?;
@@ -1439,7 +1460,6 @@ impl Parser {
                     "if" => self.parse_if(ident_span),
                     "cases" => self.parse_cases(ident_span),
                     "loop" => self.parse_loop(ident_span),
-                    "match" => self.parse_match(ident_span),
                     "builtin" => self.parse_builtin(ident_span),
                     _ => Ok(Expr::Ident(name, ident_span)),
                 }
@@ -1457,13 +1477,9 @@ impl Parser {
             // ── Atom label prefix for labelled block `'label: { ... }` ────────
             TokenKind::Atom(_) => {
                 let labelled = self.parse_labelled_block()?;
-                // A standalone labelled block is represented as a Block expr.
-                // The label is used by jump resolution, not stored on Expr::Block directly.
-                // The compiler handles labelled-block semantics via LoopExpr/etc.
-                // For standalone labelled blocks we drop the label here — full label
-                // support is wired at the statement level.
-                // TODO: represent labelled standalone blocks properly in a follow-up.
-                let _ = labelled.span;
+                // Standalone `'label: { ... }` parses the label but lowering only keeps
+                // `Block`; full labelled-block semantics for arbitrary expr positions
+                // remains a follow-up (see `LabelledBlock` in control/trailing paths).
                 Ok(Expr::Block(labelled.block))
             }
 
@@ -1674,143 +1690,6 @@ impl Parser {
         })
     }
 
-    /// Parse a single pattern (literal, identifier, wildcard, tuple, struct, constructor, or variant).
-    fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
-        let start = self.cur_span();
-        match self.cur_kind().clone() {
-            TokenKind::Ident(name) if name == "_" => {
-                self.advance();
-                Ok(Pattern::Wildcard(start))
-            }
-            TokenKind::DotDot => {
-                // Rest pattern: `..name` or `..`
-                self.advance();
-                let rest_name = if let TokenKind::Ident(n) = self.cur_kind().clone() {
-                    if n != "_" {
-                        self.advance();
-                        Some(n)
-                    } else {
-                        self.advance();
-                        None
-                    }
-                } else {
-                    None
-                };
-                let span = start.merge(self.cur_span());
-                Ok(Pattern::Rest {
-                    name: rest_name,
-                    span,
-                })
-            }
-            TokenKind::Ident(name) => {
-                self.advance();
-                // Check for type-check pattern: `name: Type`
-                if self.eat(TokenKind::Colon) {
-                    let ty = self.parse_type_expr()?;
-                    let span = start.merge(self.cur_span());
-                    return Ok(Pattern::TypeCheck { name, ty, span });
-                }
-                // Check for constructor pattern: `TypeName(inner)` — PascalCase ident + `(`
-                let is_pascal = name.chars().next().is_some_and(|c| c.is_uppercase());
-                if is_pascal && self.check(&TokenKind::LParen) {
-                    self.advance(); // consume `(`
-                    let inner = self.parse_pattern()?;
-                    self.expect(TokenKind::RParen)?;
-                    let span = start.merge(self.cur_span());
-                    return Ok(Pattern::Constructor {
-                        type_name: name,
-                        inner: Box::new(inner),
-                        span,
-                    });
-                }
-                Ok(Pattern::Bind(name, start))
-            }
-            TokenKind::Int(n) => {
-                self.advance();
-                Ok(Pattern::Literal(Expr::Int(n, start)))
-            }
-            TokenKind::Float(n) => {
-                self.advance();
-                Ok(Pattern::Literal(Expr::Float(n, start)))
-            }
-            TokenKind::Str(parts) => {
-                self.advance();
-                Ok(Pattern::Literal(Expr::Str(parts, start)))
-            }
-            TokenKind::Char(c) => {
-                self.advance();
-                Ok(Pattern::Literal(Expr::Char(c, start)))
-            }
-            TokenKind::LBracket => {
-                // Only `[]` (empty list) is supported as a literal pattern.
-                self.advance(); // consume `[`
-                self.expect(TokenKind::RBracket)?;
-                let span = start.merge(self.cur_span());
-                Ok(Pattern::Literal(Expr::List {
-                    items: vec![],
-                    span,
-                }))
-            }
-            TokenKind::LParen => {
-                self.advance();
-                // Peek: if first element is `ident =` → struct pattern;
-                // otherwise → tuple pattern.
-                let is_struct = matches!(self.cur_kind(), TokenKind::Ident(_))
-                    && matches!(self.peek_kind(), TokenKind::Eq);
-                if is_struct {
-                    let mut fields = Vec::new();
-                    while !self.check(&TokenKind::RParen) && !self.at_eof() {
-                        let f_start = self.cur_span();
-                        // Supports both `field` and `field = alias`
-                        let field_name = self.expect_ident()?;
-                        let binding = if self.eat(TokenKind::Eq) {
-                            Some(self.expect_ident()?)
-                        } else {
-                            None
-                        };
-                        let f_span = f_start.merge(self.cur_span());
-                        fields.push(StructPatternField {
-                            name: field_name,
-                            binding,
-                            span: f_span,
-                        });
-                        if !self.eat(TokenKind::Comma) {
-                            break;
-                        }
-                    }
-                    self.expect(TokenKind::RParen)?;
-                    let span = start.merge(self.cur_span());
-                    Ok(Pattern::Struct { fields, span })
-                } else {
-                    let mut pats = Vec::new();
-                    while !self.check(&TokenKind::RParen) && !self.at_eof() {
-                        pats.push(self.parse_pattern()?);
-                        if !self.eat(TokenKind::Comma) {
-                            break;
-                        }
-                    }
-                    self.expect(TokenKind::RParen)?;
-                    let span = start.merge(self.cur_span());
-                    Ok(Pattern::Tuple(pats, span))
-                }
-            }
-            TokenKind::DotIdent(name) => {
-                self.advance();
-                let inner = if self.check(&TokenKind::LParen) {
-                    self.advance();
-                    let inner_pat = self.parse_pattern()?;
-                    self.expect(TokenKind::RParen)?;
-                    Some(Box::new(inner_pat))
-                } else {
-                    None
-                };
-                let span = start.merge(self.cur_span());
-                Ok(Pattern::Variant { name, inner, span })
-            }
-            other => Err(self.error(format!("expected pattern, found {other}"))),
-        }
-    }
-
     // ─────────────────────────────────────────────────────────────────────────
     // Collection literals
     // ─────────────────────────────────────────────────────────────────────────
@@ -1842,9 +1721,10 @@ impl Parser {
             // Dict literal: `first_val = value, ...`
             let dict_start = item_start;
             let value = self.parse_expr(2)?;
+            let key_expr = self.expr_with_collection_item_stmts(first_stmts, first_val);
             let entry_span = dict_start.merge(value.span());
             let mut entries = vec![DictEntry {
-                key: first_val,
+                key: key_expr,
                 value,
                 span: entry_span,
             }];
@@ -1854,10 +1734,11 @@ impl Parser {
                     break;
                 }
                 let e_start = self.cur_span();
-                let _stmts = self.parse_collection_item_stmts()?; // TODO: thread scoped stmts
-                let key = self.parse_expr(2)?;
+                let entry_stmts = self.parse_collection_item_stmts()?;
+                let key_tail = self.parse_expr(2)?;
                 self.expect(TokenKind::Eq)?;
                 let val = self.parse_expr(2)?;
+                let key = self.expr_with_collection_item_stmts(entry_stmts, key_tail);
                 let e_span = e_start.merge(val.span());
                 entries.push(DictEntry {
                     key,
@@ -1901,14 +1782,29 @@ impl Parser {
     /// These are scoped to the item only (e.g., `let x = 0; x++; x`).
     fn parse_collection_item_stmts(&mut self) -> Result<Vec<Stmt>, ParseError> {
         let mut stmts = Vec::new();
-        // Consume as many `let` / expr `;` pairs as appear before
-        // the final expression.  We can't easily distinguish "stmt before value"
-        // from "the value itself" without speculative parsing, so we use a
-        // simple heuristic: if `let` is present, it's always a stmt.
-        while matches!(self.cur_kind(), TokenKind::Let) {
+        // Consume as many `let` / `const` stmts as appear before the item expr.
+        loop {
+            let is_item_preamble = matches!(self.cur_kind(), TokenKind::Let)
+                || matches!(self.cur_kind(), TokenKind::Ident(s) if s == "const");
+            if !is_item_preamble {
+                break;
+            }
             stmts.push(self.parse_stmt()?);
         }
         Ok(stmts)
+    }
+
+    /// Wrap `tail` in a [`Block`] when collection-item preamble stmts are present.
+    fn expr_with_collection_item_stmts(&self, stmts: Vec<Stmt>, tail: Expr) -> Expr {
+        if stmts.is_empty() {
+            return tail;
+        }
+        let span = stmts[0].span().merge(tail.span());
+        Expr::Block(Block {
+            stmts,
+            tail: Some(Box::new(tail)),
+            span,
+        })
     }
 
     /// Parse `( ... )` — a grouped expression, positional tuple, or named-field struct.
@@ -1931,6 +1827,17 @@ impl Parser {
 
         if is_struct {
             return self.parse_struct_literal(start);
+        }
+
+        // External-parameter closure: `(a: T, ...) -> R { body }` or `(a: T, ...) { body }`.
+        let checkpoint = self.cursor;
+        match self.try_parse_external_closure(start) {
+            Ok(Some(expr)) => return Ok(expr),
+            Ok(None) => self.cursor = checkpoint,
+            Err(e) => {
+                self.cursor = checkpoint;
+                return Err(e);
+            }
         }
 
         // Parse the first expression.
@@ -1987,6 +1894,66 @@ impl Parser {
         self.expect(TokenKind::RParen)?;
         let span = start.merge(self.cur_span());
         Ok(Expr::Struct { fields, span })
+    }
+
+    /// `(params) -> [RetTy] { body }` — same [`Closure`] AST as a one-arm braced closure.
+    ///
+    /// Returns `Ok(None)` if the token sequence is not this form (caller restores `cursor`).
+    fn try_parse_external_closure(&mut self, start: Span) -> Result<Option<Expr>, ParseError> {
+        let mut params = Vec::new();
+        loop {
+            if self.check(&TokenKind::RParen) {
+                break;
+            }
+            let p = match self.parse_param() {
+                Ok(p) => p,
+                Err(_) => return Ok(None),
+            };
+            params.push(p);
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        if !self.check(&TokenKind::RParen) {
+            return Ok(None);
+        }
+        self.expect(TokenKind::RParen)?;
+        if !self.eat(TokenKind::Arrow) {
+            return Ok(None);
+        }
+        let _ret_annotation = if self.check(&TokenKind::LBrace) {
+            None
+        } else {
+            Some(self.parse_type_expr()?)
+        };
+        let body_block = self.parse_block()?;
+        let body_expr = Expr::Block(body_block.clone());
+        let patterns: Vec<Pattern> = params
+            .iter()
+            .map(|p| {
+                let span = p.span;
+                match &p.ty {
+                    Some(ty) => Pattern::TypeCheck {
+                        name: p.internal.clone(),
+                        ty: ty.clone(),
+                        span,
+                    },
+                    None => Pattern::Bind(p.internal.clone(), span),
+                }
+            })
+            .collect();
+        let arm_span = start.merge(body_block.span);
+        let arm = ClosureArm {
+            patterns,
+            guard: None,
+            body: body_expr,
+            span: arm_span,
+        };
+        let span = start.merge(self.cur_span());
+        Ok(Some(Expr::Closure(Closure {
+            arms: vec![arm],
+            span,
+        })))
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2204,85 +2171,6 @@ impl Parser {
         }))
     }
 
-    /// Parse a `match (scrutinee) with { pattern => expr, ... }` expression.
-    ///
-    /// Desugars into an immediately-invoked multi-arm closure:
-    /// `({ pat -> expr, ... })(scrutinee)`
-    fn parse_match(&mut self, start: Span) -> Result<Expr, ParseError> {
-        // Scrutinee in `( )`.
-        self.expect(TokenKind::LParen)?;
-        let scrutinee = self.parse_expr(0)?;
-        self.expect(TokenKind::RParen)?;
-
-        // Expect the `with` keyword (parsed as an identifier).
-        match self.cur_kind().clone() {
-            TokenKind::Ident(s) if s == "with" => {
-                self.advance();
-            }
-            _ => {
-                return Err(self.error(format!(
-                    "expected `with` after match scrutinee, found {}",
-                    self.cur_kind()
-                )));
-            }
-        }
-
-        // Parse `{ arm, arm, ... }` where each arm uses `=>` as separator.
-        self.expect(TokenKind::LBrace)?;
-        let mut arms = Vec::new();
-        loop {
-            while self.eat(TokenKind::Semicolon) || self.eat(TokenKind::Newline) {}
-            if self.check(&TokenKind::RBrace) || self.at_eof() {
-                break;
-            }
-
-            let arm = self.parse_match_arm()?;
-            arms.push(arm);
-
-            // Arms are comma-separated; trailing comma is allowed.
-            if !self.eat(TokenKind::Comma) {
-                break;
-            }
-            while self.eat(TokenKind::Newline) {}
-        }
-        self.expect(TokenKind::RBrace)?;
-
-        let closure_span = start.merge(self.cur_span());
-        let closure = Expr::Closure(Closure {
-            arms,
-            span: closure_span,
-        });
-
-        // Desugar: call the closure with the scrutinee as the sole argument.
-        let arg = Arg {
-            label: None,
-            span: scrutinee.span(),
-            value: scrutinee,
-        };
-        let span = start.merge(self.cur_span());
-        Ok(Expr::Call {
-            callee: Box::new(closure),
-            args: vec![arg],
-            trailing: vec![],
-            span,
-        })
-    }
-
-    /// Parse one match arm: `pattern => expr`  (uses `=>` instead of `->`)
-    fn parse_match_arm(&mut self) -> Result<ClosureArm, ParseError> {
-        let start = self.cur_span();
-        let pattern = self.parse_pattern()?;
-        self.expect(TokenKind::FatArrow)?;
-        let body = self.parse_expr(0)?;
-        let span = start.merge(body.span());
-        Ok(ClosureArm {
-            patterns: vec![pattern],
-            guard: None,
-            body,
-            span,
-        })
-    }
-
     // ─────────────────────────────────────────────────────────────────────────
     // Utility
     // ─────────────────────────────────────────────────────────────────────────
@@ -2310,76 +2198,6 @@ impl Parser {
             }
             _ => Err(self.error(format!("expected identifier, found {}", self.cur_kind()))),
         }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Pratt binding-power table
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Return `(left_bp, right_bp)` for an infix/postfix token.
-///
-/// For pure postfix operators, `right_bp` is `None` (they have no right operand).
-/// For infix operators, both are `Some`.
-/// Returns `(0, None)` for tokens that are not infix/postfix operators (which
-/// causes the Pratt loop to exit).
-fn infix_binding_power(kind: &TokenKind) -> (u8, Option<u8>) {
-    match kind {
-        // Right-associative assignment — l_bp must be LESS than r_bp.
-        TokenKind::Eq => (1, Some(2)),
-        // Elvis ?:
-        TokenKind::QuestionColon => (3, Some(4)),
-        // Logical OR
-        TokenKind::PipePipe => (5, Some(6)),
-        // Logical AND
-        TokenKind::AmpAmp => (7, Some(8)),
-        // Equality
-        TokenKind::EqEq | TokenKind::BangEq => (9, Some(10)),
-        // Comparison
-        TokenKind::Lt | TokenKind::Gt | TokenKind::LtEq | TokenKind::GtEq => (11, Some(12)),
-        // Range
-        TokenKind::DotDot => (13, Some(14)),
-        // Additive
-        TokenKind::Plus | TokenKind::Minus => (15, Some(16)),
-        // Multiplicative
-        TokenKind::Star | TokenKind::Slash | TokenKind::Percent => (17, Some(18)),
-        // Cast `:` — postfix, no right operand in the expression sense (type follows).
-        TokenKind::Colon => (19, None),
-        // Post-increment / decrement — postfix.
-        TokenKind::PlusPlus | TokenKind::MinusMinus => (21, None),
-        // Force unwrap `!!` — postfix.
-        TokenKind::BangBang => (23, None),
-        // Safe navigation `?.` — postfix.
-        TokenKind::QuestionDot => (25, None),
-        // Field access `.` — postfix.
-        TokenKind::Dot => (27, None),
-        // Method call via DotIdent `.method(...)` — postfix.
-        TokenKind::DotIdent(_) => (27, None),
-        // Call `()` and index `[]` — postfix, highest precedence.
-        TokenKind::LParen | TokenKind::LBracket => (29, None),
-        // Everything else is not an infix/postfix operator.
-        _ => (0, None),
-    }
-}
-
-/// Map an infix token kind to a [`BinOp`].
-/// Panics if the token is not a binary operator (caller must ensure correctness).
-fn token_to_binop(kind: &TokenKind) -> BinOp {
-    match kind {
-        TokenKind::PipePipe => BinOp::Or,
-        TokenKind::AmpAmp => BinOp::And,
-        TokenKind::EqEq => BinOp::Eq,
-        TokenKind::BangEq => BinOp::Ne,
-        TokenKind::Lt => BinOp::Lt,
-        TokenKind::Gt => BinOp::Gt,
-        TokenKind::LtEq => BinOp::Le,
-        TokenKind::GtEq => BinOp::Ge,
-        TokenKind::Plus => BinOp::Add,
-        TokenKind::Minus => BinOp::Sub,
-        TokenKind::Star => BinOp::Mul,
-        TokenKind::Slash => BinOp::Div,
-        TokenKind::Percent => BinOp::Rem,
-        _ => panic!("token_to_binop called on non-binary-op token: {kind:?}"),
     }
 }
 
@@ -2485,6 +2303,35 @@ mod tests {
         prog
     }
 
+    fn first_def_body(prog: &Program) -> &Block {
+        let Item::Decl(d) = &prog.items[0] else {
+            panic!("expected Decl");
+        };
+        let DeclKind::Def(def_decl) = &d.kind else {
+            panic!("expected Def");
+        };
+        let Some(DefBinding::FuncDef { body, .. }) = def_decl.bindings.first() else {
+            panic!("expected FuncDef");
+        };
+        body
+    }
+
+    /// Body tail expression, or last `Stmt::Expr` when there is no tail.
+    fn body_expr<'a>(body: &'a Block) -> &'a Expr {
+        body.tail
+            .as_deref()
+            .or_else(|| {
+                body.stmts.last().and_then(|s| {
+                    if let Stmt::Expr(es) = s {
+                        Some(&es.expr)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .expect("expected a tail or trailing expression statement")
+    }
+
     fn parse_expr_ok(src: &str) -> Expr {
         // Wrap in a def to parse as a top-level expression.
         let wrapped = format!("def __test__() {{ {src} }}");
@@ -2563,15 +2410,33 @@ mod tests {
     #[test]
     fn test_parse_let_stmt() {
         let prog = parse_ok("def f() { let x = 42; }");
-        if let Item::Decl(d) = &prog.items[0] {
-            if let DeclKind::Def(def_decl) = &d.kind {
-                if let Some(DefBinding::FuncDef { body, .. }) = def_decl.bindings.first() {
-                    assert!(matches!(body.stmts[0], Stmt::Let(_)));
-                    return;
-                }
-            }
-        }
-        panic!("unexpected parse result");
+        let body = first_def_body(&prog);
+        assert!(matches!(body.stmts[0], Stmt::Let(_)));
+    }
+
+    #[test]
+    fn test_parse_const_stmt() {
+        let prog = parse_ok("def f() { const x = 42; }");
+        let body = first_def_body(&prog);
+        assert!(matches!(body.stmts[0], Stmt::Const(_)));
+    }
+
+    #[test]
+    fn test_parse_closure_application() {
+        let e = parse_expr_ok("{ 0 -> 1, n -> n }(x)");
+        assert!(
+            matches!(e, Expr::Call { .. }),
+            "expected Call( closure, arg ), got {e:?}"
+        );
+    }
+
+    #[test]
+    fn test_parse_external_closure_expr() {
+        let e = parse_expr_ok("(a: Int, b: Int) -> Int { a + b }");
+        assert!(
+            matches!(e, Expr::Closure(ref c) if c.arms.len() == 1 && c.arms[0].patterns.len() == 2),
+            "expected single-arm Closure with two typed patterns, got {e:?}"
+        );
     }
 
     #[test]
@@ -2689,27 +2554,13 @@ mod tests {
             }
         "#,
         );
-        if let Item::Decl(d) = &prog.items[0] {
-            if let DeclKind::Def(def_decl) = &d.kind {
-                if let Some(DefBinding::FuncDef { body, .. }) = def_decl.bindings.first() {
-                    // The call has no trailing `;`, so it lands in `body.tail`.
-                    if let Some(tail) = &body.tail {
-                        if let Expr::Call { trailing, .. } = tail.as_ref() {
-                            assert_eq!(trailing.len(), 2);
-                            return;
-                        }
-                    }
-                    // Fallback: also accept it as a stmt (with semicolon).
-                    if let Some(Stmt::Expr(es)) = body.stmts.first() {
-                        if let Expr::Call { trailing, .. } = &es.expr {
-                            assert_eq!(trailing.len(), 2);
-                            return;
-                        }
-                    }
-                }
-            }
+        let body = first_def_body(&prog);
+        let call_expr = body_expr(body);
+        if let Expr::Call { trailing, .. } = call_expr {
+            assert_eq!(trailing.len(), 2);
+            return;
         }
-        panic!("unexpected parse result");
+        panic!("unexpected parse result: {call_expr:?}");
     }
 
     #[test]
@@ -2808,42 +2659,22 @@ mod tests {
             }
         "#,
         );
-        if let Item::Decl(d) = &prog.items[0] {
-            if let DeclKind::Def(def_decl) = &d.kind {
-                if let Some(DefBinding::FuncDef { body, .. }) = def_decl.bindings.first() {
-                    // The call is the tail expression of the function body.
-                    let call_expr = body
-                        .tail
-                        .as_deref()
-                        .or_else(|| {
-                            body.stmts.last().and_then(|s| {
-                                if let Stmt::Expr(es) = s {
-                                    Some(&es.expr)
-                                } else {
-                                    None
-                                }
-                            })
-                        })
-                        .expect("expected a tail or statement expression");
-
-                    if let Expr::Call { trailing, .. } = call_expr {
-                        assert_eq!(
-                            trailing.len(),
-                            1,
-                            "expected exactly one trailing closure arg"
-                        );
-                        // The trailing arg's block must have a Closure as its tail expression.
-                        let trail_block = &trailing[0].block.block;
-                        assert!(
-                            matches!(trail_block.tail.as_deref(), Some(Expr::Closure(_))),
-                            "expected trailing block tail to be a Closure, got: {:?}",
-                            trail_block.tail
-                        );
-                        return;
-                    }
-                }
-            }
+        let body = first_def_body(&prog);
+        let call_expr = body_expr(body);
+        if let Expr::Call { trailing, .. } = call_expr {
+            assert_eq!(
+                trailing.len(),
+                1,
+                "expected exactly one trailing closure arg"
+            );
+            let trail_block = &trailing[0].block.block;
+            assert!(
+                matches!(trail_block.tail.as_deref(), Some(Expr::Closure(_))),
+                "expected trailing block tail to be a Closure, got: {:?}",
+                trail_block.tail
+            );
+            return;
         }
-        panic!("unexpected parse result");
+        panic!("unexpected parse result: {call_expr:?}");
     }
 }

@@ -7,6 +7,17 @@ Aura is a functional programming language aimed at application development. This
 1. **Small primitive set.** A minimal collection of orthogonal constructs — expressions, blocks, closures, calls, and declarations — from which all higher-level features are composed.
 2. **Self-describing.** Almost every language construct can be defined *in terms of* Aura itself through the macro system, enabling bootstrapping and keeping the compiler core small.
 3. **Familiar surface.** Derived constructs should look and feel like the built-in syntax of conventional languages even though they are macros under the hood.
+4. **Minimal reserved words.** The lexer keeps a short keyword list for structure (`let`, `use`, `return`, *etc.*). Surfaces that can be macros (builtin or user-defined) should stay as contextual identifiers — `if`, `cases`, `loop`, and related labels are *not* reserved tokens.
+
+### Pattern matching and reuse
+
+There is **no** `match` keyword and **no** `=>` token. Discrimination uses the same multi-arm closure syntax as everywhere else, applied to a value with a normal call:
+
+```aura
+{ 0 -> 1, n -> n * fact(n - 1) }(n)
+```
+
+Guards use `~` before `->` inside an arm, as described in [Functions and Closures](#functions-and-closures). The `cases { ~ cond -> e, ... }` form is guard-only multi-branch conditionals.
 
 ---
 
@@ -38,6 +49,12 @@ The following are **not** reserved keywords — they lex as plain identifiers an
 - Built-in control forms: `if`, `cases`, `loop`, `while`, `do`, `then`, `else`
 - Type-expression forms: `union`, `enum`, `interface`
 - Other contextual names: `builtin`, `const`, `true`, `false`, `null`
+
+The name `match` may still appear as an ordinary identifier (e.g. a function in the standard library); it is not special syntax.
+
+### Character literals
+
+Character literals use single quotes: `'a'`, `'\n'`, `'\0'`, *etc.* (distinct from atoms `'identifier`, which are label tokens).
 
 ### Dot-identifiers
 
@@ -100,6 +117,13 @@ enum_variant ::= identifier ":" type_expr   // variant with data: `ok: T`
 
 type_args  ::= "[" (type_expr | const_expr) ("," (type_expr | const_expr))* ","? "]"
 ```
+
+### Generic parameter constraints
+
+On `def` declarations, type parameters may carry interface constraints, mirroring the reference implementation:
+
+- `def[T: Show] ...` — single bound
+- `def[T: (Show, Eq)] ...` — multiple bounds as a parenthesised list
 
 Examples of built-in / standard types:
 
@@ -571,6 +595,12 @@ struct_field ::= identifier "=" identifier          // field rename: `name = ali
 - A variant pattern `.ok(inner)` matches a dot-identifier enum variant.
 - A guard `~ expr` is evaluated only when all patterns match; the arm is taken only if the guard is also `true`.
 - Arms are tried in order; the first matching arm is taken.
+
+To match on a scrutinee, apply the closure (parentheses around the closure value are optional when the parser can see the call clearly):
+
+```aura
+{ 0 -> 1, n -> n * factorial(n - 1) }(n)
+```
 
 ### External-parameter Closure (named parameters, no pattern matching)
 
@@ -1105,6 +1135,8 @@ defmacro def(
 ## String Templates
 
 The `template` macro converts a string with `$( )` interpolation sites into a reusable template value. Unlike a plain interpolated string (which is eagerly evaluated), a template is evaluated lazily at render time.
+
+**Implementation status:** the reference parser does not yet treat `template` as a dedicated form; treat this section as the target surface (call as a macro once `template` exists in the prelude or STL).
 
 ```aura
 let tpl = template "Hello, $(name)! You are $(age) years old."
