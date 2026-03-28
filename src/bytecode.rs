@@ -172,6 +172,9 @@ pub enum OpCode {
     /// Build a typed struct (from deftype) with a type_name.
     /// Operand: u16 type_name_idx, u16 field_count.
     MakeTypedStruct = 0x94,
+    /// Build a set from the top N stack values (deduped by value equality).
+    /// Operand: u16 — item count.
+    MakeSet = 0x95,
 
     // ── Field / index access ──────────────────────────────────────────────────
     /// Load a named field from the object on top of the stack.
@@ -289,6 +292,7 @@ impl TryFrom<u8> for OpCode {
             0x92 => Ok(OpCode::MakeTuple),
             0x93 => Ok(OpCode::MakeStruct),
             0x94 => Ok(OpCode::MakeTypedStruct),
+            0x95 => Ok(OpCode::MakeSet),
             0xa0 => Ok(OpCode::GetField),
             0xa1 => Ok(OpCode::SetField),
             0xa2 => Ok(OpCode::GetIndex),
@@ -691,6 +695,7 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) 
         | OpCode::MakeDict
         | OpCode::MakeTuple
         | OpCode::MakeStruct
+        | OpCode::MakeSet
         | OpCode::StrConcat => {
             let count = chunk.read_u16(offset + 1);
             (format!("{op:?} count={count}"), 3)

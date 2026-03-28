@@ -755,6 +755,16 @@ impl<'heap> Vm<'heap> {
                     let val = Value::new_tuple(self.heap, items);
                     self.push(val);
                 }
+                OpCode::MakeSet => {
+                    let count = {
+                        let frame = self.frames.last_mut().unwrap();
+                        frame.read_u16() as usize
+                    };
+                    let base = self.stack.len() - count;
+                    let items: Vec<Value> = self.stack.drain(base..).collect();
+                    let val = Value::new_set(self.heap, items);
+                    self.push(val);
+                }
                 OpCode::MakeStruct => {
                     let field_count = {
                         let frame = self.frames.last_mut().unwrap();
@@ -899,6 +909,7 @@ impl<'heap> Vm<'heap> {
                         Value::Str(_) => "String".to_string(),
                         Value::List(_) => "List".to_string(),
                         Value::Dict(_) => "Dict".to_string(),
+                        Value::Set(_) => "Set".to_string(),
                         Value::Tuple(_) => "Tuple".to_string(),
                         Value::Closure(_) => "Fn".to_string(),
                         Value::Native(_) => "Fn".to_string(),
@@ -925,6 +936,7 @@ impl<'heap> Vm<'heap> {
                         Value::Str(_) => "String".to_string(),
                         Value::List(_) => "List".to_string(),
                         Value::Dict(_) => "Dict".to_string(),
+                        Value::Set(_) => "Set".to_string(),
                         Value::Tuple(_) => "Tuple".to_string(),
                         Value::Closure(_) | Value::Native(_) => "Fn".to_string(),
                         Value::Module(_) => "Module".to_string(),
@@ -952,6 +964,7 @@ impl<'heap> Vm<'heap> {
                         Value::Str(_) => "String".to_string(),
                         Value::List(_) => "List".to_string(),
                         Value::Dict(_) => "Dict".to_string(),
+                        Value::Set(_) => "Set".to_string(),
                         Value::Tuple(_) => "Tuple".to_string(),
                         Value::Closure(_) | Value::Native(_) => "Fn".to_string(),
                         Value::Module(_) => "Module".to_string(),

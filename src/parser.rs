@@ -728,7 +728,13 @@ impl Parser {
             self.advance(); // consume `[`
             let mut args = Vec::new();
             while !self.check(&TokenKind::RBracket) && !self.at_eof() {
-                args.push(self.parse_type_expr()?);
+                if let TokenKind::Int(n) = self.cur_kind().clone() {
+                    let sp = self.cur_span();
+                    self.advance();
+                    args.push(TypeExpr::LitInt(n, sp));
+                } else {
+                    args.push(self.parse_type_expr()?);
+                }
                 if !self.eat(TokenKind::Comma) {
                     break;
                 }
@@ -744,24 +750,77 @@ impl Parser {
     }
 
     /// Parse a `(T, U)` tuple type or `(x: T, y: U)` struct type.
+    ///
+    /// Struct types use named fields only: `name: T` or bare `name` (sugar for `name: Void`).
+    /// Tuple types use positional type expressions. A leading `name:` or a leading lowercase
+    /// identifier followed by `,` / `)` switches to struct mode.
     fn parse_tuple_or_struct_type(&mut self, start: Span) -> Result<TypeExpr, ParseError> {
         self.expect(TokenKind::LParen)?;
+        #[derive(Clone, Copy)]
+        enum Mode {
+            Tuple,
+            Struct,
+        }
+        let mut mode = Mode::Tuple;
+        if let TokenKind::Ident(ref name) = self.cur_kind().clone() {
+            let has_lower_start = name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_lowercase());
+            let has_upper_start = name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_uppercase());
+            mode = match self.peek_kind() {
+                TokenKind::Colon => Mode::Struct,
+                TokenKind::Comma | TokenKind::RParen if has_lower_start && !has_upper_start => {
+                    Mode::Struct
+                }
+                _ => Mode::Tuple,
+            };
+        }
+
         let mut items: Vec<(Option<String>, TypeExpr)> = Vec::new();
 
         while !self.check(&TokenKind::RParen) && !self.at_eof() {
-            // Peek ahead: `name : Type` means a named field.
-            let named = matches!(self.peek_kind(), TokenKind::Colon)
-                && matches!(self.cur_kind(), TokenKind::Ident(_));
-            if named {
-                let field_start = self.cur_span();
-                let field_name = self.expect_ident()?;
-                self.expect(TokenKind::Colon)?;
-                let ty = self.parse_type_expr()?;
-                items.push((Some(field_name), ty));
-                let _ = field_start; // used for span only
-            } else {
-                let ty = self.parse_type_expr()?;
-                items.push((None, ty));
+            match mode {
+                Mode::Struct => {
+                    let field_start = self.cur_span();
+                    let field_name = self.expect_ident()?;
+                    if self.eat(TokenKind::Colon) {
+                        let ty = self.parse_type_expr()?;
+                        items.push((Some(field_name), ty));
+                    } else if self.check(&TokenKind::Comma) || self.check(&TokenKind::RParen) {
+                        let has_lower = field_name
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_lowercase());
+                        let has_upper = field_name
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_uppercase());
+                        if !has_lower || has_upper {
+                            return Err(self.error(format!(
+                                "expected `:` after field name `{field_name}` in struct type, or use a type for tuple elements"
+                            )));
+                        }
+                        let void_ty = TypeExpr::Named {
+                            name: "Void".into(),
+                            args: vec![],
+                            span: field_start.merge(self.cur_span()),
+                        };
+                        items.push((Some(field_name), void_ty));
+                    } else {
+                        return Err(self.error(
+                            "expected `:` or `,` / `)` after struct field name".into(),
+                        ));
+                    }
+                    let _ = field_start;
+                }
+                Mode::Tuple => {
+                    let ty = self.parse_type_expr()?;
+                    items.push((None, ty));
+                }
             }
             if !self.eat(TokenKind::Comma) {
                 break;
@@ -850,10 +909,18 @@ impl Parser {
             // For let/const bindings the `: Type` is the type *annotation* on the
             // binding itself, not a runtime type-check pattern.  Lift it out here so
             // `LocalBinding.ty` is populated and the pattern reduces to a simple bind.
-            let (pattern, ty) = match raw_pattern {
+            let (pattern, mut ty) = match raw_pattern {
                 Pattern::TypeCheck { name, ty, span } => (Pattern::Bind(name, span), Some(ty)),
                 other => (other, None),
             };
+
+            // `let _: Type = expr` — `_` alone is `Wildcard`; `: Type` is not part of patterns.
+            if matches!(pattern, Pattern::Wildcard(_))
+                && ty.is_none()
+                && self.eat(TokenKind::Colon)
+            {
+                ty = Some(self.parse_type_expr()?);
+            }
 
             self.expect(TokenKind::Eq)?;
             let init = self.parse_expr(0)?;
@@ -1453,6 +1520,12 @@ impl Parser {
 
             // ── Identifier / keyword-named calls ─────────────────────────────
             TokenKind::Ident(name) => {
+                if matches!(name.as_str(), "array" | "set")
+                    && matches!(self.peek_kind(), TokenKind::LBracket)
+                {
+                    self.advance();
+                    return self.parse_array_or_set_literal(name, start);
+                }
                 self.advance();
                 let ident_span = start;
                 // Check for special built-in call forms.
@@ -1776,6 +1849,59 @@ impl Parser {
         self.expect(TokenKind::RBracket)?;
         let span = start.merge(self.cur_span());
         Ok(Expr::List { items, span })
+    }
+
+    /// `array[ e1, e2, ... ]` or `set[ e1, e2, ... ]` — list syntax only (no dict `key = val`).
+    fn parse_array_or_set_literal(&mut self, kind: String, start: Span) -> Result<Expr, ParseError> {
+        let items = self.parse_list_only_bracket_contents()?;
+        let span = start.merge(self.cur_span());
+        match kind.as_str() {
+            "array" => Ok(Expr::ArrayLiteral { items, span }),
+            "set" => Ok(Expr::SetLiteral { items, span }),
+            _ => Err(self.error("internal: expected array or set".into())),
+        }
+    }
+
+    /// After `array` / `set`, parse `[` … `]` as a comma-separated list (no dict entries).
+    fn parse_list_only_bracket_contents(&mut self) -> Result<Vec<CollectionItem>, ParseError> {
+        self.expect(TokenKind::LBracket)?;
+
+        if self.eat(TokenKind::RBracket) {
+            return Ok(vec![]);
+        }
+
+        let item_start = self.cur_span();
+        let first_stmts = self.parse_collection_item_stmts()?;
+        let first_val = self.parse_expr(2)?;
+        if self.eat(TokenKind::Eq) {
+            return Err(self.error(
+                "`array[...]` and `set[...]` cannot use dict syntax (`key = value`)".into(),
+            ));
+        }
+
+        let first_span = item_start.merge(first_val.span());
+        let mut items = vec![CollectionItem {
+            stmts: first_stmts,
+            value: first_val,
+            span: first_span,
+        }];
+
+        while self.eat(TokenKind::Comma) {
+            if self.check(&TokenKind::RBracket) {
+                break;
+            }
+            let i_start = self.cur_span();
+            let stmts = self.parse_collection_item_stmts()?;
+            let val = self.parse_expr(0)?;
+            let i_span = i_start.merge(val.span());
+            items.push(CollectionItem {
+                stmts,
+                value: val,
+                span: i_span,
+            });
+        }
+        self.expect(TokenKind::RBracket)?;
+        Ok(items)
     }
 
     /// Parse the optional preliminary `let` statements in a collection item.
@@ -2415,6 +2541,18 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_let_wildcard_with_type_annotation() {
+        let prog = parse_ok("def f() { let _: Int = 1; }");
+        let body = first_def_body(&prog);
+        let Stmt::Let(ls) = &body.stmts[0] else {
+            panic!("expected let");
+        };
+        assert_eq!(ls.bindings.len(), 1);
+        assert!(matches!(ls.bindings[0].pattern, Pattern::Wildcard(_)));
+        assert!(ls.bindings[0].ty.is_some());
+    }
+
+    #[test]
     fn test_parse_const_stmt() {
         let prog = parse_ok("def f() { const x = 42; }");
         let body = first_def_body(&prog);
@@ -2676,5 +2814,51 @@ mod tests {
             return;
         }
         panic!("unexpected parse result: {call_expr:?}");
+    }
+
+    #[test]
+    fn test_parse_struct_type_bare_field_is_void_sugar() {
+        let prog = parse_ok("def Row = (age: Int, author);");
+        let Item::Decl(d) = &prog.items[0] else {
+            panic!("expected decl");
+        };
+        let DeclKind::Def(def) = &d.kind else {
+            panic!("expected def");
+        };
+        let DefBinding::TypeAlias { ty, .. } = &def.bindings[0] else {
+            panic!("expected type alias");
+        };
+        let TypeExpr::Struct(fields, _) = ty else {
+            panic!("expected struct type, got {ty:?}");
+        };
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name, "age");
+        assert!(matches!(
+            fields[0].ty,
+            TypeExpr::Named { ref name, .. } if name == "Int"
+        ));
+        assert_eq!(fields[1].name, "author");
+        assert!(matches!(
+            fields[1].ty,
+            TypeExpr::Named { ref name, ref args, .. } if name == "Void" && args.is_empty()
+        ));
+    }
+
+    #[test]
+    fn test_parse_array_literal() {
+        let e = parse_expr_ok("array[1, 2, 3]");
+        assert!(matches!(e, Expr::ArrayLiteral { .. }));
+    }
+
+    #[test]
+    fn test_parse_set_literal() {
+        let e = parse_expr_ok("set[1, 2]");
+        assert!(matches!(e, Expr::SetLiteral { .. }));
+    }
+
+    #[test]
+    fn test_parse_array_literal_rejects_dict_syntax() {
+        let (_, errs) = parse(r#"def f() { array["a" = 1]; }"#);
+        assert!(!errs.is_empty());
     }
 }

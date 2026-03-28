@@ -107,7 +107,7 @@ Types are written in `PascalCase`. Generic type arguments use square brackets.
 ```
 type_expr ::= identifier type_args?
            |  "(" type_expr ("," type_expr)* ")"
-           |  "(" identifier ":" type_expr ("," identifier ":" type_expr)* ","? ")"
+           |  "(" struct_field_ty ("," struct_field_ty)* ","? ")"
            |  "union" "(" type_expr ("," type_expr)* ","? ")"
            |  "enum"  "(" enum_variant ("," enum_variant)* ","? ")"
            |  "interface" "(" (identifier ":" type_expr ("," identifier ":" type_expr)* ","?)? ")"
@@ -116,6 +116,9 @@ enum_variant ::= identifier ":" type_expr   // variant with data: `ok: T`
               |  identifier                  // unit variant:      `null`
 
 type_args  ::= "[" (type_expr | const_expr) ("," (type_expr | const_expr))* ","? "]"
+
+struct_field_ty ::= identifier ":" type_expr    // normal field
+                 |  identifier                 // sugar for `identifier : Void` (starts with lowercase; same rules as tuple vs struct disambiguation)
 ```
 
 ### Generic parameter constraints
@@ -135,7 +138,9 @@ Examples of built-in / standard types:
 | `String` | UTF-8 string |
 | `Void` | Unit / no value |
 | `List[T]` | Homogeneous list |
-| `Dict[K, V]` | Key-value dictionary |
+| `Dict[K, V]` | Key-value dictionary (maps are always spelled `Dict`, not `Map`) |
+| `Array[T, n]` | Fixed-size homogeneous array (`n` is a compile-time integer); `Array[T]` if length is not fixed in the type |
+| `Set[T]` | Homogeneous set |
 | `Func[A, B]` | Function from `A` to `B` |
 | `Option[T]` | `enum(some: T, null)` — nullable value |
 | `Result[T, E]` | `enum(ok: T, error: E)` — fallible value |
@@ -488,6 +493,22 @@ Key-value maps, written with `[ ]` using `=` between key and value.
 
 The key type must be comparable. The inline-scope trick applies to dict values as well.
 
+### Fixed arrays and sets
+
+Homogeneous **fixed arrays** and **sets** reuse collection literal brackets with contextual keywords:
+
+```aura
+array[1, 2, 3, 4]                    // Array[Int, 4] — elements must agree in type
+array[1, 2] : Array[Int, 2]          // explicit annotation / cast
+set[1, 2, 3, 2]                    // Set[Int] — duplicate `2` collapsed at literal construction
+```
+
+- **`array[ ... ]`** accepts only list syntax (comma-separated expressions). Dict syntax (`key = value` inside `[ ]`) is invalid here.
+- **`set[ ... ]`** is the same syntactic shape; values are deduplicated (first occurrence wins; equality is the same as for `==` at runtime).
+- At runtime, array values are represented as **tuples** (fixed arity). **`Set`** values are their own representation.
+
+The STL module `@stl/collections` documents these forms for tooling and imports; the literal syntax is part of the core parser.
+
 ### Tuples and Structs (Product Types)
 
 Anonymous product types are written with `( )`.
@@ -503,6 +524,13 @@ Anonymous product types are written with `( )`.
   (x = 1, y = 2)                    // (x: Int, y: Int)
   (name = "Alice", age = 30)
   ```
+
+In a **struct type**, a field may be written as a bare identifier when it carries no payload — this is **syntax sugar** for `field: Void` (the type is still explicit after desugaring):
+
+```aura
+(age: Int, name: String, author: Bool)
+(age: Int, name: String, author)      // `author` means `author: Void`
+```
 
 The inline-scope trick also applies inside `( )`.
 

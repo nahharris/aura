@@ -651,6 +651,11 @@ impl Compiler {
                 let name_idx = self.chunk_mut().add_str(&name);
                 self.emit_u16(OpCode::DefineGlobal, name_idx, span.line);
             }
+            TypeExpr::LitInt(..) => {
+                self.emit(OpCode::Null, span.line);
+                let name_idx = self.chunk_mut().add_str(&name);
+                self.emit_u16(OpCode::DefineGlobal, name_idx, span.line);
+            }
             TypeExpr::Named { .. } => {
                 // Type alias to another named type — no dedicated constructor.
                 self.emit(OpCode::Null, span.line);
@@ -1172,6 +1177,20 @@ impl Compiler {
                     self.compile_collection_item(item);
                 }
                 self.emit_u16(OpCode::MakeTuple, count, span.line);
+            }
+            Expr::ArrayLiteral { items, span } => {
+                let count = items.len() as u16;
+                for item in items {
+                    self.compile_collection_item(item);
+                }
+                self.emit_u16(OpCode::MakeTuple, count, span.line);
+            }
+            Expr::SetLiteral { items, span } => {
+                let count = items.len() as u16;
+                for item in items {
+                    self.compile_collection_item(item);
+                }
+                self.emit_u16(OpCode::MakeSet, count, span.line);
             }
             Expr::Struct { fields, span } => {
                 let count = fields.len() as u16;
@@ -1870,7 +1889,14 @@ impl Pattern {
 /// check can be meaningful.
 fn type_expr_to_tag(ty: &TypeExpr) -> String {
     match ty {
-        TypeExpr::Named { name, .. } => name.clone(),
+        TypeExpr::LitInt(..) => "Int".to_string(),
+        TypeExpr::Named { name, .. } => {
+            if name == "Array" {
+                "Tuple".to_string()
+            } else {
+                name.clone()
+            }
+        }
         TypeExpr::Tuple(_, _) => "Tuple".to_string(),
         TypeExpr::Struct(_, _) => "Struct".to_string(),
         TypeExpr::Union(_, _) => "Any".to_string(),

@@ -51,6 +51,13 @@ pub enum Type {
     List(Box<Type>),
     /// `Dict` — homogeneous key→value map.
     Dict(Box<Type>, Box<Type>),
+    /// `Array[T, N]` — fixed-length homogeneous array (`N == 0` means length not fixed in the type).
+    Array {
+        elem: Box<Type>,
+        len: usize,
+    },
+    /// `Set[T]` — homogeneous set.
+    Set(Box<Type>),
     /// Anonymous or named tuple: `(T, U, ...)`.
     Tuple(Vec<Type>),
     /// Anonymous or named struct: `(field: T, ...)`.
@@ -121,6 +128,14 @@ impl Type {
             Type::Never => "Never".into(),
             Type::List(inner) => format!("List[{}]", inner.display_name()),
             Type::Dict(k, v) => format!("Dict[{}, {}]", k.display_name(), v.display_name()),
+            Type::Array { elem, len } => {
+                if *len == 0 {
+                    format!("Array[{}]", elem.display_name())
+                } else {
+                    format!("Array[{}, {}]", elem.display_name(), len)
+                }
+            }
+            Type::Set(inner) => format!("Set[{}]", inner.display_name()),
             Type::Tuple(elems) => {
                 let parts: Vec<_> = elems.iter().map(|t| t.display_name()).collect();
                 format!("({})", parts.join(", "))
@@ -414,6 +429,16 @@ impl TypeChecker {
     /// `Type::Any` so that checking can continue.
     fn resolve_type_expr(&mut self, ty: &TypeExpr) -> Type {
         match ty {
+            TypeExpr::LitInt(n, span) => {
+                self.error(
+                    format!(
+                        "integer literal `{}` is only valid as an array length in `Array[T, n]`",
+                        n
+                    ),
+                    *span,
+                );
+                Type::Int
+            }
             // ── Named types (built-ins + user aliases + type params) ──────────
             TypeExpr::Named { name, args, span } => {
                 match name.as_str() {
@@ -453,6 +478,59 @@ impl TypeChecker {
                                 *span,
                             );
                             Type::Dict(Box::new(Type::Any), Box::new(Type::Any))
+                        }
+                    }
+                    "Array" => match args.as_slice() {
+                        [elem, len_te] => {
+                            let len = match len_te {
+                                TypeExpr::LitInt(n, sp) => {
+                                    if *n < 0 {
+                                        self.error("array length must be non-negative", *sp);
+                                        0usize
+                                    } else {
+                                        *n as usize
+                                    }
+                                }
+                                _ => {
+                                    self.error(
+                                        "second argument to `Array` must be an integer literal (e.g. `Array[Int, 4]`)",
+                                        len_te.span(),
+                                    );
+                                    0usize
+                                }
+                            };
+                            Type::Array {
+                                elem: Box::new(self.resolve_type_expr(elem)),
+                                len,
+                            }
+                        }
+                        [elem] => Type::Array {
+                            elem: Box::new(self.resolve_type_expr(elem)),
+                            len: 0,
+                        },
+                        _ => {
+                            self.error(
+                                format!(
+                                    "`Array` expects 1 or 2 arguments (`Array[T]` or `Array[T, n]`), got {}",
+                                    args.len()
+                                ),
+                                *span,
+                            );
+                            Type::Array {
+                                elem: Box::new(Type::Any),
+                                len: 0,
+                            }
+                        }
+                    },
+                    "Set" => {
+                        if args.len() == 1 {
+                            Type::Set(Box::new(self.resolve_type_expr(&args[0])))
+                        } else {
+                            self.error(
+                                format!("Set expects 1 type argument, got {}", args.len()),
+                                *span,
+                            );
+                            Type::Set(Box::new(Type::Any))
                         }
                     }
                     "Func" => {
@@ -512,6 +590,10 @@ impl TypeChecker {
 
             // ── Structural types ───────────────────────────────────────────────
             TypeExpr::Tuple(elems, _span) => {
+                if elems.is_empty() {
+                    // `()` in type position is the unit type, same as `Void`.
+                    return Type::Void;
+                }
                 let resolved: Vec<Type> = elems.iter().map(|e| self.resolve_type_expr(e)).collect();
                 Type::Tuple(resolved)
             }
@@ -938,6 +1020,15 @@ impl TypeChecker {
                         .all(|(f, t)| self.is_assignable(f, t))
             }
 
+            // 8b. Array ↔ Array: same element; length if fixed (`0` = unspecified)
+            (Type::Array { elem: e1, len: n1 }, Type::Array { elem: e2, len: n2 }) => {
+                let len_ok = *n2 == 0 || *n1 == 0 || n1 == n2;
+                len_ok && self.is_assignable(e1, e2)
+            }
+
+            // 8c. Set ↔ Set
+            (Type::Set(e1), Type::Set(e2)) => self.is_assignable(e1, e2),
+
             // 9. Tuple ↔ Struct: incompatible
             (Type::Tuple(_), Type::Struct { .. }) | (Type::Struct { .. }, Type::Tuple(_)) => false,
 
@@ -1040,6 +1131,21 @@ impl TypeChecker {
         // don't have names in the type system) — allow
         if let (Type::Tuple(_), Type::Tuple(_)) = (from_ty, to_ty) {
             return;
+        }
+        // Array ↔ Tuple: same runtime representation for homogeneous fixed data
+        if let (Type::Array { elem: e_arr, len: n_arr }, Type::Tuple(elems)) = (from_ty, to_ty) {
+            if (*n_arr == 0 || elems.len() == *n_arr)
+                && elems.iter().all(|t| self.is_assignable(e_arr, t))
+            {
+                return;
+            }
+        }
+        if let (Type::Tuple(elems), Type::Array { elem: e_arr, len: n_arr }) = (from_ty, to_ty) {
+            if (*n_arr == 0 || elems.len() == *n_arr)
+                && elems.iter().all(|t| self.is_assignable(t, e_arr))
+            {
+                return;
+            }
         }
         // Widening via is_assignable (covers T → union, T → interface, etc.)
         if self.is_assignable(from_ty, to_ty) {
@@ -1321,6 +1427,10 @@ impl TypeChecker {
             }
 
             Expr::Tuple { items, .. } => {
+                if items.is_empty() {
+                    // `()` — unit value; same type as `Void` ([`Type::Void`]), not a 0-tuple.
+                    return Type::Void;
+                }
                 let elems: Vec<Type> = items
                     .iter()
                     .map(|item| {
@@ -1343,6 +1453,64 @@ impl TypeChecker {
                     name: None,
                     fields: resolved,
                 }
+            }
+
+            Expr::ArrayLiteral { items, span } => {
+                if items.is_empty() {
+                    return Type::Array {
+                        elem: Box::new(Type::Any),
+                        len: 0,
+                    };
+                }
+                let first_ty = {
+                    let item = &items[0];
+                    let mut child = env.snapshot_child();
+                    for stmt in &item.stmts {
+                        self.check_stmt(stmt, &mut child, None);
+                    }
+                    self.infer_expr(&item.value, &child)
+                };
+                for item in items.iter().skip(1) {
+                    let mut child = env.snapshot_child();
+                    for stmt in &item.stmts {
+                        self.check_stmt(stmt, &mut child, None);
+                    }
+                    let ty = self.infer_expr(&item.value, &child);
+                    if !self.is_assignable(&ty, &first_ty) && !self.is_assignable(&first_ty, &ty) {
+                        self.error("array literal elements must have compatible types", *span);
+                        break;
+                    }
+                }
+                Type::Array {
+                    elem: Box::new(first_ty),
+                    len: items.len(),
+                }
+            }
+
+            Expr::SetLiteral { items, span } => {
+                if items.is_empty() {
+                    return Type::Set(Box::new(Type::Any));
+                }
+                let first_ty = {
+                    let item = &items[0];
+                    let mut child = env.snapshot_child();
+                    for stmt in &item.stmts {
+                        self.check_stmt(stmt, &mut child, None);
+                    }
+                    self.infer_expr(&item.value, &child)
+                };
+                for item in items.iter().skip(1) {
+                    let mut child = env.snapshot_child();
+                    for stmt in &item.stmts {
+                        self.check_stmt(stmt, &mut child, None);
+                    }
+                    let ty = self.infer_expr(&item.value, &child);
+                    if !self.is_assignable(&ty, &first_ty) && !self.is_assignable(&first_ty, &ty) {
+                        self.error("set literal elements must have compatible types", *span);
+                        break;
+                    }
+                }
+                Type::Set(Box::new(first_ty))
             }
 
             // ── Closures & Blocks ─────────────────────────────────────────────
@@ -1561,6 +1729,15 @@ impl TypeChecker {
                 // the union of all element types for now.
                 let all: Vec<Type> = elems.clone();
                 unify_types(all)
+            }
+            Type::Array { elem, .. } => {
+                if !matches!(idx_ty, Type::Int | Type::Any) {
+                    self.error(
+                        format!("array index must be Int, got {}", idx_ty.display_name()),
+                        span,
+                    );
+                }
+                *elem.clone()
             }
             // Unknown / Any → Any
             _ => Type::Any,
@@ -3805,5 +3982,38 @@ def foo() -> Void {
                 .any(|e| e.message.contains("invalid cast") || e.message.contains("String")),
             "got: {errs:?}"
         );
+    }
+
+    #[test]
+    fn test_struct_type_void_field_assignable() {
+        let s = r#"
+def main() -> Void {
+    let r: (age: Int, name: String, author: Void) = (age = 1, name = "a", author = ());
+    let _: (age: Int, name: String, author) = r;
+}
+"#;
+        assert!(check_src(s).is_ok());
+    }
+
+    #[test]
+    fn test_array_literal_and_cast() {
+        let s = r#"
+def main() -> Void {
+    let a = array[1, 2, 3] : Array[Int, 3];
+    let _x: Int = a[0];
+}
+"#;
+        assert!(check_src(s).is_ok());
+    }
+
+    #[test]
+    fn test_set_literal() {
+        let s = r#"
+def main() -> Void {
+    let s = set[1, 2, 3] : Set[Int];
+    let _b: Set[Int] = s;
+}
+"#;
+        assert!(check_src(s).is_ok());
     }
 }

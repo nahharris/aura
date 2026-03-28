@@ -279,14 +279,18 @@ pub struct EnumVariant {
 /// ```aura
 /// Int
 /// List[T]
+/// Array[Int, 4]                       // fixed array: element type + length literal
 /// (Int, String)                        // tuple type
 /// (x: Int, y: Float)                  // struct type
+/// (flag)                               // sugar for (flag: Void)
 /// union(Int, Float)                    // union type
 /// enum(ok: T, err: E)                  // enum type
 /// interface(to_string: Func[(), String]) // interface type
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeExpr {
+    /// A compile-time integer in a generic argument list, e.g. `4` in `Array[Int, 4]`.
+    LitInt(i64, Span),
     /// A named type, optionally with generic arguments: `Int`, `List[T]`, `Dict[K, V]`.
     Named {
         name: String,
@@ -309,6 +313,7 @@ pub enum TypeExpr {
 impl TypeExpr {
     pub fn span(&self) -> Span {
         match self {
+            TypeExpr::LitInt(_, span) => *span,
             TypeExpr::Named { span, .. } => *span,
             TypeExpr::Tuple(_, span) => *span,
             TypeExpr::Struct(_, span) => *span,
@@ -579,6 +584,16 @@ pub enum Expr {
     },
     /// A named-field struct literal: `(x = 1, y = 2)`.
     Struct { fields: Vec<FieldInit>, span: Span },
+    /// Fixed-size array literal: `array[1, 2, 3]` — homogeneous elements; type is `Array[T, N]`.
+    ArrayLiteral {
+        items: Vec<CollectionItem>,
+        span: Span,
+    },
+    /// Set literal: `set[1, 2, 3]` — type is `Set[T]`.
+    SetLiteral {
+        items: Vec<CollectionItem>,
+        span: Span,
+    },
 
     // ── Closures ─────────────────────────────────────────────────────────────
     /// A block / closure expression.
@@ -630,6 +645,8 @@ impl Expr {
             Expr::Dict { span, .. } => *span,
             Expr::Tuple { span, .. } => *span,
             Expr::Struct { span, .. } => *span,
+            Expr::ArrayLiteral { span, .. } => *span,
+            Expr::SetLiteral { span, .. } => *span,
             Expr::Closure(c) => c.span,
             Expr::Block(b) => b.span,
             Expr::If(i) => i.span,

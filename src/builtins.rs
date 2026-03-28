@@ -237,6 +237,7 @@ fn core_type_of(args: &[Value]) -> Result<Value, String> {
         Value::Str(_) => "String",
         Value::List(_) => "List",
         Value::Dict(_) => "Dict",
+        Value::Set(_) => "Set",
         Value::Tuple(_) => "Tuple",
         Value::Struct(_) => "Struct",
         Value::Closure(_) => "Closure",

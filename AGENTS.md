@@ -117,3 +117,10 @@ Consult `DESIGN.md` before changing grammar or AST. Important points:
 - Closures: `{ params -> body }`; `cases` uses guard arms with `~` and `->`.
 - Trailing-lambda call syntax for the last argument(s).
 - Type annotations and casts use `:`; safe navigation `?.`.
+
+### Design alignment
+
+- **`DESIGN.md` is authoritative.** If you change lexer, parser, AST, typechecker, or runtime behavior that users can observe, update `DESIGN.md` in the same change when the spec is affected.
+- **Strict type, null, and memory safety** is the product stance: disciplined typing (Rust/Haskell-flavored surface), explicit optional/enum designs for null — no “loose” omission of types. Where syntax allows a **bare field name** in a **struct type** `(field)`, it is **sugar for `(field: Void)`** — `Void` is the real, explicit type after desugaring.
+- **Maps** are spelled **`Dict[K, V]`** only — not `Map`.
+- **Regression tests:** new syntax or typing rules should include `parser::` / `typechecker::` tests (or `tests/`) so the spec does not drift silently.

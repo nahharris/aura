@@ -141,9 +141,10 @@ pub fn run_source(src: &str, file_path: &str) -> AuraResult<()> {
 /// **skip** [`typecheck_program`], so loosely typed bootstrap code does not
 /// produce false-positive diagnostics for user programs.
 fn load_stl(vm: &mut vm::Vm) -> AuraResult<()> {
-    let modules: [(&str, &str); 3] = [
+    let modules: [(&str, &str); 4] = [
         ("stl/string", include_str!("../stl/string.aura")),
         ("stl/list", include_str!("../stl/list.aura")),
+        ("stl/collections", include_str!("../stl/collections.aura")),
         ("stl/io", include_str!("../stl/io.aura")),
     ];
 

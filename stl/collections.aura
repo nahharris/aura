@@ -1,0 +1,9 @@
+// stl/collections.aura — documentation anchor for fixed arrays and sets.
+//
+// Literals are built-in syntax (not expand-from-user-macros yet):
+//   array[e1, e2, ...]   → homogeneous Array[T, n] at compile time (runtime: Tuple)
+//   set[e1, e2, ...]    → Set[T] (duplicate values collapse; order keeps first-seen)
+//
+// Types: Array[T, n], Array[T] (length not fixed in the type), Set[T]. Maps remain Dict[K, V].
+
+def __collections_prelude_loaded = true;

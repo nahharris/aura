@@ -12,6 +12,7 @@
 //! | `Value::Str(GcPtr<ObjString>)` | `ObjString` | Immutable UTF-8 string |
 //! | `Value::List(GcPtr<ObjList>)` | `ObjList` | Growable `Vec<Value>` |
 //! | `Value::Dict(GcPtr<ObjDict>)` | `ObjDict` | `HashMap<String, Value>` |
+//! | `Value::Set(GcPtr<ObjSet>)` | `ObjSet` | Deduped `Vec<Value>` (insertion order) |
 //! | `Value::Tuple(GcPtr<ObjTuple>)` | `ObjTuple` | Fixed-length `Vec<Value>` |
 //! | `Value::Struct(GcPtr<ObjStruct>)` | `ObjStruct` | Named fields (`HashMap`) |
 //! | `Value::Closure(GcPtr<ObjClosure>)` | `ObjClosure` | Function proto + upvalues |
@@ -48,6 +49,8 @@ pub enum Value {
     List(GcPtr<ObjList>),
     /// A heap-allocated dictionary (`HashMap<String, Value>`).
     Dict(GcPtr<ObjDict>),
+    /// A heap-allocated set (unique elements, insertion order).
+    Set(GcPtr<ObjSet>),
     /// A heap-allocated fixed-length tuple.
     Tuple(GcPtr<ObjTuple>),
     /// A heap-allocated named-field struct.
@@ -77,6 +80,7 @@ impl PartialEq for Value {
                 a.value == b.value
             }
             (Value::List(a), Value::List(b)) => a == b,
+            (Value::Set(a), Value::Set(b)) => a == b,
             (Value::Tuple(a), Value::Tuple(b)) => a == b,
             (Value::Closure(a), Value::Closure(b)) => a == b,
             (Value::Native(a), Value::Native(b)) => a == b,
@@ -126,6 +130,17 @@ impl fmt::Display for Value {
                     write!(f, "{k:?}: {v}")?;
                 }
                 write!(f, "}}")
+            }
+            Value::Set(s) => {
+                let s = unsafe { s.as_ref() };
+                write!(f, "set[")?;
+                for (i, v) in s.items.borrow().iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{v}")?;
+                }
+                write!(f, "]")
             }
             Value::Tuple(t) => {
                 let t = unsafe { t.as_ref() };
@@ -205,6 +220,7 @@ impl Value {
             Value::Str(_) => "String",
             Value::List(_) => "List",
             Value::Dict(_) => "Dict",
+            Value::Set(_) => "Set",
             Value::Tuple(_) => "Tuple",
             Value::Struct(_) => "Struct",
             Value::Closure(_) => "Closure",
@@ -250,6 +266,7 @@ impl GcTrace for Value {
             Value::Str(p) => heap.mark(p.as_dyn_trace()),
             Value::List(p) => heap.mark(p.as_dyn_trace()),
             Value::Dict(p) => heap.mark(p.as_dyn_trace()),
+            Value::Set(p) => heap.mark(p.as_dyn_trace()),
             Value::Tuple(p) => heap.mark(p.as_dyn_trace()),
             Value::Struct(p) => heap.mark(p.as_dyn_trace()),
             Value::Closure(p) => heap.mark(p.as_dyn_trace()),
@@ -336,6 +353,25 @@ impl GcTrace for ObjDict {
     fn heap_size(&self) -> usize {
         self.map.borrow().capacity()
             * (std::mem::size_of::<String>() + std::mem::size_of::<Value>())
+    }
+}
+
+// ── ObjSet ─────────────────────────────────────────────────────────────────
+
+/// A heap-allocated set: unique values in insertion order (`set[...]` literal).
+#[derive(Debug)]
+pub struct ObjSet {
+    pub items: RefCell<Vec<Value>>,
+}
+
+impl GcTrace for ObjSet {
+    fn trace(&self, heap: &mut GcHeap) {
+        for v in self.items.borrow().iter() {
+            v.trace(heap);
+        }
+    }
+    fn heap_size(&self) -> usize {
+        self.items.borrow().capacity() * std::mem::size_of::<Value>()
     }
 }
 
@@ -549,6 +585,19 @@ impl Value {
     pub fn new_dict(heap: &mut GcHeap, map: HashMap<String, Value>) -> Value {
         Value::Dict(heap.alloc(ObjDict {
             map: RefCell::new(map),
+        }))
+    }
+
+    /// Allocate a new set; drops later duplicates (by `PartialEq`) preserving first-seen order.
+    pub fn new_set(heap: &mut GcHeap, items: Vec<Value>) -> Value {
+        let mut out = Vec::new();
+        for v in items {
+            if !out.iter().any(|x| x == &v) {
+                out.push(v);
+            }
+        }
+        Value::Set(heap.alloc(ObjSet {
+            items: RefCell::new(out),
         }))
     }
 
