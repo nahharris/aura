@@ -4,22 +4,10 @@ Aura is a functional programming language aimed at application development. This
 
 ## Core Principles
 
-1. **Small primitive set.** A minimal collection of orthogonal constructs — expressions, blocks, closures, calls, and declarations — from which all higher-level features are composed.
+1. **Small primitive set.** A minimal collection of orthogonal constructs — expressions, blocks, closures, calls, and assignments — from which all higher-level features are composed.
 2. **Self-describing.** Almost every language construct can be defined *in terms of* Aura itself through the macro system, enabling bootstrapping and keeping the compiler core small.
 3. **Familiar surface.** Derived constructs should look and feel like the built-in syntax of conventional languages even though they are macros under the hood.
-4. **Minimal reserved words.** The lexer keeps a short keyword list for structure (`let`, `use`, `return`, *etc.*). Surfaces that can be macros (builtin or user-defined) should stay as contextual identifiers — `if`, `cases`, `loop`, and related labels are *not* reserved tokens.
-
-### Pattern matching and reuse
-
-There is **no** `match` keyword and **no** `=>` token. Discrimination uses the same multi-arm closure syntax as everywhere else, applied to a value with a normal call:
-
-```aura
-{ 0 -> 1, n -> n * fact(n - 1) }(n)
-```
-
-Guards use `~` before `->` inside an arm, as described in [Functions and Closures](#functions-and-closures). The `cases { ~ cond -> e, ... }` form is guard-only multi-branch conditionals.
-
----
+4. **No reserved words.** The lexer should not have a keyword list for structure. Surfaces must be macros (builtin or user-defined) and should stay as contextual identifiers (with the possibility of being auto/implicitly-imported as a prelude).
 
 ## Lexical Rules
 
@@ -32,33 +20,26 @@ Line comments begin with `//` and extend to the end of the line.
 let x = 1; // inline comment
 ```
 
-Block comments are not supported.
+Block comments are supported via `/* */`.
+
+```aura
+/* 
+This is a 
+block comment 
+*/
+```
 
 ### Identifiers
 
-An identifier starts with a letter or `_`, followed by any number of letters, digits, or `_`. Identifiers may not be reserved keywords.
+An identifier starts with a letter or `_`, followed by any number of letters, digits, or `_`. Identifiers may not be reserved keywords (thankfully, we don't have any at the moment).
 
 ```
 identifier ::= (letter | "_") (letter | digit | "_")*
 ```
 
-**Reserved keywords:** `let`, `fn`, `type`, `macro`, `use`, `return`, `break`, `continue`, `self`
-
-The following are **not** reserved keywords — they lex as plain identifiers and are recognised contextually:
-- Declaration starters: `def`, `defmacro`
-- Built-in control forms: `if`, `cases`, `loop`, `while`, `do`, `then`, `else`
-- Type-expression forms: `union`, `enum`, `interface`
-- Other contextual names: `builtin`, `const`, `true`, `false`, `null`
-
-The name `match` may still appear as an ordinary identifier (e.g. a function in the standard library); it is not special syntax.
-
-### Character literals
-
-Character literals use single quotes: `'a'`, `'\n'`, `'\0'`, *etc.* (distinct from atoms `'identifier`, which are label tokens).
-
 ### Dot-identifiers
 
-A dot-identifier is a `.` followed immediately by a regular identifier, with no whitespace between them. It names a variant constructor or a branch label.
+A dot-identifier is a `.` followed immediately by a regular identifier, with no whitespace between them. It names a variant constructor or a scope label.
 
 ```
 dot_identifier ::= "." identifier
@@ -70,23 +51,56 @@ dot_identifier ::= "." identifier
 .continue(state)
 ```
 
-### Atoms
+### Brackets Meaning
 
-An *atom* is a lexical token of the form `'identifier` — a single-quote character immediately followed by a regular identifier, with no whitespace between them.
+Brackets can have different meanings depending on the context.
 
-```
-atom ::= "'" identifier
-```
+- `( )` are used for data/runtime arguments
+- `[ ]` are used for collections/indexing/static arguments
+- `{ }` are used for closures/functions
 
-Atoms are used exclusively as **scope labels**. They are a distinct token class — not strings, not identifiers, and not part of any expression by themselves.
+For instance, in the following code:
 
 ```aura
-'outer
-'search
-'loop1
+let pair: (Int, Int) = (1, 2); // A product type and a product literal
+let array = [1, 2, 3]; // A collection literal
+let closure: Func[Int, Int] = { x -> x + 1 }; // A closure literal
+
+def foo(x: Int) -> Int { x + 1 }; // A function literal
+def bar(x: Int) -> Int { x ~ x > 0 -> x + 1, x ~ x < 0 -> x - 1 }; // A multi-arm function literal with guards
 ```
 
-Atoms are not reserved as keywords; the same identifier may be used both as an ordinary name and as an atom label in different positions without conflict.
+#### Semi-colons inside brackets
+
+Semi-colons inside brackets are used to separate statements.
+
+```aura
+let array = [
+    let x = 0; x = x + 1; x,
+    let y = 10; y = y - 1; y,
+    42,
+]; // Produces [0, 9, 42] where x, and y are local to the array item and are destroyed after the comma
+```
+
+### Macro Application
+
+Macro application is written as `macro_name ast_node`. They will do transformations at compile time on a single AST node. They do support arguments using the `[ ]` syntax.
+
+```aura
+def name = "Aura"; // Macro `def` applied on a assignment AST node
+def[T, U] Pair = (T, U); // Macro `def` applied on a assignment AST node with arguments
+```
+
+### Function Calls
+
+Function calls are written as `callable_expression [static_arguments] (runtime_arguments) label { ... } label { ... }`. Arguments can be positional or named (using `name = value` syntax), arguments whose value is a closure can be passed as trailing arguments.
+
+```aura
+println("Hello, world!"); // Function call with a string literal as a static argument
+let x = 10.into[Float](); // Method call with a static argument to cast the Int to a Float
+if (condition) then { ... } else { ... } // Function call with inline closures as trailing arguments
+loop while { condition } do { ... } // Function call with two trailing runtime arguments and no positional arguments
+```
 
 ### Whitespace and Statement Termination
 
@@ -100,25 +114,39 @@ Semicolons are required to terminate statements wherever an implicit one is not 
 
 ## Type System
 
+Aura is a statically type-safe language. Every expression has a type, and types must be known at compile time. Still we provide powerful abstractions to leverage flexibility
+
 ### Type Expressions
 
-Types are written in `PascalCase`. Generic type arguments use square brackets.
+Types are written in `PascalCase`. Generic static arguments use square brackets.
 
 ```
 type_expr ::= identifier type_args?
            |  "(" type_expr ("," type_expr)* ")"
            |  "(" struct_field_ty ("," struct_field_ty)* ","? ")"
-           |  "union" "(" type_expr ("," type_expr)* ","? ")"
-           |  "enum"  "(" enum_variant ("," enum_variant)* ","? ")"
-           |  "interface" "(" (identifier ":" type_expr ("," identifier ":" type_expr)* ","?)? ")"
 
-enum_variant ::= identifier ":" type_expr   // variant with data: `ok: T`
-              |  identifier                  // unit variant:      `null`
+type_args  ::= "[" (type_expr | static_expr) ("," (type_expr | static_expr))* ","? "]"
 
-type_args  ::= "[" (type_expr | const_expr) ("," (type_expr | const_expr))* ","? "]"
-
-struct_field_ty ::= identifier ":" type_expr    // normal field
+struct_field_ty ::= identifier (":" type_expr)    // normal field
                  |  identifier                 // sugar for `identifier : Void` (starts with lowercase; same rules as tuple vs struct disambiguation)
+```
+
+There are 3 major macros that operate on type expressions: `union`, `enum`, and `interface`.
+
+```aura
+def Number = union(Int, Float); // Macro `union` applied on a type expression
+def[T, E] Result = enum(ok: T, err: E); // Macro `enum` applied on a type expression with arguments
+def ToStr = interface(to_string: Func[(), String]); // Macro `interface` applied on a type expression with a field
+```
+
+The macro `implements` can be used on a type definition to ensure that the type implements the methods required by the interface (since interfaces are implicitely implemented by all types that have all the methods required by the interface).
+
+```aura
+implements[ToStr] def Person = (name: String, age: Int); // Macro `implements` applied on a type definition to ensure that the type implements the methods required by the interface
+
+def Person.to_string(self) -> String {
+    return "$(self.name) is $(self.age) years old";
+}
 ```
 
 ### Generic parameter constraints
@@ -127,6 +155,7 @@ On `def` declarations, type parameters may carry interface constraints, mirrorin
 
 - `def[T: Show] ...` — single bound
 - `def[T: (Show, Eq)] ...` — multiple bounds as a parenthesised list
+- `def[n: static Int] ...` — compile-time constant value as a bound
 
 Examples of built-in / standard types:
 
@@ -136,16 +165,17 @@ Examples of built-in / standard types:
 | `Float` | 64-bit floating point |
 | `Bool` | Boolean |
 | `String` | UTF-8 string |
-| `Void` | Unit / no value |
+| `Void` | Unit / no value other than `()` |
 | `List[T]` | Homogeneous list |
+| `Array[T, n: static Int]` | Fixed-size homogeneous array (`n` is a compile-time integer) |
 | `Dict[K, V]` | Key-value dictionary (maps are always spelled `Dict`, not `Map`) |
-| `Array[T, n]` | Fixed-size homogeneous array (`n` is a compile-time integer); `Array[T]` if length is not fixed in the type |
 | `Set[T]` | Homogeneous set |
-| `Func[A, B]` | Function from `A` to `B` |
-| `Option[T]` | `enum(some: T, null)` — nullable value |
-| `Result[T, E]` | `enum(ok: T, error: E)` — fallible value |
+| `Func[A, B]` | Function from `A` (can be a struct) to `B` |
+| `Option[T]` | `enum(null, some: T)` — nullable value |
+| `Result[T, E]` | `enum(err: E, ok: T)` — fallible value |
 | `Iterable[T]` | Any type that can be iterated |
-| `any` | Shorthand for `interface()` — accepts any value |
+| `Any` | Shorthand for `interface()` — accepts any value |
+| `Never` | Bottom type — `Never` is assignable to every other type |
 
 ### Tuples
 
@@ -280,13 +310,13 @@ def any_print(msg: interface(to_string: Func[(), String])) -> Void { ... }
 def ToStr = interface(to_string: Func[(), String])
 ```
 
-The empty interface `interface()` is equivalent to the builtin `any` type and accepts any value.
+The empty interface `interface()` is equivalent to the builtin `Any` type and accepts any value. On the other hand, the `Never` type would be equivalent to an interface with all the imaginable methods, making it impossible to satisfy, yet castable to any other type.
 
 Union types automatically implement the *intersection* of their member types' interfaces:
 
 ```aura
-def Number = union(Int, Float)
-// Both Int and Float implement to_string, so Number also implements ToStr.
+implements[ToStr] def Number = union(Int, Float)
+// Both Int and Float implement to_string, so Number also implements ToStr out of the box.
 ```
 
 Pattern matching on interface values works identically to union matching:
@@ -300,9 +330,22 @@ let x: ToStr = ...;
 }(x)
 ```
 
+Interfaces can define default methods that are auto-implemented for all types that implement the interface.
+
+```aura
+def From[T] = interface(from: Func[(other: T), Self]);
+
+def[T, U: From[T]] T.into(self) -> U {
+    return U.from(self);
+}
+
+def Int.from(other: Float) -> Int { ... }
+// Float.into(self) -> Int is auto-implemented
+```
+
 ### Type Annotations and Casts
 
-`:` is overloaded for both annotation and cast, distinguished by position:
+`:` is overloaded for both annotation and cast (via the `from` method of the `From[T]` interface), distinguished by position:
 
 - In a declaration or parameter list, `: Type` *annotates* without runtime cost.
 - In an expression, `expr : Type` is a *cast* (checked or unchecked depending on the types).
@@ -329,7 +372,7 @@ let y = x : Float;         // cast
 Type parameters on declarations use square brackets after the `def` name.
 
 ```aura
-def identity[T](x: T) -> T { x }
+def[T] identity(x: T) -> T { x }
 def[A, B] Pair = (first: A, second: B)
 ```
 
@@ -380,6 +423,12 @@ null
 
 `null` is not a valid value of an arbitrary type. It is only valid as a variant of an explicit `Option`-style enum or when constructing a `.null` dot-identifier value.
 
+In fact, in the language prelude we have:
+
+```aura
+def null = .null;
+```
+
 ### Strings
 
 String literals are delimited by `"`. Escape sequences follow the standard conventions (`\n`, `\t`, `\\`, `\"`).
@@ -395,7 +444,7 @@ String interpolation embeds an expression with `$( )`:
 "Hello, $(name)! You are $(age) years old."
 ```
 
-The interpolated expression can be any Aura expression; its result is converted to a string via its `Display` representation.
+The interpolated expression can be any Aura expression; its result is converted to a string via its `ToStr` representation.
 
 Multi-line strings use standard string literals; literal newlines inside `"..."` are preserved.
 
@@ -433,21 +482,23 @@ defmacro let(
 ) -> Stmt
 ```
 
-### `const` — Immutable Local Binding
+### `def` — Immutable Binding
 
-`const` is identical to `let` except the binding cannot be reassigned after declaration. It is not a reserved keyword — it is an ordinary identifier recognised contextually as a declaration macro.
+`def` is identical to `let` except the binding cannot be reassigned after declaration. It is not a reserved keyword — it is an ordinary identifier recognised contextually as a declaration macro.
 
 ```aura
-const pi = 3.14159;
+def pi = 3.14159;
 ```
 
 Macro definition:
 
 ```aura
-defmacro const(
-    ...assignments: List[Assignment]
+defmacro def(
+    assignment: Assignment
 ) -> Stmt
 ```
+
+It can be used both in global or local scopes
 
 ### Scoping Rules
 
@@ -482,32 +533,38 @@ Items may contain inline scoped statements before their value expression, separa
 ]
 ```
 
+### Arrays
+
+The primitive types behind Lists, the use the `array` macro to create them and have fixed size.
+
+```aura
+array[1, 2, 3]                    // Array[Int, 3]
+array[1, 2] : Array[Int, 2]        // explicit annotation / cast
+```
+
 ### Dictionaries
 
 Key-value maps, written with `[ ]` using `=` between key and value.
 
 ```aura
 ["a" = 1, "b" = 2]                 // Dict[String, Int]
-[x = 10, y = 20]                   // Dict[String, Int] with identifier keys
+let x = "a";
+let y = "b";
+[x = 1, y = 2]                   // Dict[String, Int], same as ["a" = 1, "b" = 2]
 ```
 
-The key type must be comparable. The inline-scope trick applies to dict values as well.
+The key type must implement the `Hasheable` interface. The inline-scope trick applies to dict values as well.
 
-### Fixed arrays and sets
+### Sets
 
-Homogeneous **fixed arrays** and **sets** reuse collection literal brackets with contextual keywords:
+Homogeneous sets, written with the `set` macro.
 
 ```aura
-array[1, 2, 3, 4]                    // Array[Int, 4] — elements must agree in type
-array[1, 2] : Array[Int, 2]          // explicit annotation / cast
-set[1, 2, 3, 2]                    // Set[Int] — duplicate `2` collapsed at literal construction
+set[1, 2, 3]                    // Set[Int]
+set[1, 2] : Set[Int]        // explicit annotation / cast
 ```
 
-- **`array[ ... ]`** accepts only list syntax (comma-separated expressions). Dict syntax (`key = value` inside `[ ]`) is invalid here.
-- **`set[ ... ]`** is the same syntactic shape; values are deduplicated (first occurrence wins; equality is the same as for `==` at runtime).
-- At runtime, array values are represented as **tuples** (fixed arity). **`Set`** values are their own representation.
-
-The STL module `@stl/collections` documents these forms for tooling and imports; the literal syntax is part of the core parser.
+The items type must implement the `Hasheable` interface. The inline-scope trick applies to set items as well.
 
 ### Tuples and Structs (Product Types)
 
@@ -534,6 +591,8 @@ In a **struct type**, a field may be written as a bare identifier when it carrie
 
 The inline-scope trick also applies inside `( )`.
 
+> `(T)` (single-item tuple) is equivalent to `T` in any context
+
 ### Sum Types — `enum` and `union`
 
 Sum types are constructed as values using dot-identifiers and typed with `enum` or `union` type expressions.
@@ -541,14 +600,14 @@ Sum types are constructed as values using dot-identifiers and typed with `enum` 
 `union` creates an anonymous tagged union:
 
 ```aura
-let v: union(Int, Float) = 1 : union(Int, Float);
+let v: union(Int, Float) = 1;
 ```
 
 `enum` creates a named-variant sum type:
 
 ```aura
-let result: enum(ok: Int, error: String) = .ok(42);
-let opt:    enum(some: Int, null)        = .null;
+let result: enum(err: String, ok: Int) = .ok(42);
+let opt:    enum(null, some: Int)        = .null;
 ```
 
 Inline-scope trick applies inside variant constructors:
@@ -561,7 +620,7 @@ Named sum types are declared with `def` (see [Type Declarations](#type-declarati
 
 ### The `null` Value and Nullable Types
 
-`null` is a bare value literal. It belongs to `enum(some: T, null)` (i.e. `Option[T]`) only. It is not a valid value of `Int`, `String`, etc.
+`null` is an alias to `.null`. It belongs to `enum(null, some: T)` (i.e. `Option[T]`) only. It is not a valid value of `Int`, `String`, etc.
 
 ---
 
@@ -609,7 +668,7 @@ pattern  ::= literal
            | "." identifier ("(" pattern ")")?      // variant pattern: `.ok(x)` or `.null`
            | "(" pattern ("," pattern)* ","? ")"    // tuple pattern
 
-struct_field ::= identifier "=" identifier          // field rename: `name = alias`
+struct_field ::= identifier "=" identifier          // field rename: `alias = field`
               |  identifier                         // plain field bind
 ```
 
@@ -617,7 +676,7 @@ struct_field ::= identifier "=" identifier          // field rename: `name = ali
 - An identifier pattern always matches and binds the value to that name.
 - `_` matches and discards.
 - A type-check pattern `name: Type` matches if the value is of the given type and binds it to `name`.
-- A struct pattern `(field, name = alias)` destructures a struct by field name.
+- A struct pattern `(alias = field, name)` destructures a struct by field name.
 - A constructor pattern `TypeName(p1, p2)` destructures a named tuple or struct, optionally casting.
 - A rest pattern `..rest` captures remaining elements into a list; bare `..` discards them.
 - A variant pattern `.ok(inner)` matches a dot-identifier enum variant.
@@ -629,6 +688,8 @@ To match on a scrutinee, apply the closure (parentheses around the closure value
 ```aura
 { 0 -> 1, n -> n * factorial(n - 1) }(n)
 ```
+
+> Notice the pattern (part before the `->` and the guard `~ expr`) is the exact same AST node that is the left side of the `=` operator
 
 ### External-parameter Closure (named parameters, no pattern matching)
 
@@ -719,14 +780,14 @@ Blocks introduce a new scope. Variables declared inside are not visible outside.
 
 ### Labelled Blocks
 
-A block may be prefixed with an atom label using `'atom: { ... }` syntax. The label attaches to the block itself, not to the surrounding call expression.
+A block may be prefixed with an atom label using `label[.label_name] { ... }` syntax. The label attaches to the block itself, not to the surrounding call expression.
 
 ```
-labelled_block ::= atom ":" block
+labelled_block ::= dot_identifier ":" block
 ```
 
 ```aura
-'outer: {
+.outer: {
     // this block is labelled 'outer
 }
 ```
@@ -734,10 +795,10 @@ labelled_block ::= atom ":" block
 Labelled blocks are used as jump targets for `return`, `break`, and `continue` with explicit atom targets. A single function call may contain multiple labelled lambda arguments, each with its own label:
 
 ```aura
-task 'worker: { doWork(); } finally 'cleanup: { releaseResources(); }
+task do .worker: { doWork(); } finally .cleanup: { releaseResources(); }
 ```
 
-**Implicit label for `def` function bodies.** The body block of a `def` function declaration has an implicit atom equal to the function's name. Writing `return 'fnName value` inside the body is equivalent to `return value` — both target the enclosing function. This means no explicit label is ever needed on a `def` body block.
+**Implicit label for `def` function bodies.** The body block of a `def` function declaration has an implicit atom equal to the function's name. Writing `return[.fn_name] value` inside the body is equivalent to `return value` — both target the enclosing function. This means no explicit label is ever needed on a `def` body block.
 
 ---
 
@@ -757,20 +818,6 @@ Arguments may be passed by name in any order, matching the parameter's internal 
 add(b = 2, a = 1)
 ```
 
-### Labelled Parameters
-
-A parameter may have a separate *internal* name (used inside the function body) and an *external label* (used at the call site). The syntax is `internal_name external_label: Type`.
-
-```aura
-def add(a first: Int, b second: Int) -> Int {
-    a + b
-}
-
-add(first = 1, second = 2)
-```
-
-When calling, the external label is used, not the internal name.
-
 ### Trailing-Lambda Syntax
 
 Closure arguments (`{ }`) may be placed *outside* the parentheses as trailing arguments. This is the mechanism that makes `if`, `loop`, and similar macros feel like built-in syntax.
@@ -779,7 +826,7 @@ Closure arguments (`{ }`) may be placed *outside* the parentheses as trailing ar
 
 Rules:
 
-1. **Parentheses are mandatory** for all non-closure arguments, even when there are none: `loop { }` is valid because `loop` takes no non-closure arguments. A call like `foo 42 { }` (passing a non-closure value outside parentheses) is a syntax error.
+1. **Parentheses are mandatory** for all non-closure arguments, even when there are none: `loop do { }` is valid because `loop` takes no non-closure arguments. A call like `foo 42 { }` (passing a non-closure value outside parentheses) is a syntax error.
 2. The trailing closure arguments must be the **last** parameters in the function signature.
 3. The **first** trailing closure needs no label; subsequent ones require their external parameter label.
 4. Continuation trailing closures must begin on the **same line** as the preceding `}` (due to the implicit-semicolon rule after `}`).
@@ -796,19 +843,19 @@ do2(1) { v -> print(v); } that { v -> print(v); }
 A single trailing closure with no label:
 
 ```aura
-loop {
-    print("forever");
-}
-
 loop do {
-    print("forever");        // 'do' is the external label — optional when it's the only lambda
+    print("forever");
 }
 ```
 
 Multiple trailing closures, each on the same line as the previous `}`:
 
 ```aura
-do_stuff(12, "hi", value = false) task { doWork(); } finally { cleanup(); }
+do_stuff(12, "hi", value = false) task { 
+    doWork(); 
+} finally { 
+    cleanup(); 
+}
 ```
 
 ---
@@ -820,18 +867,18 @@ All control flow is implemented as macros. Their bodies are closures that are **
 ### `if`
 
 ```aura
-if (condition) {
+if (condition) then {
     // then branch
 }
 
-if (condition) {
+if (condition) then {
     // then branch
 } else {
     // else branch
 }
 ```
 
-The `then` block is a `Func[Void, T]` trailing lambda. The optional `else` block is a second trailing lambda with the label `else`. Both blocks must have the same type `T`; the version without an `else` branch returns `Void`.
+The `then` block is a `Func[Void, T]` trailing lambda. The `else` block is a second trailing lambda with the label `else`. Both blocks must have the same type `T`; the version without an `else` branch returns `Void`.
 
 Macro definitions:
 
@@ -844,14 +891,14 @@ defmacro if(
 defmacro if[T](
     condition: Expr[Bool],
     then:      Expr[Func[Void, T]],
-    else else: Expr[Func[Void, T]]
+    else:      Expr[Func[Void, T]]
 ) -> Expr[T]
 ```
 
 `if` is an expression. It can appear anywhere an expression is valid:
 
 ```aura
-let label = if (x > 0) { "positive" } else { "non-positive" };
+let label = if (x > 0) then { "positive" } else { "non-positive" };
 ```
 
 The `then` label may be written explicitly on the trailing lambda when desired for clarity:
@@ -911,12 +958,8 @@ cases {
 **Indefinite loop** — repeats until a `break` exits it:
 
 ```aura
-loop {
-    print("forever");
-}
-
 loop do {
-    print("forever");        // 'do' is the external label — optional for a single trailing lambda
+    print("forever");
 }
 ```
 
@@ -962,15 +1005,15 @@ return value
 An explicit atom target can be given to exit an outer scope by name:
 
 ```aura
-return 'label value
-```
+return[.label_name] value
+``` 
 
 Because control-flow bodies are inlined, `return` inside an `if` branch or a `.each` closure exits the *enclosing function*, not the branch or closure itself.
 
 ```aura
-def firstPositive(xs: List[Int]) -> Option[Int] {
+def first_positive(xs: List[Int]) -> Option[Int] {
     xs.each { x ->
-        if (x > 0) {
+        if (x > 0) then {
             return .some(x);
         }
     }
@@ -986,7 +1029,7 @@ defmacro return[T](
 ) -> Stmt
 
 defmacro return[T](
-    label: Atom,
+    label: DotIdentifier,
     value: Expr[T]
 ) -> Stmt
 ```
@@ -998,8 +1041,8 @@ Exits a `loop`, producing its result value. `break` is syntactic sugar over `ret
 ```aura
 break             // exit loop, no value (Void result)
 break value       // exit loop with value
-break 'label      // exit the loop labelled 'label, no value
-break 'label value // exit the loop labelled 'label with value
+break[.label_name]      // exit the loop labelled 'label, no value
+break[.label_name] value // exit the loop labelled 'label with value
 ```
 
 `break` desugars as follows:
@@ -1008,10 +1051,10 @@ break 'label value // exit the loop labelled 'label with value
 |---|---|
 | `break` | `return .break(())` |
 | `break value` | `return .break(value)` |
-| `break 'label` | `return 'label .break(())` |
-| `break 'label value` | `return 'label .break(value)` |
+| `break[.label_name]` | `return[.label_name] .break(())` |
+| `break[.label_name] value` | `return[.label_name] .break(value)` |
 
-The `'label` atom must refer to an enclosing `loop` body block. Using `break` outside a loop is a compile error.
+The `label_name` dot-identifier must refer to an enclosing `loop` body block. Using `break` outside a loop is a compile error.
 
 ### `continue`
 
@@ -1019,7 +1062,7 @@ Skips the remainder of the current loop iteration and begins the next one. `cont
 
 ```aura
 continue          // next iteration of the innermost loop
-continue 'label   // next iteration of the loop labelled 'label
+continue[.label_name]   // next iteration of the loop labelled 'label
 ```
 
 `continue` desugars as follows:
@@ -1027,12 +1070,12 @@ continue 'label   // next iteration of the loop labelled 'label
 | Sugar | Desugars to |
 |---|---|
 | `continue` | `return .continue(())` |
-| `continue 'label` | `return 'label .continue(())` |
+| `continue[.label_name]` | `return[.label_name] .continue(())` |
 
-**Implicit continue.** A loop body block whose final expression evaluates to `Void` has an implicit `.continue()` appended by the compiler. This coercion only applies when the continue-carrier type `C` is `Void` (i.e. no state is being threaded through iterations). The practical effect is that most loop bodies do not need an explicit `continue`:
+Since the `do` closure return type is `union(Void, Control[B, C])`, if no continue exists, the function returns `()` which (under the hood) is the same as `return .continue(())`
 
 ```aura
-loop {
+loop do {
     print("tick");
     // implicit continue — no explicit 'continue' required
 }
@@ -1046,7 +1089,7 @@ loop {
    - `return` targets the nearest enclosing `def` function body.
    - `break` and `continue` target the nearest enclosing `loop` body.
 
-2. **Labelled jump** (`return 'label`, `break 'label`, `continue 'label`) — walks outward through enclosing scopes and targets the first block whose atom matches `'label`. A compile error is raised if no matching label is found.
+2. **Labelled jump** (`return[.label_name]`, `break[.label_name]`, `continue[.label_name]`) — walks outward through enclosing scopes and targets the first block whose atom matches `'label`. A compile error is raised if no matching label is found.
 
 3. **Inlining.** The bodies of `loop`, `if`, `cases`, and `.each` (and any other macro whose body parameter is `Expr[Func[...]]`) are **inlined** at the call site by the compiler. No stack frame is created for the closure call. As a result, a `return` or `break` inside a control-flow body compiles to a direct jump instruction rather than a function return — the label resolution above is a compile-time operation. This is what gives these macros the semantics of built-in syntax without any runtime overhead.
 
@@ -1076,14 +1119,15 @@ def MaxRetries = 3
 def Coord    = (Int, Int)
 def Person   = (name: String, age: Int)
 def Number   = union(Int, Float)
-def[T, E] Result = enum(ok: T, err: E)
+def[T, E] Result = enum(err: E, ok: T)
 def ToStr    = interface(to_string: Func[(), String])
 ```
 
 The optional generic type parameter list `[T, E]` immediately follows `def`.
 
 A `def` with a type-alias right-hand side automatically generates:
-- A constructor function with the same name: `Person(name = "Alice", age = 30)`.
+
+- A constructor function with the same name: `Person(name = "Alice", age = 30)` (for structs) or `Person("Alice", 30)` (for tuples)
 - Field accessors for struct and enum types.
 
 **Destructuring binding** — a pattern may appear on the left-hand side:
@@ -1091,6 +1135,7 @@ A `def` with a type-alias right-hand side automatically generates:
 ```aura
 def (x, y) = compute_coords()     // tuple destructuring
 def (name, age) = some_person      // struct destructuring
+def (some_name = name, age) = some_person // struct destructuring with rename
 def .ok(value) = some_result       // fallible — panics if result is .err
 ```
 
@@ -1098,7 +1143,7 @@ Macro definition:
 
 ```aura
 defmacro def(
-    ...assignments: List[Assignment]
+    assignment: Assignment
 ) -> Stmt
 ```
 
@@ -1117,7 +1162,7 @@ The return type after `->` is optional when it can be inferred. The body is a bl
 **Method declaration:** prefix the name with the receiver type and `.`:
 
 ```aura
-def Point.distanceTo(self, other: Point) -> Float {
+def Point.distance_to(self, other: Point) -> Float {
     let dx = self.x - other.x;
     let dy = self.y - other.y;
     ((dx * dx) + (dy * dy)) : Float  // cast to Float before sqrt
@@ -1179,8 +1224,6 @@ The fields passed to `.render` must match the interpolation identifiers in the t
 
 ## Modules
 
-*(Preliminary — full module system to be specified.)*
-
 Each source file is a module. A module is a named collection of static declarations. In v1, all top-level declarations are exported.
 
 ```aura
@@ -1216,18 +1259,20 @@ io.print("hello");
 use (print, read) = "@stl/io";
 ```
 
-**Rename on import** — `exported_name = local_alias` (field = alias, matching struct-pattern syntax):
+**Rename on import** — `local_alias = exported_name` (alias = field, matching struct-pattern syntax):
 
 ```aura
-use (print = my_print, read) = "@stl/io";
+use (my_print = print, read) = "@stl/io";
 my_print("hello");
 ```
 
 Module paths:
+
 - `@name/...` — library reference resolved via the library lookup path.
 - `./...` or `../...` — relative path from the importing file's directory.
 
 Import resolution rules (current runtime):
+
 - Modules are loaded lazily at `use` sites.
 - Re-importing the same module path reuses a cached module value (single evaluation semantics).
 - Cyclic imports are runtime errors with an import-chain diagnostic.
@@ -1240,40 +1285,3 @@ Import resolution rules (current runtime):
 def _io_write = builtin io_write;
 def _to_str = builtin to_str;
 ```
-
-Rules:
-- Only bare identifiers are accepted (`builtin io_write`).
-- String/call syntax is invalid (`builtin("io_write")` is rejected).
-
-Static import typing:
-- The typechecker derives `@stl/*` module export signatures from the STL source itself.
-- Export signatures are strict: unresolved exported types are compile-time errors.
-- `Any` is valid in exported signatures only when explicitly written by the module author.
-
-Runtime native tiers:
-- Kernel tier is minimal and always present (`io_*`, `str_*`, `list_*`, `dict_*`, and core conversion/assert/panic primitives).
-- Extended tier exposes host capabilities (`os_*`, `math_*`, `net_*`). Current runtime bootstrap registers this tier by default.
-- Library pipeline default (`run_source`) uses a kernel-only runtime profile.
-- CLI runtime uses full-host profile (`run_source_with_profile(..., FullHost)`).
-- CLI supports explicit profile flags: `--kernel-only` and `--full-host`.
-
----
-
-## Appendix: Built-in Macro Summary
-
-| Macro | Kind | Purpose |
-|---|---|---|
-| `let` | Dynamic | Mutable local binding |
-| `const` | Dynamic | Immutable local binding (contextual identifier, not a keyword) |
-| `return` | Dynamic | Exit a scope (optionally with atom target) |
-| `break` | Dynamic | Exit a `loop` with a result value; sugar over `return .break(value)` |
-| `continue` | Dynamic | Begin next loop iteration; sugar over `return .continue()` |
-| `if` | Control | Two-branch conditional expression (contextual identifier) |
-| `cases` | Control | Multi-branch conditional expression (contextual identifier) |
-| `loop` | Control | Indefinite or conditional loop (contextual identifier) |
-| `def` | Static | Module-level constant, type alias, function, or destructuring binding |
-| `defmacro` | Static | Compile-time macro |
-| `enum` | Type | Named-variant sum type expression (contextual identifier) |
-| `union` | Type | Anonymous union type expression (contextual identifier) |
-| `interface` | Type | Structural contract (interface) type expression (contextual identifier) |
-| `template` | Value | Lazy string template |
