@@ -36,7 +36,24 @@ pub fn register_kernel(vm: &mut Vm) {
     vm.set_global("false", Value::Bool(false));
     vm.set_global("null", Value::Null);
 
-    // ── Core ──────────────────────────────────────────────────────────────────
+    register_kernel_core(vm);
+    register_kernel_io(vm);
+    register_kernel_string(vm);
+    register_kernel_list(vm);
+    register_kernel_dict(vm);
+}
+
+/// Register extended host-capability natives into `vm`.
+///
+/// These APIs expose filesystem/process/network capabilities and are intended
+/// to sit behind explicit module imports rather than language-core semantics.
+pub fn register_extended(vm: &mut Vm) {
+    register_extended_os(vm);
+    register_extended_math(vm);
+    register_extended_net(vm);
+}
+
+fn register_kernel_core(vm: &mut Vm) {
     vm.register_native("type_of", core_type_of);
     vm.register_native("to_str", core_to_str);
     vm.register_native("to_int", core_to_int);
@@ -45,8 +62,9 @@ pub fn register_kernel(vm: &mut Vm) {
     vm.register_native("is_null", core_is_null);
     vm.register_native("assert", core_assert);
     vm.register_native("panic", core_panic);
+}
 
-    // ── I/O ───────────────────────────────────────────────────────────────────
+fn register_kernel_io(vm: &mut Vm) {
     vm.register_native("io_open", io_open);
     vm.register_native("io_close", io_close);
     vm.register_native("io_write", io_write);
@@ -54,8 +72,9 @@ pub fn register_kernel(vm: &mut Vm) {
     vm.register_native("io_read_line", io_read_line);
     vm.register_native("io_read_all", io_read_all);
     vm.register_native("io_flush", io_flush);
+}
 
-    // ── String ────────────────────────────────────────────────────────────────
+fn register_kernel_string(vm: &mut Vm) {
     vm.register_native("str_len", str_len);
     vm.register_native("str_upper", str_upper);
     vm.register_native("str_lower", str_lower);
@@ -76,8 +95,9 @@ pub fn register_kernel(vm: &mut Vm) {
     vm.register_native("str_from_chars", str_from_chars);
     vm.register_native("str_parse_int", str_parse_int);
     vm.register_native("str_parse_float", str_parse_float);
+}
 
-    // ── List ─────────────────────────────────────────────────────────────────
+fn register_kernel_list(vm: &mut Vm) {
     vm.register_native("list_len", list_len);
     vm.register_native("list_push", list_push);
     vm.register_native("list_pop", list_pop);
@@ -93,8 +113,9 @@ pub fn register_kernel(vm: &mut Vm) {
     vm.register_native("list_flatten", list_flatten);
     vm.register_native("list_range", list_range);
     vm.register_native("list_index_of", list_index_of);
+}
 
-    // ── Dict ─────────────────────────────────────────────────────────────────
+fn register_kernel_dict(vm: &mut Vm) {
     vm.register_native("dict_keys", dict_keys);
     vm.register_native("dict_values", dict_values);
     vm.register_native("dict_entries", dict_entries);
@@ -104,12 +125,7 @@ pub fn register_kernel(vm: &mut Vm) {
     vm.register_native("dict_merge", dict_merge);
 }
 
-/// Register extended host-capability natives into `vm`.
-///
-/// These APIs expose filesystem/process/network capabilities and are intended
-/// to sit behind explicit module imports rather than language-core semantics.
-pub fn register_extended(vm: &mut Vm) {
-    // ── OS ───────────────────────────────────────────────────────────────────
+fn register_extended_os(vm: &mut Vm) {
     vm.register_native("os_args", os_args);
     vm.register_native("os_env", os_env);
     vm.register_native("os_cwd", os_cwd);
@@ -118,8 +134,13 @@ pub fn register_extended(vm: &mut Vm) {
     vm.register_native("os_is_file", os_is_file);
     vm.register_native("os_is_dir", os_is_dir);
     vm.register_native("os_ls", os_ls);
+    vm.register_native("os_exit", os_exit);
+    vm.register_native("os_delete_file", os_delete_file);
+    vm.register_native("os_mkdir", os_mkdir);
+    vm.register_native("os_sleep", os_sleep);
+}
 
-    // ── Math ─────────────────────────────────────────────────────────────────
+fn register_extended_math(vm: &mut Vm) {
     vm.register_native("math_abs", math_abs);
     vm.register_native("math_floor", math_floor);
     vm.register_native("math_ceil", math_ceil);
@@ -148,13 +169,9 @@ pub fn register_extended(vm: &mut Vm) {
     vm.register_native("math_trunc", math_trunc);
     vm.register_native("math_fract", math_fract);
     vm.register_native("math_sign", math_sign);
+}
 
-    vm.register_native("os_exit", os_exit);
-    vm.register_native("os_delete_file", os_delete_file);
-    vm.register_native("os_mkdir", os_mkdir);
-    vm.register_native("os_sleep", os_sleep);
-
-    // ── Net ──────────────────────────────────────────────────────────────────
+fn register_extended_net(vm: &mut Vm) {
     vm.register_native("net_tcp_connect", net_tcp_connect);
     vm.register_native("net_tcp_listen", net_tcp_listen);
     vm.register_native("net_tcp_accept", net_tcp_accept);
