@@ -1,6 +1,8 @@
 pub mod aliases;
 pub mod checker;
 pub mod diagnostics;
+pub mod generics;
+pub mod interfaces;
 pub mod numeric;
 pub mod resolver;
 pub mod symbols;
