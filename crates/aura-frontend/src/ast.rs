@@ -26,7 +26,7 @@ pub struct StaticParam {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StaticParamKind {
     Type,
-    StaticValue(TypeExpr),
+    Constraint(TypeExpr),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,9 +36,9 @@ pub struct Param {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TypeExpr {
-    pub name: String,
-    pub args: Vec<StaticArg>,
+pub enum TypeExpr {
+    Named { name: String, args: Vec<StaticArg> },
+    Static(Box<TypeExpr>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
