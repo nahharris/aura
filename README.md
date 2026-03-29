@@ -193,6 +193,10 @@ The old string form is invalid: `builtin("io_write")`.
 
 Type checking for `@stl/*` imports is strict: module export signatures are derived from STL source declarations. Unresolved exported types fail static checking. `Any` is accepted only when explicitly written in the exported contract.
 
+Runtime native tiers:
+- Kernel tier is minimal and always available (`io_*`, `str_*`, `list_*`, `dict_*`, core conversion/assert/panic).
+- Extended tier (`os_*`, `math_*`, `net_*`) is host-capability surface. It is currently registered by default in `Vm::new` and can be narrowed in future host profiles.
+
 ## Current Status
 
 ### Completed

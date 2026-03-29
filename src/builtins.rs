@@ -1,7 +1,7 @@
 //! Native (Rust) built-in functions for the Aura VM.
 //!
-//! This module provides registration functions for VM native kernels.
-//! built-in native functions into a [`Vm`] instance.  Each native is a plain
+//! This module provides registration functions for VM native tiers.
+//! Each native is a plain
 //! Rust function with the signature `fn(&[Value]) -> Result<Value, String>`.
 //!
 //! # Organisation
@@ -10,8 +10,8 @@
 //!
 //! | Group | Functions |
 //! |-------|-----------|
-//! | Core  | `print`, `println`, `type_of`, `to_str`, `to_int`, `to_float`, `to_bool` |
-//! | I/O   | `read_line` |
+//! | Kernel (always-on) | `type_of`, `to_str`, `to_int`, `to_float`, `to_bool`, `assert`, `panic`, `io_*`, `str_*`, `list_*`, `dict_*` |
+//! | Extended (host capability) | `os_*`, `math_*`, `net_*` |
 //! | String | `str_len`, `str_upper`, `str_lower`, `str_trim`, `str_starts_with`, `str_ends_with`, `str_contains`, `str_split`, `str_join`, `str_replace`, `str_slice`, `str_find`, `str_repeat`, `str_chars` |
 //! | List  | `list_len`, `list_push`, `list_pop`, `list_insert`, `list_remove`, `list_contains`, `list_reverse`, `list_sort`, `list_map`, `list_filter`, `list_reduce`, `list_concat`, `list_slice` |
 //! | Dict  | `dict_keys`, `dict_values`, `dict_entries`, `dict_has`, `dict_delete`, `dict_len`, `dict_merge` |

@@ -1250,6 +1250,10 @@ Static import typing:
 - Export signatures are strict: unresolved exported types are compile-time errors.
 - `Any` is valid in exported signatures only when explicitly written by the module author.
 
+Runtime native tiers:
+- Kernel tier is minimal and always present (`io_*`, `str_*`, `list_*`, `dict_*`, and core conversion/assert/panic primitives).
+- Extended tier exposes host capabilities (`os_*`, `math_*`, `net_*`). Current runtime bootstrap registers this tier by default.
+
 ---
 
 ## Appendix: Built-in Macro Summary
