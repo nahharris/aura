@@ -418,7 +418,9 @@ impl<'heap> Vm<'heap> {
                         frame.read_u16() as usize
                     };
                     let name = self.constant_as_str(idx)?;
-                    let val = self.globals.get(&name).cloned().unwrap_or(Value::Null);
+                    let Some(val) = self.globals.get(&name).cloned() else {
+                        return self.runtime_error(format!("unknown global `{name}`"));
+                    };
                     self.push(val);
                 }
                 OpCode::DefineGlobal => {
@@ -663,7 +665,12 @@ impl<'heap> Vm<'heap> {
                     // passing the module as a receiver.
                     if let Value::Module(m) = &receiver {
                         let m = unsafe { m.as_ref() };
-                        let callee = m.exports.get(&method_name).cloned().unwrap_or(Value::Null);
+                        let Some(callee) = m.exports.get(&method_name).cloned() else {
+                            return self.runtime_error(format!(
+                                "module `{}` has no export `{}`",
+                                m.name, method_name
+                            ));
+                        };
                         // Replace the receiver slot with the callee.
                         self.stack[receiver_idx] = callee;
                         // Call without the receiver — arg_count args only.
@@ -1088,7 +1095,12 @@ impl<'heap> Vm<'heap> {
                             };
                             let exp_name = self.constant_as_str(exp_idx)?.to_string();
                             let loc_name = self.constant_as_str(loc_idx)?.to_string();
-                            let val = exports.get(&exp_name).cloned().unwrap_or(Value::Null);
+                            let Some(val) = exports.get(&exp_name).cloned() else {
+                                return self.runtime_error(format!(
+                                    "module `{}` has no export `{}`",
+                                    path, exp_name
+                                ));
+                            };
                             self.globals.insert(loc_name, val);
                         }
                     }
@@ -1689,10 +1701,29 @@ mod tests {
         .expect("calling log (alias for println) should succeed");
     }
 
+    #[test]
+    fn test_use_namespace_missing_export_field_call_runtime_error() {
+        expect_runtime_error(
+            r#"use io = "@stl/io";
+               def main() { io.nope(1); }"#,
+            "has no export `nope`",
+        );
+    }
+
+    #[test]
+    fn test_use_destructure_missing_export_runtime_error() {
+        expect_runtime_error(r#"use (missing) = "@stl/io";"#, "has no export `missing`");
+    }
+
     /// Unknown module path must produce a runtime error.
     #[test]
     fn test_use_unknown_module_is_runtime_error() {
         expect_runtime_error(r#"use bad = "@stl/nonexistent";"#, "unknown module path");
+    }
+
+    #[test]
+    fn test_unknown_global_runtime_error() {
+        expect_runtime_error(r#"def main() { missing_global(); }"#, "unknown global");
     }
 
     #[test]
