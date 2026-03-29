@@ -1046,14 +1046,14 @@ impl TypeChecker {
             Pattern::Struct { fields, .. } => {
                 // Destructuring import: validate exports and bind local aliases.
                 for field in fields {
-                    if !exports.contains_key(&field.name) {
+                    let Some(ty) = exports.get(&field.name).cloned() else {
                         self.error(
                             format!("module `{}` has no export `{}`", use_decl.path, field.name),
                             field.span,
                         );
-                    }
+                        continue;
+                    };
                     let local_name = field.binding.as_ref().unwrap_or(&field.name);
-                    let ty = exports.get(&field.name).cloned().unwrap_or(Type::Any);
                     self.env.bindings.insert(local_name.clone(), ty);
                 }
             }
@@ -3517,6 +3517,15 @@ mod tests {
             errs.iter()
                 .any(|e| e.message.contains("has no export `nope`")),
             "expected missing export diagnostic, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn test_use_destructure_missing_export_not_bound() {
+        let tc = check_src_env("use (missing) = \"@stl/io\";");
+        assert!(
+            tc.env.lookup_binding("missing").is_none(),
+            "unknown import export should not create binding"
         );
     }
 
