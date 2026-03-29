@@ -102,10 +102,24 @@ pub fn register_kernel(vm: &mut Vm) {
     vm.register_native("dict_delete", dict_delete);
     vm.register_native("dict_len", dict_len);
     vm.register_native("dict_merge", dict_merge);
+}
+
+/// Register extended host-capability natives into `vm`.
+///
+/// These APIs expose filesystem/process/network capabilities and are intended
+/// to sit behind explicit module imports rather than language-core semantics.
+pub fn register_extended(vm: &mut Vm) {
+    // ── OS ───────────────────────────────────────────────────────────────────
+    vm.register_native("os_args", os_args);
+    vm.register_native("os_env", os_env);
+    vm.register_native("os_cwd", os_cwd);
+    vm.register_native("os_now", os_now);
+    vm.register_native("os_exists", os_exists);
+    vm.register_native("os_is_file", os_is_file);
+    vm.register_native("os_is_dir", os_is_dir);
+    vm.register_native("os_ls", os_ls);
 
     // ── Math ─────────────────────────────────────────────────────────────────
-    // Included in kernel for now; this can be moved behind optional modules
-    // once numeric STL layers are fully separated.
     vm.register_native("math_abs", math_abs);
     vm.register_native("math_floor", math_floor);
     vm.register_native("math_ceil", math_ceil);
@@ -134,25 +148,10 @@ pub fn register_kernel(vm: &mut Vm) {
     vm.register_native("math_trunc", math_trunc);
     vm.register_native("math_fract", math_fract);
     vm.register_native("math_sign", math_sign);
-}
 
-/// Register extended host-capability natives into `vm`.
-///
-/// These APIs expose filesystem/process/network capabilities and are intended
-/// to sit behind explicit module imports rather than language-core semantics.
-pub fn register_extended(vm: &mut Vm) {
-    // ── OS ───────────────────────────────────────────────────────────────────
-    vm.register_native("os_args", os_args);
-    vm.register_native("os_env", os_env);
     vm.register_native("os_exit", os_exit);
     vm.register_native("os_delete_file", os_delete_file);
-    vm.register_native("os_exists", os_exists);
-    vm.register_native("os_is_file", os_is_file);
-    vm.register_native("os_is_dir", os_is_dir);
     vm.register_native("os_mkdir", os_mkdir);
-    vm.register_native("os_ls", os_ls);
-    vm.register_native("os_cwd", os_cwd);
-    vm.register_native("os_now", os_now);
     vm.register_native("os_sleep", os_sleep);
 
     // ── Net ──────────────────────────────────────────────────────────────────

@@ -576,6 +576,64 @@ impl TypeChecker {
         tc.env.bindings.insert("true".into(), Type::Bool);
         tc.env.bindings.insert("false".into(), Type::Bool);
         tc.env.bindings.insert("null".into(), Type::Null);
+
+        // Kernel globals available without imports.
+        tc.env.bindings.insert(
+            "os_args".into(),
+            Type::Func {
+                params: vec![],
+                ret: Box::new(Type::List(Box::new(Type::String))),
+            },
+        );
+        tc.env.bindings.insert(
+            "os_env".into(),
+            Type::Func {
+                params: vec![Type::String],
+                ret: Box::new(Type::Any),
+            },
+        );
+        tc.env.bindings.insert(
+            "os_cwd".into(),
+            Type::Func {
+                params: vec![],
+                ret: Box::new(Type::String),
+            },
+        );
+        tc.env.bindings.insert(
+            "os_now".into(),
+            Type::Func {
+                params: vec![],
+                ret: Box::new(Type::Int),
+            },
+        );
+        tc.env.bindings.insert(
+            "os_exists".into(),
+            Type::Func {
+                params: vec![Type::String],
+                ret: Box::new(Type::Bool),
+            },
+        );
+        tc.env.bindings.insert(
+            "os_is_file".into(),
+            Type::Func {
+                params: vec![Type::String],
+                ret: Box::new(Type::Bool),
+            },
+        );
+        tc.env.bindings.insert(
+            "os_is_dir".into(),
+            Type::Func {
+                params: vec![Type::String],
+                ret: Box::new(Type::Bool),
+            },
+        );
+        tc.env.bindings.insert(
+            "os_ls".into(),
+            Type::Func {
+                params: vec![Type::String],
+                ret: Box::new(Type::List(Box::new(Type::String))),
+            },
+        );
         tc
     }
 
@@ -3546,6 +3604,17 @@ mod tests {
         ] {
             assert!(reg.contains_key(path), "registry must include {path}");
         }
+    }
+
+    #[test]
+    fn test_kernel_os_introspection_builtins_are_typed() {
+        let result = check_src(
+            "def main() -> Void { let args = os_args(); let cwd = os_cwd(); let now = os_now(); let ex = os_exists(cwd); }",
+        );
+        assert!(
+            result.is_ok(),
+            "kernel os introspection builtins should type-check: {result:?}"
+        );
     }
 
     // ── if expression type checking ───────────────────────────────────────────
