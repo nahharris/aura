@@ -2,7 +2,6 @@
 pub enum TokenKind {
     Ident(String),
     Int(String),
-    Static,
     Defmacro,
     Arrow,
     Colon,

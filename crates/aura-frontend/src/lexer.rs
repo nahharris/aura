@@ -99,7 +99,6 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
 
                 let kind = match ident.as_str() {
                     "defmacro" => TokenKind::Defmacro,
-                    "static" => TokenKind::Static,
                     _ => TokenKind::Ident(ident),
                 };
                 tokens.push(Token::new(kind));
