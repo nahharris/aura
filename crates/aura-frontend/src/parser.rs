@@ -74,7 +74,7 @@ where
         }
 
         self.expect_simple(&TokenKind::Eq, "expected '=' in assignment declaration")?;
-        let value = self.parse_macro_apply_expr()?;
+        let value = self.parse_expr()?;
         Ok(Decl::Assign { name, value })
     }
 
@@ -248,6 +248,14 @@ where
         }
     }
 
+    fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+        if self.is_macro_apply_start() {
+            self.parse_macro_apply_expr()
+        } else {
+            self.parse_atom_expr()
+        }
+    }
+
     fn parse_macro_apply_expr(&mut self) -> Result<Expr, ParseError> {
         let head_name = self.expect_ident("expected macro name")?;
         let static_args = if self.peek_is(&TokenKind::LBracket) {
@@ -269,12 +277,7 @@ where
     }
 
     fn parse_macro_operand(&mut self) -> Result<Expr, ParseError> {
-        let expr = if self.starts_macro_head() {
-            self.parse_macro_apply_expr()?
-        } else {
-            self.parse_atom_expr()?
-        };
-        Ok(expr)
+        self.parse_expr()
     }
 
     fn parse_atom_expr(&mut self) -> Result<Expr, ParseError> {
@@ -295,7 +298,7 @@ where
         }
     }
 
-    fn starts_macro_head(&self) -> bool {
+    fn is_macro_apply_start(&self) -> bool {
         matches!(self.peek(), TokenKind::Ident(_))
             && matches!(
                 self.peek_n(1),
@@ -478,6 +481,32 @@ mod tests {
     }
 
     #[test]
+    fn parse_assignment_to_plain_atom_expression() {
+        let src = "x = node";
+        let parsed = Parser::parse_source(src).expect("should parse plain atom assignment");
+        let decl = parsed.declarations.first().expect("expected declaration");
+        let value = match decl {
+            Decl::Assign { value, .. } => value,
+            other => panic!("expected assignment declaration, got {other:?}"),
+        };
+
+        assert!(matches!(value, Expr::Ident(name) if name == "node"));
+    }
+
+    #[test]
+    fn parse_assignment_to_integer_atom_expression() {
+        let src = "x = 7";
+        let parsed = Parser::parse_source(src).expect("should parse integer assignment");
+        let decl = parsed.declarations.first().expect("expected declaration");
+        let value = match decl {
+            Decl::Assign { value, .. } => value,
+            other => panic!("expected assignment declaration, got {other:?}"),
+        };
+
+        assert!(matches!(value, Expr::Int(7)));
+    }
+
+    #[test]
     fn function_form_declaration_normalizes_to_assignment_shape() {
         let src = "name(arg: Int) -> Expr[Int] {}";
         let parsed = Parser::parse_source(src).expect("should parse function form declaration");
@@ -501,7 +530,7 @@ mod tests {
 
     #[test]
     fn missing_macro_operand_is_rejected() {
-        let src = "x = macro_name";
+        let src = "x = macro_name[T]";
         let err = Parser::parse_source(src).expect_err("should reject missing macro operand");
         assert!(!err.message.is_empty());
     }
