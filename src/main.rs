@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! aura <file.aura>          # Execute a source file
-//! aura --check <file.aura>  # Lex + parse + compile only (no execution)
+//! aura --check <file.aura>  # Lex + parse + typecheck + compile only (no execution)
 //! aura --dump-bytecode <file.aura>  # Compile and dump disassembly
 //! aura --kernel-only <file.aura>    # Execute with kernel-only profile
 //! aura --full-host <file.aura>      # Execute with full-host profile
@@ -68,7 +68,7 @@ fn print_usage() {
 Usage: aura [OPTIONS] <file.aura>
 
 Options:
-  --check <file>          Lex, parse, and compile without executing
+  --check <file>          Lex, parse, typecheck, and compile without executing
   --dump-bytecode <file>  Compile and print bytecode disassembly
   --kernel-only <file>    Execute with kernel-only runtime profile
   --full-host <file>      Execute with full-host runtime profile
@@ -135,15 +135,21 @@ fn check_file(path: &str) {
             eprintln!("{}", format_error(path, &src, &e));
             process::exit(1);
         }
-        Ok(program) => match aura::compile_program(program) {
-            Err(e) => {
+        Ok(program) => {
+            if let Err(e) = aura::typecheck_program(&program) {
                 eprintln!("{}", format_error(path, &src, &e));
                 process::exit(1);
             }
-            Ok(_) => {
-                println!("{path}: OK");
+            match aura::compile_program(program) {
+                Err(e) => {
+                    eprintln!("{}", format_error(path, &src, &e));
+                    process::exit(1);
+                }
+                Ok(_) => {
+                    println!("{path}: OK");
+                }
             }
-        },
+        }
     }
 }
 
