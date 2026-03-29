@@ -199,6 +199,10 @@ Runtime native tiers:
 - `run_source` executes with a kernel-only runtime profile by default.
 - CLI execution (`aura file.aura`) uses the full-host runtime profile.
 
+CLI profile switches:
+- `aura --kernel-only file.aura` to run with kernel-only profile.
+- `aura --full-host file.aura` to run with full-host profile.
+
 ## Current Status
 
 ### Completed

@@ -1255,6 +1255,7 @@ Runtime native tiers:
 - Extended tier exposes host capabilities (`os_*`, `math_*`, `net_*`). Current runtime bootstrap registers this tier by default.
 - Library pipeline default (`run_source`) uses a kernel-only runtime profile.
 - CLI runtime uses full-host profile (`run_source_with_profile(..., FullHost)`).
+- CLI supports explicit profile flags: `--kernel-only` and `--full-host`.
 
 ---
 

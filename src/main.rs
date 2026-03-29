@@ -6,6 +6,8 @@
 //! aura <file.aura>          # Execute a source file
 //! aura --check <file.aura>  # Lex + parse + compile only (no execution)
 //! aura --dump-bytecode <file.aura>  # Compile and dump disassembly
+//! aura --kernel-only <file.aura>    # Execute with kernel-only profile
+//! aura --full-host <file.aura>      # Execute with full-host profile
 //! aura --version            # Print version
 //! aura --help               # Print usage
 //! ```
@@ -37,6 +39,14 @@ fn main() {
             let path = require_path(&args, "--dump-bytecode");
             dump_bytecode(&path);
         }
+        "--kernel-only" => {
+            let path = require_path(&args, "--kernel-only");
+            run_file_with_profile(&path, aura::vm::RuntimeProfile::KernelOnly);
+        }
+        "--full-host" => {
+            let path = require_path(&args, "--full-host");
+            run_file_with_profile(&path, aura::vm::RuntimeProfile::FullHost);
+        }
         flag if flag.starts_with('-') => {
             eprintln!("aura: unknown flag `{flag}`");
             eprintln!("Run `aura --help` for usage.");
@@ -60,11 +70,14 @@ Usage: aura [OPTIONS] <file.aura>
 Options:
   --check <file>          Lex, parse, and compile without executing
   --dump-bytecode <file>  Compile and print bytecode disassembly
+  --kernel-only <file>    Execute with kernel-only runtime profile
+  --full-host <file>      Execute with full-host runtime profile
   --version, -V           Print version information
   --help, -h              Print this help message
 
 Examples:
   aura hello.aura
+  aura --kernel-only hello.aura
   aura --check program.aura
   aura --dump-bytecode program.aura"
     );
@@ -100,8 +113,12 @@ fn read_source(path: &str) -> String {
 
 /// Execute a source file.
 fn run_file(path: &str) {
+    run_file_with_profile(path, aura::vm::RuntimeProfile::FullHost);
+}
+
+fn run_file_with_profile(path: &str, profile: aura::vm::RuntimeProfile) {
     let src = read_source(path);
-    match aura::run_source_with_profile(&src, path, aura::vm::RuntimeProfile::FullHost) {
+    match aura::run_source_with_profile(&src, path, profile) {
         Ok(()) => {}
         Err(e) => {
             eprintln!("{}", format_error(path, &src, &e));
