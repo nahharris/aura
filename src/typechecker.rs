@@ -21,7 +21,7 @@ use crate::ast::{
     BinOp, Block, ClosureArm, DeclKind, DefBinding, Expr, Item, LabelledBlock, LocalBinding, Param,
     Pattern, Program, Stmt, TypeExpr, UnOp, UseDecl,
 };
-use crate::stl_registry::{stl_module_exports, stl_module_type, StlModuleExports};
+use crate::stl_registry::{stl_module_exports, stl_module_type};
 use crate::token::Span;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -403,105 +403,34 @@ pub struct TypeChecker {
 }
 
 impl TypeChecker {
-    pub(crate) fn extract_module_exports_strict(
-        &mut self,
-        module_path: &str,
-        program: &Program,
-    ) -> Result<StlModuleExports, String> {
+    pub(crate) fn register_type_aliases_for_exports(&mut self, program: &Program) {
         self.register_type_aliases(program);
+    }
 
-        let mut exports = HashMap::new();
-        for item in &program.items {
-            let Item::Decl(decl) = item else { continue };
-            let DeclKind::Def(def_decl) = &decl.kind else {
-                continue;
-            };
+    pub(crate) fn bind_type_param_for_exports(&mut self, name: &str) {
+        self.env
+            .type_params
+            .insert(name.to_string(), Type::TypeVar(name.to_string()));
+    }
 
-            for binding in &def_decl.bindings {
-                match binding {
-                    DefBinding::FuncDef {
-                        receiver,
-                        name,
-                        type_params,
-                        params,
-                        return_type,
-                        span,
-                        ..
-                    } => {
-                        for tp in type_params {
-                            self.env
-                                .type_params
-                                .insert(tp.name.clone(), Type::TypeVar(tp.name.clone()));
-                        }
-                        let param_types = self.resolve_params(params, *span);
-                        let ret_type = match return_type {
-                            Some(rt) => self.resolve_type_expr(rt),
-                            None => {
-                                return Err(format!(
-                                    "{module_path}: export `{name}` is missing a return type"
-                                ))
-                            }
-                        };
-                        for tp in type_params {
-                            self.env.type_params.remove(&tp.name);
-                        }
+    pub(crate) fn unbind_type_param_for_exports(&mut self, name: &str) {
+        self.env.type_params.remove(name);
+    }
 
-                        let full_name = match receiver {
-                            Some(recv) => format!("{recv}.{name}"),
-                            None => name.clone(),
-                        };
-                        exports.insert(
-                            full_name,
-                            Type::Func {
-                                params: param_types,
-                                ret: Box::new(ret_type),
-                            },
-                        );
-                    }
-                    DefBinding::TypeAlias {
-                        name,
-                        type_params,
-                        ty,
-                        ..
-                    } => {
-                        for tp in type_params {
-                            self.env
-                                .type_params
-                                .insert(tp.name.clone(), Type::TypeVar(tp.name.clone()));
-                        }
+    pub(crate) fn resolve_params_for_exports(
+        &mut self,
+        params: &[Param],
+        fn_span: Span,
+    ) -> Vec<Type> {
+        self.resolve_params(params, fn_span)
+    }
 
-                        let resolved = self.resolve_type_expr(ty);
-                        for tp in type_params {
-                            self.env.type_params.remove(&tp.name);
-                        }
+    pub(crate) fn resolve_type_expr_for_exports(&mut self, ty: &TypeExpr) -> Type {
+        self.resolve_type_expr(ty)
+    }
 
-                        exports.insert(name.clone(), resolved);
-                    }
-                    DefBinding::Value { pattern, init, .. } => {
-                        let Pattern::Bind(name, _) = pattern else {
-                            return Err(format!(
-                                "{module_path}: unsupported exported binding pattern `{:?}`",
-                                pattern
-                            ));
-                        };
-                        let value_ty = self.strict_export_value_type(module_path, name, init)?;
-                        exports.insert(name.clone(), value_ty);
-                    }
-                }
-            }
-        }
-
-        if !self.errors.is_empty() {
-            return Err(format!(
-                "{module_path}: signature extraction errors: {:?}",
-                self.errors
-                    .iter()
-                    .map(|e| e.to_string())
-                    .collect::<Vec<_>>()
-            ));
-        }
-
-        Ok(exports)
+    pub(crate) fn export_errors(&self) -> &[TypeError] {
+        &self.errors
     }
 
     pub(crate) fn strict_export_value_type(
