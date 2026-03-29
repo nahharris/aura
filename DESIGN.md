@@ -139,7 +139,8 @@ Aura is a statically type-safe language. Every expression has a type, and types 
 Types are written in `PascalCase`. Generic static arguments use square brackets.
 
 ```
-type_expr ::= identifier type_args?
+type_expr ::= "static" type_expr
+           |  identifier type_args?
            |  "(" type_expr ("," type_expr)* ")"
            |  "(" struct_field_ty ("," struct_field_ty)* ","? ")"
 
@@ -181,6 +182,8 @@ On `def` and `defmacro` declarations, static parameters may carry interface-like
 2. Bindings proven compile-time-known by the frontend's static-evaluation pass also satisfy `static T`.
 
 The same rule is used for declaration bounds and macro static argument validation.
+
+`static` is a regular type-expression constructor, so it is valid anywhere a type expression is valid, for example `n: static Int`, `-> static Expr[T]`, and `Expr[static Int]`.
 
 Examples of built-in / standard types:
 
