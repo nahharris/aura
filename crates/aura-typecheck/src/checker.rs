@@ -183,6 +183,7 @@ impl TypeChecker {
                     expected_ty, actual_ty
                 ),
             )
+            .with_related("assignment compatibility check failed", None)
             .with_hint("use an explicit cast for narrowing or cross-domain numeric conversions"),
         );
     }
@@ -382,5 +383,33 @@ mod tests {
             .diagnostics
             .iter()
             .any(|d| d.code == "E_BUILTIN_UNKNOWN"));
+    }
+
+    #[test]
+    fn type_mismatch_diagnostic_contains_related_context() {
+        let program = Program {
+            declarations: vec![
+                Decl::Assign {
+                    name: "x".to_string(),
+                    value: Expr::List(vec![Expr::Int("1".to_string())]),
+                },
+                Decl::Assign {
+                    name: "x".to_string(),
+                    value: Expr::Dict(vec![(
+                        Expr::Int("1".to_string()),
+                        Expr::Int("2".to_string()),
+                    )]),
+                },
+            ],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked.module.is_none());
+        let diag = checked
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "E_TYPE_MISMATCH")
+            .expect("expected mismatch diagnostic");
+        assert!(!diag.related.is_empty());
     }
 }

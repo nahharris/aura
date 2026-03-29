@@ -36,6 +36,13 @@ impl GenericChecker {
                                 "E_UNKNOWN_INTERFACE",
                                 format!("unknown interface constraint '{name}'"),
                             )
+                            .with_related(
+                                format!(
+                                    "generic parameter '{}' references unknown interface",
+                                    param.name
+                                ),
+                                None,
+                            )
                             .with_hint("declare the interface or use a known prelude interface"),
                         );
                     }
@@ -74,6 +81,13 @@ impl GenericChecker {
                                     "expected compile-time value for static constraint {:?}, got type argument {:?}",
                                     expected, actual_ty
                                 ),
+                            )
+                            .with_related(
+                                format!(
+                                    "constraint index {} requires static value argument",
+                                    idx
+                                ),
+                                None,
                             )
                             .with_hint("replace type argument with a compile-time-known value"),
                         );

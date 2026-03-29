@@ -79,6 +79,7 @@ impl PatternChecker {
                         "E_PATTERN_UNREACHABLE_ARM",
                         format!("arm {idx} is unreachable because a previous wildcard matches all values"),
                     )
+                    .with_related("previous wildcard arm captures all remaining inputs", None)
                     .with_hint("remove the unreachable arm or reorder patterns"),
                 );
                 continue;
