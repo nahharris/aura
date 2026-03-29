@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use aura_frontend::ast::{Decl, Expr, Program};
 
 use crate::aliases::TypeAliases;
+use crate::builtins::BuiltinRegistry;
+use crate::checked_ir::{CheckedDecl, CheckedExpr, CheckedIr};
 use crate::diagnostics::Diagnostic;
+use crate::modules::ModuleChecker;
 use crate::numeric::can_implicitly_widen;
 use crate::patterns::PatternChecker;
 use crate::types::{Ty, TyId, TyInterner};
@@ -12,8 +15,11 @@ use crate::types::{Ty, TyId, TyInterner};
 pub struct TypeChecker {
     interner: TyInterner,
     aliases: TypeAliases,
+    builtins: BuiltinRegistry,
+    module_checker: ModuleChecker,
     pattern_checker: PatternChecker,
     diagnostics: Vec<Diagnostic>,
+    ir: CheckedIr,
 }
 
 impl TypeChecker {
@@ -24,13 +30,17 @@ impl TypeChecker {
         Self {
             interner,
             aliases,
+            builtins: BuiltinRegistry::with_prelude(),
+            module_checker: ModuleChecker::new(),
             pattern_checker: PatternChecker::new(),
             diagnostics: Vec::new(),
+            ir: CheckedIr::empty(),
         }
     }
 
     pub fn check_program(&mut self, program: &Program) -> HashMap<String, TyId> {
         let mut values = HashMap::new();
+        self.module_checker.check_program(program);
 
         for decl in &program.declarations {
             if let Decl::Assign { name, value } = decl {
@@ -39,6 +49,11 @@ impl TypeChecker {
                     self.require_assignable(existing, ty, name);
                 }
                 values.insert(name.clone(), ty);
+                self.ir.declarations.push(CheckedDecl {
+                    name: name.clone(),
+                    ty,
+                    value: self.lower_expr(value),
+                });
             }
 
             if let Decl::Function(function) = decl {
@@ -60,11 +75,14 @@ impl TypeChecker {
             }
         }
 
+        self.diagnostics
+            .extend(std::mem::take(&mut self.module_checker).into_diagnostics());
+
         values
     }
 
-    pub fn into_parts(self) -> (TyInterner, Vec<Diagnostic>) {
-        (self.interner, self.diagnostics)
+    pub fn into_parts(self) -> (TyInterner, Vec<Diagnostic>, CheckedIr) {
+        (self.interner, self.diagnostics, self.ir)
     }
 
     fn infer_expr(&mut self, expr: &Expr) -> TyId {
@@ -109,6 +127,34 @@ impl TypeChecker {
                     })
                 }
             }
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                ..
+            } if macro_name == "builtin" => {
+                if let Expr::Ident(name) = operand.as_ref() {
+                    if self.builtins.get(name).is_none() {
+                        self.diagnostics.push(
+                            Diagnostic::error(
+                                "E_BUILTIN_UNKNOWN",
+                                format!("unknown builtin symbol '{name}'"),
+                            )
+                            .with_hint(
+                                "declare the builtin in the registry or fix the symbol name",
+                            ),
+                        );
+                    }
+                } else {
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            "E_BUILTIN_FORM",
+                            "builtin expects an identifier operand",
+                        )
+                        .with_hint("use form: builtin io_write"),
+                    );
+                }
+                self.interner.intern(Ty::Any)
+            }
             _ => self.interner.intern(Ty::Any),
         }
     }
@@ -139,6 +185,25 @@ impl TypeChecker {
             )
             .with_hint("use an explicit cast for narrowing or cross-domain numeric conversions"),
         );
+    }
+
+    fn lower_expr(&self, expr: &Expr) -> CheckedExpr {
+        match expr {
+            Expr::Int(v) => CheckedExpr::Int(v.clone()),
+            Expr::Float(v) => CheckedExpr::Float(v.clone()),
+            Expr::Char(v) => CheckedExpr::Char(v.clone()),
+            Expr::String(v) => CheckedExpr::String(v.clone()),
+            Expr::List(items) => {
+                CheckedExpr::List(items.iter().map(|item| self.lower_expr(item)).collect())
+            }
+            Expr::Dict(entries) => CheckedExpr::Dict(
+                entries
+                    .iter()
+                    .map(|(k, v)| (self.lower_expr(k), self.lower_expr(v)))
+                    .collect(),
+            ),
+            _ => CheckedExpr::Any,
+        }
     }
 }
 
@@ -260,5 +325,62 @@ mod tests {
             .get(*ty_id)
             .expect("interned type should exist");
         assert!(matches!(ty, crate::types::Ty::Nominal(name) if name == "String"));
+    }
+
+    #[test]
+    fn checked_ir_is_emitted_for_assignments() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                name: "x".to_string(),
+                value: Expr::Int("1".to_string()),
+            }],
+        };
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("checked module should exist");
+        assert_eq!(module.ir.declarations.len(), 1);
+        assert_eq!(module.ir.declarations[0].name, "x");
+    }
+
+    #[test]
+    fn duplicate_use_targets_fail_typecheck_pipeline() {
+        let program = Program {
+            declarations: vec![
+                Decl::Use(aura_frontend::ast::UseDecl {
+                    target: "io".to_string(),
+                }),
+                Decl::Use(aura_frontend::ast::UseDecl {
+                    target: "io".to_string(),
+                }),
+            ],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked.module.is_none());
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "E_USE_DUPLICATE"));
+    }
+
+    #[test]
+    fn unknown_builtin_symbol_reports_diagnostic() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                name: "x".to_string(),
+                value: Expr::MacroApply {
+                    macro_name: "builtin".to_string(),
+                    static_args: Vec::new(),
+                    operand: Box::new(Expr::Ident("missing_builtin".to_string())),
+                },
+            }],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked.module.is_none());
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "E_BUILTIN_UNKNOWN"));
     }
 }

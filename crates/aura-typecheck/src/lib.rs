@@ -1,8 +1,11 @@
 pub mod aliases;
+pub mod builtins;
+pub mod checked_ir;
 pub mod checker;
 pub mod diagnostics;
 pub mod generics;
 pub mod interfaces;
+pub mod modules;
 pub mod numeric;
 pub mod patterns;
 pub mod resolver;
@@ -23,6 +26,7 @@ pub struct CheckedModule {
     pub symbols: resolver::ResolvedSymbols,
     pub value_types: HashMap<String, TyId>,
     pub types: TyInterner,
+    pub ir: checked_ir::CheckedIr,
 }
 
 #[derive(Debug, Clone)]
@@ -36,16 +40,9 @@ pub fn check_module(ast: &Program) -> CheckResult {
     let symbols = resolver.resolve_program(ast);
     let mut diagnostics = resolver.into_diagnostics();
 
-    if diagnostics.iter().any(|d| d.severity == Severity::Error) {
-        return CheckResult {
-            module: None,
-            diagnostics,
-        };
-    }
-
     let mut checker = TypeChecker::new();
     let value_types = checker.check_program(ast);
-    let (types, checker_diagnostics) = checker.into_parts();
+    let (types, checker_diagnostics, ir) = checker.into_parts();
     diagnostics.extend(checker_diagnostics);
 
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
@@ -60,6 +57,7 @@ pub fn check_module(ast: &Program) -> CheckResult {
             symbols,
             value_types,
             types,
+            ir,
         }),
         diagnostics,
     }
