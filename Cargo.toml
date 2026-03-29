@@ -1,5 +1,6 @@
 [workspace]
 members = [
     "crates/aura-frontend",
+    "crates/aura-typecheck",
 ]
 resolver = "2"
