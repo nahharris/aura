@@ -191,6 +191,8 @@ def _to_str = builtin to_str;
 
 The old string form is invalid: `builtin("io_write")`.
 
+Type checking for `@stl/*` imports is strict: module export signatures are derived from STL source declarations. Unresolved exported types fail static checking. `Any` is accepted only when explicitly written in the exported contract.
+
 ## Current Status
 
 ### Completed

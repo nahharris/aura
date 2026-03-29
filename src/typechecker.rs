@@ -16,6 +16,7 @@
 //! - Fourth pass in `check_program` that walks all function bodies
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use crate::ast::{
     BinOp, Block, ClosureArm, DeclKind, DefBinding, Expr, Item, LabelledBlock, LocalBinding, Param,
@@ -401,147 +402,220 @@ pub struct TypeChecker {
     errors: Vec<TypeError>,
 }
 
+type StlModuleExports = HashMap<String, Type>;
+type StlRegistry = HashMap<String, StlModuleExports>;
+
 impl TypeChecker {
-    fn stl_module_exports(path: &str) -> Option<HashMap<String, Type>> {
-        let mut exports = HashMap::new();
-        match path {
-            "@stl/core" => {
-                exports.insert(
-                    "match".into(),
-                    Type::Func {
-                        params: vec![Type::Any, Type::Any],
-                        ret: Box::new(Type::Any),
-                    },
-                );
-            }
-            "@stl/io" => {
-                for name in ["print", "println", "eprint", "eprintln"] {
-                    exports.insert(
-                        name.into(),
-                        Type::Func {
-                            params: vec![Type::Any],
-                            ret: Box::new(Type::Void),
-                        },
-                    );
-                }
-                exports.insert("_io_write".into(), Type::Any);
-                exports.insert("_to_str".into(), Type::Any);
-            }
-            "@stl/string" => {
-                for name in [
-                    "_str_len",
-                    "_str_upper",
-                    "_str_lower",
-                    "_str_trim",
-                    "_str_contains",
-                    "_str_starts_with",
-                    "_str_ends_with",
-                    "_str_split",
-                    "_str_join",
-                    "_str_replace",
-                    "_str_slice",
-                    "_str_parse_int",
-                    "_str_parse_float",
-                    "String.len",
-                    "String.isEmpty",
-                    "String.contains",
-                    "String.startsWith",
-                    "String.endsWith",
-                    "String.upper",
-                    "String.lower",
-                    "String.trim",
-                    "String.replace",
-                    "String.slice",
-                    "String.split",
-                    "String.join",
-                    "String.parseInt",
-                    "String.parseFloat",
-                ] {
-                    exports.insert(name.into(), Type::Any);
-                }
-            }
-            "@stl/list" => {
-                for name in [
-                    "_list_len",
-                    "_list_push",
-                    "_list_pop",
-                    "_list_contains",
-                    "_list_slice",
-                    "_list_concat",
-                    "_list_reverse",
-                    "_list_index_of",
-                    "List.len",
-                    "List.isEmpty",
-                    "List.contains",
-                    "List.indexOf",
-                    "List.get",
-                    "List.push",
-                    "List.pop",
-                    "List.slice",
-                    "List.concat",
-                    "List.reverse",
-                    "List.map",
-                    "List.filter",
-                    "List.each",
-                ] {
-                    exports.insert(name.into(), Type::Any);
-                }
-            }
-            "@stl/collections" => {
-                exports.insert("__collections_prelude_loaded".into(), Type::Bool);
-            }
-            "@stl/bool" => {
-                for name in ["Bool", "Bool.not", "Bool.and", "Bool.or", "Bool.toString"] {
-                    exports.insert(name.into(), Type::Any);
-                }
-            }
-            "@stl/option" => {
-                for name in [
-                    "Option",
-                    "Option.truthy",
-                    "Option.is_some",
-                    "Option.is_none",
-                    "Option.unwrap",
-                    "Option.unwrap_or",
-                    "Option.unwrap_or_else",
-                    "Option.and",
-                    "Option.or",
-                    "Option.flat_map",
-                ] {
-                    exports.insert(name.into(), Type::Any);
-                }
-            }
-            "@stl/result" => {
-                for name in [
-                    "Result",
-                    "Result.is_ok",
-                    "Result.is_err",
-                    "Result.ok",
-                    "Result.err",
-                    "Result.unwrap",
-                    "Result.unwrap_or",
-                    "Result.unwrap_or_else",
-                    "Result.unwrap_err",
-                    "Result.unwrap_err_or",
-                    "Result.unwrap_err_or_else",
-                    "Result.map",
-                    "Result.map_err",
-                    "Result.and_then",
-                    "Result.or_else",
-                ] {
-                    exports.insert(name.into(), Type::Any);
-                }
-            }
-            _ => return None,
-        }
-        Some(exports)
+    fn stl_registry() -> &'static Result<StlRegistry, String> {
+        static REGISTRY: OnceLock<Result<StlRegistry, String>> = OnceLock::new();
+        REGISTRY.get_or_init(Self::build_stl_registry)
     }
 
-    fn stl_module_type(path: &str) -> Option<Type> {
-        Self::stl_module_exports(path).map(|exports| Type::Module {
+    fn stl_module_exports(path: &str) -> Result<Option<StlModuleExports>, String> {
+        match Self::stl_registry() {
+            Ok(reg) => Ok(reg.get(path).cloned()),
+            Err(err) => Err(err.clone()),
+        }
+    }
+
+    fn stl_module_type(path: &str) -> Result<Option<Type>, String> {
+        Ok(Self::stl_module_exports(path)?.map(|exports| Type::Module {
             path: path.to_string(),
             exports,
-        })
+        }))
+    }
+
+    fn build_stl_registry() -> Result<StlRegistry, String> {
+        let modules: [(&str, &str); 8] = [
+            ("@stl/core", include_str!("../stl/core.aura")),
+            ("@stl/io", include_str!("../stl/io.aura")),
+            ("@stl/string", include_str!("../stl/string.aura")),
+            ("@stl/list", include_str!("../stl/list.aura")),
+            ("@stl/collections", include_str!("../stl/collections.aura")),
+            ("@stl/bool", include_str!("../stl/bool.aura")),
+            ("@stl/option", include_str!("../stl/option.aura")),
+            ("@stl/result", include_str!("../stl/result.aura")),
+        ];
+
+        let mut registry = HashMap::new();
+        for (path, src) in modules {
+            let (tokens, lex_errs) = crate::lexer::lex(src);
+            if !lex_errs.is_empty() {
+                return Err(format!("failed to lex {path}: {lex_errs:?}"));
+            }
+            let (program, parse_errs) = crate::parser::parse_tokens(tokens);
+            if !parse_errs.is_empty() {
+                return Err(format!("failed to parse {path}: {parse_errs:?}"));
+            }
+
+            let mut checker = TypeChecker::new();
+            let exports = checker.extract_module_exports_strict(path, &program)?;
+            registry.insert(path.to_string(), exports);
+        }
+
+        Ok(registry)
+    }
+
+    fn extract_module_exports_strict(
+        &mut self,
+        module_path: &str,
+        program: &Program,
+    ) -> Result<StlModuleExports, String> {
+        self.register_type_aliases(program);
+
+        let mut exports = HashMap::new();
+        for item in &program.items {
+            let Item::Decl(decl) = item else { continue };
+            let DeclKind::Def(def_decl) = &decl.kind else {
+                continue;
+            };
+
+            for binding in &def_decl.bindings {
+                match binding {
+                    DefBinding::FuncDef {
+                        receiver,
+                        name,
+                        type_params,
+                        params,
+                        return_type,
+                        span,
+                        ..
+                    } => {
+                        for tp in type_params {
+                            self.env
+                                .type_params
+                                .insert(tp.name.clone(), Type::TypeVar(tp.name.clone()));
+                        }
+                        let param_types = self.resolve_params(params, *span);
+                        let ret_type = match return_type {
+                            Some(rt) => self.resolve_type_expr(rt),
+                            None => {
+                                return Err(format!(
+                                    "{module_path}: export `{name}` is missing a return type"
+                                ))
+                            }
+                        };
+                        for tp in type_params {
+                            self.env.type_params.remove(&tp.name);
+                        }
+
+                        let full_name = match receiver {
+                            Some(recv) => format!("{recv}.{name}"),
+                            None => name.clone(),
+                        };
+                        exports.insert(
+                            full_name,
+                            Type::Func {
+                                params: param_types,
+                                ret: Box::new(ret_type),
+                            },
+                        );
+                    }
+                    DefBinding::TypeAlias {
+                        name,
+                        type_params,
+                        ty,
+                        ..
+                    } => {
+                        for tp in type_params {
+                            self.env
+                                .type_params
+                                .insert(tp.name.clone(), Type::TypeVar(tp.name.clone()));
+                        }
+
+                        let resolved = self.resolve_type_expr(ty);
+                        for tp in type_params {
+                            self.env.type_params.remove(&tp.name);
+                        }
+
+                        exports.insert(name.clone(), resolved);
+                    }
+                    DefBinding::Value { pattern, init, .. } => {
+                        let Pattern::Bind(name, _) = pattern else {
+                            return Err(format!(
+                                "{module_path}: unsupported exported binding pattern `{:?}`",
+                                pattern
+                            ));
+                        };
+                        let value_ty = self.strict_export_value_type(module_path, name, init)?;
+                        exports.insert(name.clone(), value_ty);
+                    }
+                }
+            }
+        }
+
+        if !self.errors.is_empty() {
+            return Err(format!(
+                "{module_path}: signature extraction errors: {:?}",
+                self.errors
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+            ));
+        }
+
+        Ok(exports)
+    }
+
+    fn strict_export_value_type(
+        &mut self,
+        module_path: &str,
+        export_name: &str,
+        init: &Expr,
+    ) -> Result<Type, String> {
+        match init {
+            Expr::Int(..) => Ok(Type::Int),
+            Expr::Float(..) => Ok(Type::Float),
+            Expr::Str(..) => Ok(Type::String),
+            Expr::Char(..) => Ok(Type::Char),
+            Expr::Ident(name, _) if name == "true" || name == "false" => Ok(Type::Bool),
+            Expr::Ident(name, _) if name == "null" => Ok(Type::Null),
+            Expr::Builtin { name, .. } => Self::kernel_builtin_signature(name).ok_or_else(|| {
+                format!(
+                    "{module_path}: export `{export_name}` references unknown builtin `{name}`"
+                )
+            }),
+            _ => Err(format!(
+                "{module_path}: export `{export_name}` must have an explicit type shape or builtin-backed binding"
+            )),
+        }
+    }
+
+    fn kernel_builtin_signature(name: &str) -> Option<Type> {
+        let list_any = || Type::List(Box::new(Type::Any));
+        let f = |params: Vec<Type>, ret: Type| Type::Func {
+            params,
+            ret: Box::new(ret),
+        };
+        match name {
+            "io_write" => Some(f(vec![Type::Int, Type::String], Type::Void)),
+            "to_str" => Some(f(vec![Type::Any], Type::String)),
+
+            "str_len" => Some(f(vec![Type::String], Type::Int)),
+            "str_upper" | "str_lower" | "str_trim" => Some(f(vec![Type::String], Type::String)),
+            "str_contains" | "str_starts_with" | "str_ends_with" => {
+                Some(f(vec![Type::String, Type::String], Type::Bool))
+            }
+            "str_split" => Some(f(vec![Type::String, Type::String], list_any())),
+            "str_join" => Some(f(vec![Type::String, list_any()], Type::String)),
+            "str_replace" => Some(f(
+                vec![Type::String, Type::String, Type::String],
+                Type::String,
+            )),
+            "str_slice" => Some(f(vec![Type::String, Type::Int, Type::Int], Type::String)),
+            "str_parse_int" | "str_parse_float" => Some(f(vec![Type::String], Type::Any)),
+
+            "list_len" => Some(f(vec![list_any()], Type::Int)),
+            "list_push" => Some(f(vec![list_any(), Type::Any], Type::Void)),
+            "list_pop" => Some(f(vec![list_any()], Type::Any)),
+            "list_contains" => Some(f(vec![list_any(), Type::Any], Type::Bool)),
+            "list_slice" => Some(f(vec![list_any(), Type::Int, Type::Int], list_any())),
+            "list_concat" => Some(f(vec![list_any(), list_any()], list_any())),
+            "list_reverse" => Some(f(vec![list_any()], list_any())),
+            "list_index_of" => Some(f(vec![list_any(), Type::Any], Type::Int)),
+
+            _ => None,
+        }
     }
 
     /// Create a new type checker with prelude globals pre-registered.
@@ -988,23 +1062,40 @@ impl TypeChecker {
 
     /// Register imported names from a `use` declaration into the environment.
     fn register_use_names(&mut self, use_decl: &UseDecl) {
-        let Some(exports) = Self::stl_module_exports(&use_decl.path) else {
-            self.error(
-                format!(
-                    "unknown module path `{}` in typechecker import pass",
-                    use_decl.path
-                ),
-                use_decl.span,
-            );
-            return;
+        let exports = match Self::stl_module_exports(&use_decl.path) {
+            Ok(Some(exports)) => exports,
+            Ok(None) => {
+                self.error(
+                    format!(
+                        "unknown module path `{}` in typechecker import pass",
+                        use_decl.path
+                    ),
+                    use_decl.span,
+                );
+                return;
+            }
+            Err(err) => {
+                self.error(
+                    format!("failed to build STL type registry: {err}"),
+                    use_decl.span,
+                );
+                return;
+            }
         };
 
         match &use_decl.pattern {
-            Pattern::Bind(local_name, _) => {
-                if let Some(module_ty) = Self::stl_module_type(&use_decl.path) {
+            Pattern::Bind(local_name, _) => match Self::stl_module_type(&use_decl.path) {
+                Ok(Some(module_ty)) => {
                     self.env.bindings.insert(local_name.clone(), module_ty);
                 }
-            }
+                Ok(None) => {}
+                Err(err) => {
+                    self.error(
+                        format!("failed to build STL module type `{}`: {err}", use_decl.path),
+                        use_decl.span,
+                    );
+                }
+            },
             Pattern::Struct { fields, .. } => {
                 // Destructuring import: validate exports and bind local aliases.
                 for field in fields {
@@ -3479,6 +3570,25 @@ mod tests {
                 .any(|e| e.message.contains("has no export `nope`")),
             "expected missing export diagnostic, got: {errs:?}"
         );
+    }
+
+    #[test]
+    fn test_stl_registry_strict_build() {
+        let reg = TypeChecker::stl_registry();
+        assert!(reg.is_ok(), "stl registry must build: {reg:?}");
+        let reg = reg.as_ref().unwrap();
+        for path in [
+            "@stl/core",
+            "@stl/io",
+            "@stl/string",
+            "@stl/list",
+            "@stl/collections",
+            "@stl/bool",
+            "@stl/option",
+            "@stl/result",
+        ] {
+            assert!(reg.contains_key(path), "registry must include {path}");
+        }
     }
 
     // ── if expression type checking ───────────────────────────────────────────

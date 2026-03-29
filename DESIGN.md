@@ -1245,6 +1245,11 @@ Rules:
 - Only bare identifiers are accepted (`builtin io_write`).
 - String/call syntax is invalid (`builtin("io_write")` is rejected).
 
+Static import typing:
+- The typechecker derives `@stl/*` module export signatures from the STL source itself.
+- Export signatures are strict: unresolved exported types are compile-time errors.
+- `Any` is valid in exported signatures only when explicitly written by the module author.
+
 ---
 
 ## Appendix: Built-in Macro Summary

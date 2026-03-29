@@ -69,10 +69,10 @@ def String.replace(self: String, from: String, to: String) -> String { _str_repl
 def String.slice(self: String, start: Int, end: Int) -> String { _str_slice(self, start, end) }
 
 /// Splits the string on `sep` and returns a `List` of parts.
-def String.split(self: String, sep: String) -> List { _str_split(self, sep) }
+def String.split(self: String, sep: String) -> List[Any] { _str_split(self, sep) }
 
 /// Joins a list of strings with `self` as the separator.
-def String.join(self: String, parts: List) -> String { _str_join(self, parts) }
+def String.join(self: String, parts: List[Any]) -> String { _str_join(self, parts) }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Parsing

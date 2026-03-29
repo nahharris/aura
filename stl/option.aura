@@ -1,45 +1,61 @@
 def[T] Option = enum(null: (), some: T);
 
-def[T] Option[T].truthy(self) -> Bool {
-    .some(_) -> .true,
-    _ -> .false
+def[T] Option.truthy(self: Option[T]) -> Bool {
+    {
+        .some(_) -> .true,
+        _ -> .false,
+    }(self)
 }
 
-def[T] Option[T].is_some(self) -> Bool {
-    .some(_) -> .true,
-    _ -> .false
+def[T] Option.is_some(self: Option[T]) -> Bool {
+    {
+        .some(_) -> .true,
+        _ -> .false,
+    }(self)
 }
 
-def[T] Option[T].is_none(self) -> Bool {
+def[T] Option.is_none(self: Option[T]) -> Bool {
     !self.is_some()
 }
 
-def[T] Option[T].unwrap(self) -> T {
-    .some(x) -> x,
-    .null(_) -> .panic("unwrap called on None")
+def[T] Option.unwrap(self: Option[T]) -> T {
+    {
+        .some(x) -> x,
+        .null(_) -> .panic("unwrap called on None"),
+    }(self)
 }
 
-def[T] Option[T].unwrap_or(self, default: T) -> T {
-    .some(x) -> x,
-    .null(_) -> default
+def[T] Option.unwrap_or(self: Option[T], default: T) -> T {
+    {
+        .some(x) -> x,
+        .null(_) -> default,
+    }(self)
 }
 
-def[T] Option[T].unwrap_or_else(self, default: Func[(), T]) -> T {
-    .some(x) -> x,
-    .null(_) -> default()
+def[T] Option.unwrap_or_else(self: Option[T], default: Func[(), T]) -> T {
+    {
+        .some(x) -> x,
+        .null(_) -> default(),
+    }(self)
 }
 
-def[T] Option[T].and(self, other: Option[T]) -> Option[T] {
-    .null -> .null,
-    _ -> other,
+def[T] Option.and(self: Option[T], other: Option[T]) -> Option[T] {
+    {
+        .null(_) -> .null,
+        _ -> other,
+    }(self)
 }
 
-def[T] Option[T].or(self, other: Option[T]) -> Option[T] {
-    .null -> other,
-    _ -> self
+def[T] Option.or(self: Option[T], other: Option[T]) -> Option[T] {
+    {
+        .null(_) -> other,
+        _ -> self,
+    }(self)
 }
 
-def[T, U] Option[T].flat_map(self, f: Func[T, Option[U]]) -> Option[U] {
-    .some(x) -> f(x),
-    .null -> .null
+def[T, U] Option.flat_map(self: Option[T], f: Func[T, Option[U]]) -> Option[U] {
+    {
+        .some(x) -> f(x),
+        .null(_) -> .null,
+    }(self)
 }
