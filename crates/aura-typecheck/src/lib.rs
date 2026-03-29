@@ -4,6 +4,7 @@ pub mod diagnostics;
 pub mod generics;
 pub mod interfaces;
 pub mod numeric;
+pub mod patterns;
 pub mod resolver;
 pub mod symbols;
 pub mod types;

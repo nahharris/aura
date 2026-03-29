@@ -5,12 +5,14 @@ use aura_frontend::ast::{Decl, Expr, Program};
 use crate::aliases::TypeAliases;
 use crate::diagnostics::Diagnostic;
 use crate::numeric::can_implicitly_widen;
+use crate::patterns::PatternChecker;
 use crate::types::{Ty, TyId, TyInterner};
 
 #[derive(Debug, Clone)]
 pub struct TypeChecker {
     interner: TyInterner,
     aliases: TypeAliases,
+    pattern_checker: PatternChecker,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -22,6 +24,7 @@ impl TypeChecker {
         Self {
             interner,
             aliases,
+            pattern_checker: PatternChecker::new(),
             diagnostics: Vec::new(),
         }
     }
@@ -36,6 +39,24 @@ impl TypeChecker {
                     self.require_assignable(existing, ty, name);
                 }
                 values.insert(name.clone(), ty);
+            }
+
+            if let Decl::Function(function) = decl {
+                if let Expr::MultiArm(arms) = &function.body {
+                    self.diagnostics
+                        .extend(self.pattern_checker.validate_multi_arm_exhaustiveness(arms));
+                    self.diagnostics
+                        .extend(self.pattern_checker.validate_redundancy(arms));
+                }
+            }
+
+            if let Decl::Macro(macro_decl) = decl {
+                if let Expr::MultiArm(arms) = &macro_decl.body {
+                    self.diagnostics
+                        .extend(self.pattern_checker.validate_multi_arm_exhaustiveness(arms));
+                    self.diagnostics
+                        .extend(self.pattern_checker.validate_redundancy(arms));
+                }
             }
         }
 
@@ -129,7 +150,7 @@ impl Default for TypeChecker {
 
 #[cfg(test)]
 mod tests {
-    use aura_frontend::ast::{Decl, Expr, Program};
+    use aura_frontend::ast::{Decl, Expr, FunctionDecl, Pattern, Program, TypeExpr};
 
     use crate::check_module;
 
@@ -150,6 +171,75 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none()); // duplicate symbol from resolver in same scope
+    }
+
+    #[test]
+    fn multi_arm_without_fallback_reports_non_exhaustive() {
+        let program = Program {
+            declarations: vec![Decl::Function(FunctionDecl {
+                static_params: Vec::new(),
+                receiver: Some(TypeExpr::Named {
+                    name: "Result".to_string(),
+                    args: Vec::new(),
+                }),
+                name: "map".to_string(),
+                params: Vec::new(),
+                return_type: TypeExpr::Named {
+                    name: "Result".to_string(),
+                    args: Vec::new(),
+                },
+                body: Expr::MultiArm(vec![aura_frontend::ast::Arm {
+                    patterns: vec![Pattern::DotVariant {
+                        name: "ok".to_string(),
+                        payload: None,
+                    }],
+                    body: Expr::Ident("x".to_string()),
+                }]),
+            })],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked.module.is_none());
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "E_PATTERN_NON_EXHAUSTIVE"));
+    }
+
+    #[test]
+    fn wildcard_then_extra_arm_reports_unreachable() {
+        let program = Program {
+            declarations: vec![Decl::Function(FunctionDecl {
+                static_params: Vec::new(),
+                receiver: Some(TypeExpr::Named {
+                    name: "Result".to_string(),
+                    args: Vec::new(),
+                }),
+                name: "map".to_string(),
+                params: Vec::new(),
+                return_type: TypeExpr::Named {
+                    name: "Result".to_string(),
+                    args: Vec::new(),
+                },
+                body: Expr::MultiArm(vec![
+                    aura_frontend::ast::Arm {
+                        patterns: vec![Pattern::Wildcard],
+                        body: Expr::Ident("x".to_string()),
+                    },
+                    aura_frontend::ast::Arm {
+                        patterns: vec![Pattern::Ident("later".to_string())],
+                        body: Expr::Ident("y".to_string()),
+                    },
+                ]),
+            })],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked.module.is_none());
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "E_PATTERN_UNREACHABLE_ARM"));
     }
 
     #[test]
