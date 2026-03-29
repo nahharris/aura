@@ -170,12 +170,6 @@ pub fn register_extended(vm: &mut Vm) {
     vm.register_native("net_http_post", net_http_post);
 }
 
-/// Backward-compatible convenience for tests/tools that want every native.
-pub fn register_all(vm: &mut Vm) {
-    register_kernel(vm);
-    register_extended(vm);
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
