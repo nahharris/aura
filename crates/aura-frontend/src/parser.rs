@@ -113,9 +113,8 @@ where
             let name = self.expect_ident("expected static parameter name")?;
             let kind = if self.peek_is(&TokenKind::Colon) {
                 self.bump();
-                self.expect_simple(&TokenKind::Static, "expected 'static' after ':'")?;
                 let ty = self.parse_type_expr()?;
-                StaticParamKind::StaticValue(ty)
+                StaticParamKind::Constraint(ty)
             } else {
                 StaticParamKind::Type
             };
@@ -171,6 +170,14 @@ where
     }
 
     fn parse_type_expr(&mut self) -> Result<TypeExpr, ParseError> {
+        if self.peek_ident_is("static") {
+            self.bump();
+            let inner = self
+                .parse_type_expr()
+                .map_err(|_| ParseError::new("expected type expression after 'static'"))?;
+            return Ok(TypeExpr::Static(Box::new(inner)));
+        }
+
         let name = self.expect_ident("expected type identifier")?;
         let args = if self.peek_is(&TokenKind::LBracket) {
             self.parse_static_args()?
@@ -178,7 +185,7 @@ where
             Vec::new()
         };
 
-        Ok(TypeExpr { name, args })
+        Ok(TypeExpr::Named { name, args })
     }
 
     fn parse_static_args(&mut self) -> Result<Vec<StaticArg>, ParseError> {
@@ -226,11 +233,12 @@ where
                 Ok(StaticArg::Value(value))
             }
             TokenKind::Ident(name) => {
-                if name
-                    .chars()
-                    .next()
-                    .map(|ch| ch.is_ascii_uppercase())
-                    .unwrap_or(false)
+                if name == "static"
+                    || name
+                        .chars()
+                        .next()
+                        .map(|ch| ch.is_ascii_uppercase())
+                        .unwrap_or(false)
                 {
                     let ty = self.parse_type_expr()?;
                     Ok(StaticArg::Type(ty))
@@ -321,6 +329,10 @@ where
         }
     }
 
+    fn peek_ident_is(&self, value: &str) -> bool {
+        matches!(self.peek(), TokenKind::Ident(name) if name == value)
+    }
+
     fn expect_simple(&mut self, expected: &TokenKind, message: &str) -> Result<(), ParseError> {
         if self.peek_is(expected) {
             self.bump();
@@ -355,8 +367,7 @@ where
 fn same_token_variant(left: &TokenKind, right: &TokenKind) -> bool {
     matches!(
         (left, right),
-        (TokenKind::Static, TokenKind::Static)
-            | (TokenKind::Defmacro, TokenKind::Defmacro)
+        (TokenKind::Defmacro, TokenKind::Defmacro)
             | (TokenKind::Arrow, TokenKind::Arrow)
             | (TokenKind::Colon, TokenKind::Colon)
             | (TokenKind::Comma, TokenKind::Comma)
@@ -376,7 +387,7 @@ fn same_token_variant(left: &TokenKind, right: &TokenKind) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::ast::{Decl, Expr, StaticArg, StaticParamKind};
+    use crate::ast::{Decl, Expr, StaticArg, StaticParamKind, TypeExpr};
     use crate::parser::Parser;
 
     #[test]
@@ -401,7 +412,7 @@ mod tests {
         ));
         assert!(matches!(
             macro_decl.static_params[1].kind,
-            StaticParamKind::StaticValue(_)
+            StaticParamKind::Constraint(TypeExpr::Static(_))
         ));
     }
 
@@ -540,6 +551,54 @@ mod tests {
         let src = "defmacro m node -> Expr[T] {}";
         let err =
             Parser::parse_source(src).expect_err("should reject invalid macro declaration header");
+        assert!(!err.message.is_empty());
+    }
+
+    #[test]
+    fn parse_static_type_expr_in_return_type() {
+        let src = "name(arg: Int) -> static Expr[Int] {}";
+        let parsed = Parser::parse_source(src).expect("should parse static return type");
+        let decl = parsed.declarations.first().expect("expected declaration");
+
+        let Decl::Assign { value, .. } = decl else {
+            panic!("expected assignment declaration")
+        };
+
+        let Expr::Closure {
+            return_type: Some(return_type),
+            ..
+        } = value
+        else {
+            panic!("expected closure value with return type")
+        };
+
+        assert!(matches!(return_type, TypeExpr::Static(_)));
+    }
+
+    #[test]
+    fn parse_static_type_expr_inside_type_args() {
+        let src = "defmacro[T] m(node: Expr[static Int]) -> Expr[T] {}";
+        let parsed = Parser::parse_source(src).expect("should parse static in type args");
+        let decl = parsed.declarations.first().expect("expected declaration");
+        let Decl::Macro(macro_decl) = decl else {
+            panic!("expected macro declaration")
+        };
+
+        let first_param = macro_decl.params.first().expect("expected one parameter");
+        let TypeExpr::Named { args, .. } = &first_param.ty else {
+            panic!("expected named type for parameter")
+        };
+
+        assert!(matches!(
+            args.first(),
+            Some(StaticArg::Type(TypeExpr::Static(_)))
+        ));
+    }
+
+    #[test]
+    fn dangling_static_type_expr_is_rejected() {
+        let src = "name(arg: Int) -> static {}";
+        let err = Parser::parse_source(src).expect_err("should reject dangling static");
         assert!(!err.message.is_empty());
     }
 }
