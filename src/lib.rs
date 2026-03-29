@@ -32,6 +32,7 @@ pub mod compiler;
 pub mod gc;
 pub mod lexer;
 pub mod parser;
+pub mod stl_registry;
 pub mod token;
 pub mod typechecker;
 pub mod value;

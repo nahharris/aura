@@ -16,12 +16,12 @@
 //! - Fourth pass in `check_program` that walks all function bodies
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 use crate::ast::{
     BinOp, Block, ClosureArm, DeclKind, DefBinding, Expr, Item, LabelledBlock, LocalBinding, Param,
     Pattern, Program, Stmt, TypeExpr, UnOp, UseDecl,
 };
+use crate::stl_registry::{stl_module_exports, stl_module_type, StlModuleExports};
 use crate::token::Span;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -402,61 +402,8 @@ pub struct TypeChecker {
     errors: Vec<TypeError>,
 }
 
-type StlModuleExports = HashMap<String, Type>;
-type StlRegistry = HashMap<String, StlModuleExports>;
-
 impl TypeChecker {
-    fn stl_registry() -> &'static Result<StlRegistry, String> {
-        static REGISTRY: OnceLock<Result<StlRegistry, String>> = OnceLock::new();
-        REGISTRY.get_or_init(Self::build_stl_registry)
-    }
-
-    fn stl_module_exports(path: &str) -> Result<Option<StlModuleExports>, String> {
-        match Self::stl_registry() {
-            Ok(reg) => Ok(reg.get(path).cloned()),
-            Err(err) => Err(err.clone()),
-        }
-    }
-
-    fn stl_module_type(path: &str) -> Result<Option<Type>, String> {
-        Ok(Self::stl_module_exports(path)?.map(|exports| Type::Module {
-            path: path.to_string(),
-            exports,
-        }))
-    }
-
-    fn build_stl_registry() -> Result<StlRegistry, String> {
-        let modules: [(&str, &str); 8] = [
-            ("@stl/core", include_str!("../stl/core.aura")),
-            ("@stl/io", include_str!("../stl/io.aura")),
-            ("@stl/string", include_str!("../stl/string.aura")),
-            ("@stl/list", include_str!("../stl/list.aura")),
-            ("@stl/collections", include_str!("../stl/collections.aura")),
-            ("@stl/bool", include_str!("../stl/bool.aura")),
-            ("@stl/option", include_str!("../stl/option.aura")),
-            ("@stl/result", include_str!("../stl/result.aura")),
-        ];
-
-        let mut registry = HashMap::new();
-        for (path, src) in modules {
-            let (tokens, lex_errs) = crate::lexer::lex(src);
-            if !lex_errs.is_empty() {
-                return Err(format!("failed to lex {path}: {lex_errs:?}"));
-            }
-            let (program, parse_errs) = crate::parser::parse_tokens(tokens);
-            if !parse_errs.is_empty() {
-                return Err(format!("failed to parse {path}: {parse_errs:?}"));
-            }
-
-            let mut checker = TypeChecker::new();
-            let exports = checker.extract_module_exports_strict(path, &program)?;
-            registry.insert(path.to_string(), exports);
-        }
-
-        Ok(registry)
-    }
-
-    fn extract_module_exports_strict(
+    pub(crate) fn extract_module_exports_strict(
         &mut self,
         module_path: &str,
         program: &Program,
@@ -557,7 +504,7 @@ impl TypeChecker {
         Ok(exports)
     }
 
-    fn strict_export_value_type(
+    pub(crate) fn strict_export_value_type(
         &mut self,
         module_path: &str,
         export_name: &str,
@@ -581,7 +528,7 @@ impl TypeChecker {
         }
     }
 
-    fn kernel_builtin_signature(name: &str) -> Option<Type> {
+    pub(crate) fn kernel_builtin_signature(name: &str) -> Option<Type> {
         let list_any = || Type::List(Box::new(Type::Any));
         let f = |params: Vec<Type>, ret: Type| Type::Func {
             params,
@@ -1062,7 +1009,7 @@ impl TypeChecker {
 
     /// Register imported names from a `use` declaration into the environment.
     fn register_use_names(&mut self, use_decl: &UseDecl) {
-        let exports = match Self::stl_module_exports(&use_decl.path) {
+        let exports = match stl_module_exports(&use_decl.path) {
             Ok(Some(exports)) => exports,
             Ok(None) => {
                 self.error(
@@ -1084,7 +1031,7 @@ impl TypeChecker {
         };
 
         match &use_decl.pattern {
-            Pattern::Bind(local_name, _) => match Self::stl_module_type(&use_decl.path) {
+            Pattern::Bind(local_name, _) => match stl_module_type(&use_decl.path) {
                 Ok(Some(module_ty)) => {
                     self.env.bindings.insert(local_name.clone(), module_ty);
                 }
@@ -2814,6 +2761,7 @@ mod tests {
     use crate::ast::Program;
     use crate::lexer::lex;
     use crate::parser::parse_tokens;
+    use crate::stl_registry::stl_registry;
 
     fn program_from_source(src: &str) -> Program {
         let (tokens, lex_errs) = lex(src);
@@ -3574,7 +3522,7 @@ mod tests {
 
     #[test]
     fn test_stl_registry_strict_build() {
-        let reg = TypeChecker::stl_registry();
+        let reg = stl_registry();
         assert!(reg.is_ok(), "stl registry must build: {reg:?}");
         let reg = reg.as_ref().unwrap();
         for path in [
