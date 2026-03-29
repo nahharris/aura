@@ -129,6 +129,7 @@ impl<'heap> Vm<'heap> {
             module_stack: Vec::new(),
         };
         crate::builtins::register_kernel(&mut vm);
+        crate::builtins::register_extended(&mut vm);
         vm
     }
 
