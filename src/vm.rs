@@ -205,22 +205,12 @@ impl<'heap> Vm<'heap> {
     /// - `@stl/<name>` — built-in STL modules (embedded at compile time).
     /// - Other paths produce a runtime error (filesystem loading is a future feature).
     fn resolve_module_source(&self, path: &str) -> VmResult<String> {
-        match path {
-            "@stl/core" => Ok(include_str!("../stl/core.aura").to_string()),
-            "@stl/io" => Ok(include_str!("../stl/io.aura").to_string()),
-            "@stl/string" => Ok(include_str!("../stl/string.aura").to_string()),
-            "@stl/list" => Ok(include_str!("../stl/list.aura").to_string()),
-            "@stl/collections" => Ok(include_str!("../stl/collections.aura").to_string()),
-            "@stl/bool" => Ok(include_str!("../stl/bool.aura").to_string()),
-            "@stl/option" => Ok(include_str!("../stl/option.aura").to_string()),
-            "@stl/result" => Ok(include_str!("../stl/result.aura").to_string()),
-            "@stl/cycle_a" => Ok(include_str!("../stl/cycle_a.aura").to_string()),
-            "@stl/cycle_b" => Ok(include_str!("../stl/cycle_b.aura").to_string()),
-            other => Err(RuntimeError {
-                message: format!("unknown module path: `{other}`"),
+        crate::stl_sources::stl_source(path)
+            .map(std::string::ToString::to_string)
+            .ok_or_else(|| RuntimeError {
+                message: format!("unknown module path: `{path}`"),
                 stack_trace: Vec::new(),
-            }),
-        }
+            })
     }
 
     /// Compile and run a module source in isolation, returning its exports.

@@ -26,19 +26,11 @@ pub(crate) fn stl_registry() -> &'static Result<StlRegistry, String> {
 }
 
 fn build_stl_registry() -> Result<StlRegistry, String> {
-    let modules: [(&str, &str); 8] = [
-        ("@stl/core", include_str!("../stl/core.aura")),
-        ("@stl/io", include_str!("../stl/io.aura")),
-        ("@stl/string", include_str!("../stl/string.aura")),
-        ("@stl/list", include_str!("../stl/list.aura")),
-        ("@stl/collections", include_str!("../stl/collections.aura")),
-        ("@stl/bool", include_str!("../stl/bool.aura")),
-        ("@stl/option", include_str!("../stl/option.aura")),
-        ("@stl/result", include_str!("../stl/result.aura")),
-    ];
-
     let mut registry = HashMap::new();
-    for (path, src) in modules {
+    for path in crate::stl_sources::STL_SIGNATURE_PATHS {
+        let Some(src) = crate::stl_sources::stl_source(path) else {
+            return Err(format!("missing embedded source for {path}"));
+        };
         let (tokens, lex_errs) = crate::lexer::lex(src);
         if !lex_errs.is_empty() {
             return Err(format!("failed to lex {path}: {lex_errs:?}"));
