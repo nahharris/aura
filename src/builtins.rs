@@ -22,6 +22,15 @@
 use crate::value::Value;
 use crate::vm::Vm;
 
+mod reg_core;
+mod reg_dict;
+mod reg_io;
+mod reg_list;
+mod reg_math;
+mod reg_net;
+mod reg_os;
+mod reg_string;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Registration entry point
 // ─────────────────────────────────────────────────────────────────────────────
@@ -36,11 +45,11 @@ pub fn register_kernel(vm: &mut Vm) {
     vm.set_global("false", Value::Bool(false));
     vm.set_global("null", Value::Null);
 
-    register_kernel_core(vm);
-    register_kernel_io(vm);
-    register_kernel_string(vm);
-    register_kernel_list(vm);
-    register_kernel_dict(vm);
+    reg_core::register(vm);
+    reg_io::register(vm);
+    reg_string::register(vm);
+    reg_list::register(vm);
+    reg_dict::register(vm);
 }
 
 /// Register extended host-capability natives into `vm`.
@@ -48,142 +57,9 @@ pub fn register_kernel(vm: &mut Vm) {
 /// These APIs expose filesystem/process/network capabilities and are intended
 /// to sit behind explicit module imports rather than language-core semantics.
 pub fn register_extended(vm: &mut Vm) {
-    register_extended_os(vm);
-    register_extended_math(vm);
-    register_extended_net(vm);
-}
-
-fn register_kernel_core(vm: &mut Vm) {
-    vm.register_native("type_of", core_type_of);
-    vm.register_native("to_str", core_to_str);
-    vm.register_native("to_int", core_to_int);
-    vm.register_native("to_float", core_to_float);
-    vm.register_native("to_bool", core_to_bool);
-    vm.register_native("is_null", core_is_null);
-    vm.register_native("assert", core_assert);
-    vm.register_native("panic", core_panic);
-}
-
-fn register_kernel_io(vm: &mut Vm) {
-    vm.register_native("io_open", io_open);
-    vm.register_native("io_close", io_close);
-    vm.register_native("io_write", io_write);
-    vm.register_native("io_read", io_read);
-    vm.register_native("io_read_line", io_read_line);
-    vm.register_native("io_read_all", io_read_all);
-    vm.register_native("io_flush", io_flush);
-}
-
-fn register_kernel_string(vm: &mut Vm) {
-    vm.register_native("str_len", str_len);
-    vm.register_native("str_upper", str_upper);
-    vm.register_native("str_lower", str_lower);
-    vm.register_native("str_trim", str_trim);
-    vm.register_native("str_trim_start", str_trim_start);
-    vm.register_native("str_trim_end", str_trim_end);
-    vm.register_native("str_starts_with", str_starts_with);
-    vm.register_native("str_ends_with", str_ends_with);
-    vm.register_native("str_contains", str_contains);
-    vm.register_native("str_split", str_split);
-    vm.register_native("str_join", str_join);
-    vm.register_native("str_replace", str_replace);
-    vm.register_native("str_slice", str_slice);
-    vm.register_native("str_find", str_find);
-    vm.register_native("str_repeat", str_repeat);
-    vm.register_native("str_chars", str_chars);
-    vm.register_native("str_bytes", str_bytes);
-    vm.register_native("str_from_chars", str_from_chars);
-    vm.register_native("str_parse_int", str_parse_int);
-    vm.register_native("str_parse_float", str_parse_float);
-}
-
-fn register_kernel_list(vm: &mut Vm) {
-    vm.register_native("list_len", list_len);
-    vm.register_native("list_push", list_push);
-    vm.register_native("list_pop", list_pop);
-    vm.register_native("list_insert", list_insert);
-    vm.register_native("list_remove", list_remove);
-    vm.register_native("list_contains", list_contains);
-    vm.register_native("list_reverse", list_reverse);
-    vm.register_native("list_sort", list_sort);
-    vm.register_native("list_concat", list_concat);
-    vm.register_native("list_slice", list_slice);
-    vm.register_native("list_first", list_first);
-    vm.register_native("list_last", list_last);
-    vm.register_native("list_flatten", list_flatten);
-    vm.register_native("list_range", list_range);
-    vm.register_native("list_index_of", list_index_of);
-}
-
-fn register_kernel_dict(vm: &mut Vm) {
-    vm.register_native("dict_keys", dict_keys);
-    vm.register_native("dict_values", dict_values);
-    vm.register_native("dict_entries", dict_entries);
-    vm.register_native("dict_has", dict_has);
-    vm.register_native("dict_delete", dict_delete);
-    vm.register_native("dict_len", dict_len);
-    vm.register_native("dict_merge", dict_merge);
-}
-
-fn register_extended_os(vm: &mut Vm) {
-    vm.register_native("os_args", os_args);
-    vm.register_native("os_env", os_env);
-    vm.register_native("os_cwd", os_cwd);
-    vm.register_native("os_now", os_now);
-    vm.register_native("os_exists", os_exists);
-    vm.register_native("os_is_file", os_is_file);
-    vm.register_native("os_is_dir", os_is_dir);
-    vm.register_native("os_ls", os_ls);
-    vm.register_native("os_exit", os_exit);
-    vm.register_native("os_delete_file", os_delete_file);
-    vm.register_native("os_mkdir", os_mkdir);
-    vm.register_native("os_sleep", os_sleep);
-}
-
-fn register_extended_math(vm: &mut Vm) {
-    vm.register_native("math_abs", math_abs);
-    vm.register_native("math_floor", math_floor);
-    vm.register_native("math_ceil", math_ceil);
-    vm.register_native("math_round", math_round);
-    vm.register_native("math_sqrt", math_sqrt);
-    vm.register_native("math_pow", math_pow);
-    vm.register_native("math_log", math_log);
-    vm.register_native("math_log2", math_log2);
-    vm.register_native("math_log10", math_log10);
-    vm.register_native("math_sin", math_sin);
-    vm.register_native("math_cos", math_cos);
-    vm.register_native("math_tan", math_tan);
-    vm.register_native("math_asin", math_asin);
-    vm.register_native("math_acos", math_acos);
-    vm.register_native("math_atan", math_atan);
-    vm.register_native("math_atan2", math_atan2);
-    vm.register_native("math_min", math_min);
-    vm.register_native("math_max", math_max);
-    vm.register_native("math_clamp", math_clamp);
-    vm.register_native("math_random", math_random);
-    vm.register_native("math_pi", math_pi);
-    vm.register_native("math_e", math_e);
-    vm.register_native("math_inf", math_inf);
-    vm.register_native("math_is_nan", math_is_nan);
-    vm.register_native("math_is_inf", math_is_inf);
-    vm.register_native("math_trunc", math_trunc);
-    vm.register_native("math_fract", math_fract);
-    vm.register_native("math_sign", math_sign);
-}
-
-fn register_extended_net(vm: &mut Vm) {
-    vm.register_native("net_tcp_connect", net_tcp_connect);
-    vm.register_native("net_tcp_listen", net_tcp_listen);
-    vm.register_native("net_tcp_accept", net_tcp_accept);
-    vm.register_native("net_tcp_send", net_tcp_send);
-    vm.register_native("net_tcp_recv", net_tcp_recv);
-    vm.register_native("net_tcp_close", net_tcp_close);
-    vm.register_native("net_udp_bind", net_udp_bind);
-    vm.register_native("net_udp_send_to", net_udp_send_to);
-    vm.register_native("net_udp_recv_from", net_udp_recv_from);
-    vm.register_native("net_udp_close", net_udp_close);
-    vm.register_native("net_http_get", net_http_get);
-    vm.register_native("net_http_post", net_http_post);
+    reg_os::register(vm);
+    reg_math::register(vm);
+    reg_net::register(vm);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
