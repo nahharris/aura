@@ -119,12 +119,20 @@ pub fn typecheck_program(program: &ast::Program) -> AuraResult<()> {
 ///
 /// `file_path` is used only for error messages and module resolution.
 pub fn run_source(src: &str, file_path: &str) -> AuraResult<()> {
+    run_source_with_profile(src, file_path, vm::RuntimeProfile::KernelOnly)
+}
+
+/// Full pipeline with explicit runtime profile selection.
+pub fn run_source_with_profile(
+    src: &str,
+    file_path: &str,
+    profile: vm::RuntimeProfile,
+) -> AuraResult<()> {
     let program = parse_source(src)?;
     typecheck_program(&program)?;
     let chunk = compile_program(program)?;
     let mut heap = gc::GcHeap::new();
-    let mut machine =
-        vm::Vm::new_with_profile(&mut heap, file_path, vm::RuntimeProfile::KernelOnly);
+    let mut machine = vm::Vm::new_with_profile(&mut heap, file_path, profile);
 
     machine
         .run(chunk)

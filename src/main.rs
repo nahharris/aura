@@ -101,7 +101,7 @@ fn read_source(path: &str) -> String {
 /// Execute a source file.
 fn run_file(path: &str) {
     let src = read_source(path);
-    match aura::run_source(&src, path) {
+    match aura::run_source_with_profile(&src, path, aura::vm::RuntimeProfile::FullHost) {
         Ok(()) => {}
         Err(e) => {
             eprintln!("{}", format_error(path, &src, &e));

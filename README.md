@@ -197,6 +197,7 @@ Runtime native tiers:
 - Kernel tier is minimal and always available (`io_*`, `str_*`, `list_*`, `dict_*`, core conversion/assert/panic).
 - Extended tier (`os_*`, `math_*`, `net_*`) is host-capability surface. It is currently registered by default in `Vm::new` and can be narrowed in future host profiles.
 - `run_source` executes with a kernel-only runtime profile by default.
+- CLI execution (`aura file.aura`) uses the full-host runtime profile.
 
 ## Current Status
 
