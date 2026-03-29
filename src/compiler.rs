@@ -1048,7 +1048,7 @@ impl Compiler {
                 self.emit_u16(OpCode::Const, idx, span.line);
             }
             Expr::Builtin { name, span } => {
-                // builtin("name") loads the native function from globals
+                // `builtin name` loads the native function from globals.
                 // Natives are registered as globals at VM startup
                 let idx = self.chunk_mut().add_str(&name);
                 self.emit_u16(OpCode::LoadGlobal, idx, span.line);

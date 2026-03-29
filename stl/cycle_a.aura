@@ -1,0 +1,2 @@
+use b = "@stl/cycle_b";
+def cycle_a = true;

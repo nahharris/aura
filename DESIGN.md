@@ -42,7 +42,7 @@ An identifier starts with a letter or `_`, followed by any number of letters, di
 identifier ::= (letter | "_") (letter | digit | "_")*
 ```
 
-**Reserved keywords:** `let`, `fn`, `type`, `macro`, `pub`, `use`, `return`, `break`, `continue`, `self`
+**Reserved keywords:** `let`, `fn`, `type`, `macro`, `use`, `return`, `break`, `continue`, `self`
 
 The following are **not** reserved keywords — they lex as plain identifiers and are recognised contextually:
 - Declaration starters: `def`, `defmacro`
@@ -1181,10 +1181,10 @@ The fields passed to `.render` must match the interpolation identifiers in the t
 
 *(Preliminary — full module system to be specified.)*
 
-Each source file is a module. A module is a named collection of static declarations. Declarations are private by default; `pub` makes them visible to importing modules.
+Each source file is a module. A module is a named collection of static declarations. In v1, all top-level declarations are exported.
 
 ```aura
-pub def greet(name: String) -> String {
+def greet(name: String) -> String {
     "Hello, $(name)!"
 }
 ```
@@ -1226,6 +1226,24 @@ my_print("hello");
 Module paths:
 - `@name/...` — library reference resolved via the library lookup path.
 - `./...` or `../...` — relative path from the importing file's directory.
+
+Import resolution rules (current runtime):
+- Modules are loaded lazily at `use` sites.
+- Re-importing the same module path reuses a cached module value (single evaluation semantics).
+- Cyclic imports are runtime errors with an import-chain diagnostic.
+
+### `builtin` — Kernel binding form
+
+`builtin` is a contextual macro-like form that binds a kernel native symbol by identifier.
+
+```aura
+def _io_write = builtin io_write;
+def _to_str = builtin to_str;
+```
+
+Rules:
+- Only bare identifiers are accepted (`builtin io_write`).
+- String/call syntax is invalid (`builtin("io_write")` is rejected).
 
 ---
 

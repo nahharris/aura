@@ -12,34 +12,34 @@
 // Kernel bindings
 // ─────────────────────────────────────────────────────────────────────────────
 
-def _list_len      = builtin("list_len");
-def _list_push     = builtin("list_push");
-def _list_pop      = builtin("list_pop");
-def _list_contains = builtin("list_contains");
-def _list_slice    = builtin("list_slice");
-def _list_concat   = builtin("list_concat");
-def _list_reverse  = builtin("list_reverse");
-def _list_index_of = builtin("list_index_of");
+def _list_len      = builtin list_len;
+def _list_push     = builtin list_push;
+def _list_pop      = builtin list_pop;
+def _list_contains = builtin list_contains;
+def _list_slice    = builtin list_slice;
+def _list_concat   = builtin list_concat;
+def _list_reverse  = builtin list_reverse;
+def _list_index_of = builtin list_index_of;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Inspection
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Returns the number of elements in the list.
-pub def List.len(self: List) -> Int { _list_len(self) }
+def List.len(self: List) -> Int { _list_len(self) }
 
 /// Returns `true` if the list has no elements.
-pub def List.isEmpty(self: List) -> Bool { _list_len(self) == 0 }
+def List.isEmpty(self: List) -> Bool { _list_len(self) == 0 }
 
 /// Returns `true` if the list contains `value`.
-pub def List.contains(self: List, value: Any) -> Bool { _list_contains(self, value) }
+def List.contains(self: List, value: Any) -> Bool { _list_contains(self, value) }
 
 /// Returns the index of the first occurrence of `value`, or `-1` if not found.
-pub def List.indexOf(self: List, value: Any) -> Int { _list_index_of(self, value) }
+def List.indexOf(self: List, value: Any) -> Int { _list_index_of(self, value) }
 
 /// Returns the element at index `i`, or `null` if out of bounds.
 /// Negative indices count from the end (e.g. `-1` is the last element).
-pub def List.get(self: List, i: Int) -> Any {
+def List.get(self: List, i: Int) -> Any {
     let n: Int = _list_len(self);
     let actual: Int = if (i < 0) { n + i } else { i };
     if (actual < 0 || actual >= n) {
@@ -54,30 +54,30 @@ pub def List.get(self: List, i: Int) -> Any {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Appends `item` to the end of the list (mutates in place).
-pub def List.push(self: List, item: Any) -> Void { _list_push(self, item) }
+def List.push(self: List, item: Any) -> Void { _list_push(self, item) }
 
 /// Removes and returns the last element, or `null` if the list is empty.
-pub def List.pop(self: List) -> Any { _list_pop(self) }
+def List.pop(self: List) -> Any { _list_pop(self) }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Slicing / Combining
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Returns a new list containing elements from index `start` to `end` (exclusive).
-pub def List.slice(self: List, start: Int, end: Int) -> List { _list_slice(self, start, end) }
+def List.slice(self: List, start: Int, end: Int) -> List { _list_slice(self, start, end) }
 
 /// Returns a new list that is the concatenation of `self` and `other`.
-pub def List.concat(self: List, other: List) -> List { _list_concat(self, other) }
+def List.concat(self: List, other: List) -> List { _list_concat(self, other) }
 
 /// Returns a new list with the elements in reverse order.
-pub def List.reverse(self: List) -> List { _list_reverse(self) }
+def List.reverse(self: List) -> List { _list_reverse(self) }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Higher-order
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Returns a new list produced by applying `f` to each element.
-pub def List.map(self: List, f: Any) -> List {
+def List.map(self: List, f: Any) -> List {
     let result: List = [];
     let i: Int = 0;
     let n: Int = _list_len(self);
@@ -89,7 +89,7 @@ pub def List.map(self: List, f: Any) -> List {
 }
 
 /// Returns a new list containing only the elements for which `pred` returns `true`.
-pub def List.filter(self: List, pred: Any) -> List {
+def List.filter(self: List, pred: Any) -> List {
     let result: List = [];
     let i: Int = 0;
     let n: Int = _list_len(self);
@@ -103,7 +103,7 @@ pub def List.filter(self: List, pred: Any) -> List {
 }
 
 /// Calls `f` with each element. Returns `null`.
-pub def List.each(self: List, f: Any) -> Void {
+def List.each(self: List, f: Any) -> Void {
     let i: Int = 0;
     let n: Int = _list_len(self);
     loop while { i < n } do {

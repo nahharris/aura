@@ -18,7 +18,7 @@
 //! exceeds its threshold.  All live `Value`s on the stack and in the globals
 //! table are treated as roots.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::bytecode::{Chunk, Constant, FnProto, OpCode};
 use crate::gc::GcHeap;
@@ -106,6 +106,12 @@ pub struct Vm<'heap> {
     file_path: String,
     /// Registered native functions (index → function).
     natives: Vec<(String, NativeFn)>,
+    /// Module export cache keyed by module path.
+    module_cache: HashMap<String, HashMap<String, Value>>,
+    /// Cached namespace module objects keyed by module path.
+    module_objects: HashMap<String, Value>,
+    /// Active module import chain for cycle detection.
+    module_stack: Vec<String>,
 }
 
 impl<'heap> Vm<'heap> {
@@ -118,8 +124,11 @@ impl<'heap> Vm<'heap> {
             globals: HashMap::new(),
             file_path: file_path.to_string(),
             natives: Vec::new(),
+            module_cache: HashMap::new(),
+            module_objects: HashMap::new(),
+            module_stack: Vec::new(),
         };
-        crate::builtins::register_all(&mut vm);
+        crate::builtins::register_kernel(&mut vm);
         vm
     }
 
@@ -134,7 +143,7 @@ impl<'heap> Vm<'heap> {
 
     /// Insert a plain value directly into the global environment.
     ///
-    /// Used by [`crate::builtins::register_all`] to seed prelude constants
+    /// Used by [`crate::builtins::register_kernel`] to seed prelude constants
     /// (`true`, `false`, `null`) that are plain values rather than native fns.
     pub fn set_global(&mut self, name: &str, val: Value) {
         self.globals.insert(name.to_string(), val);
@@ -201,6 +210,12 @@ impl<'heap> Vm<'heap> {
             "@stl/io" => Ok(include_str!("../stl/io.aura").to_string()),
             "@stl/string" => Ok(include_str!("../stl/string.aura").to_string()),
             "@stl/list" => Ok(include_str!("../stl/list.aura").to_string()),
+            "@stl/collections" => Ok(include_str!("../stl/collections.aura").to_string()),
+            "@stl/bool" => Ok(include_str!("../stl/bool.aura").to_string()),
+            "@stl/option" => Ok(include_str!("../stl/option.aura").to_string()),
+            "@stl/result" => Ok(include_str!("../stl/result.aura").to_string()),
+            "@stl/cycle_a" => Ok(include_str!("../stl/cycle_a.aura").to_string()),
+            "@stl/cycle_b" => Ok(include_str!("../stl/cycle_b.aura").to_string()),
             other => Err(RuntimeError {
                 message: format!("unknown module path: `{other}`"),
                 stack_trace: Vec::new(),
@@ -211,8 +226,8 @@ impl<'heap> Vm<'heap> {
     /// Compile and run a module source in isolation, returning its exports.
     ///
     /// The sub-VM starts with only the built-in native functions (registered by
-    /// `Vm::new` via `register_all`).  It does NOT inherit any user-defined or
-    /// STL-preloaded globals from the caller VM — this ensures the exports map
+    /// `Vm::new` via `register_kernel`). It does NOT inherit any user-defined
+    /// globals from the caller VM — this ensures the exports map
     /// contains exactly the names the module itself defines.
     fn run_module_isolated(
         &mut self,
@@ -251,14 +266,14 @@ impl<'heap> Vm<'heap> {
         let heap_ptr: *mut crate::gc::GcHeap = self.heap;
         let heap_ref: &'heap mut crate::gc::GcHeap = unsafe { &mut *heap_ptr };
 
-        // The sub-VM starts fresh: `Vm::new` registers all native builtins.
+        // The sub-VM starts fresh: `Vm::new` registers the minimal native kernel.
         // We do NOT copy self.globals — that would include preloaded STL globals
         // and would make all exports appear as "already existed".
         let mut sub_vm = Vm::new(heap_ref, name);
+        sub_vm.module_stack = self.module_stack.clone();
 
         // Snapshot the native-only globals so we can filter them from exports.
-        let native_keys: std::collections::HashSet<String> =
-            sub_vm.globals.keys().cloned().collect();
+        let native_keys: HashSet<String> = sub_vm.globals.keys().cloned().collect();
 
         sub_vm.run_module(chunk, name)?;
 
@@ -269,6 +284,30 @@ impl<'heap> Vm<'heap> {
             .filter(|(k, _)| !native_keys.contains(k))
             .collect();
 
+        Ok(exports)
+    }
+
+    /// Load module exports with cache and cycle detection.
+    fn load_module_exports(&mut self, path: &str) -> VmResult<HashMap<String, Value>> {
+        if let Some(exports) = self.module_cache.get(path) {
+            return Ok(exports.clone());
+        }
+
+        if self.module_stack.iter().any(|m| m == path) {
+            let mut chain = self.module_stack.clone();
+            chain.push(path.to_string());
+            return self.runtime_error(format!("module import cycle: {}", chain.join(" -> ")));
+        }
+
+        self.module_stack.push(path.to_string());
+        let result = (|| {
+            let module_src = self.resolve_module_source(path)?;
+            self.run_module_isolated(&module_src, path)
+        })();
+        self.module_stack.pop();
+
+        let exports = result?;
+        self.module_cache.insert(path.to_string(), exports.clone());
         Ok(exports)
     }
 
@@ -1015,12 +1054,7 @@ impl<'heap> Vm<'heap> {
                     };
                     let path = self.constant_as_str(path_idx)?.to_string();
 
-                    // Resolve the module source using the registered loader.
-                    let module_src = self.resolve_module_source(&path)?;
-
-                    // Compile + run the module in an isolated VM that shares our
-                    // heap and builtins, collecting its globals as module exports.
-                    let exports = self.run_module_isolated(&module_src, &path)?;
+                    let exports = self.load_module_exports(&path)?;
 
                     // Spill ALL exports into the caller's globals so that any
                     // internal dependencies (e.g. `_io_write` used by `println`)
@@ -1038,10 +1072,16 @@ impl<'heap> Vm<'heap> {
                             frame.read_u16() as usize
                         };
                         let local_name = self.constant_as_str(local_name_idx)?.to_string();
-                        let mod_val = Value::Module(self.heap.alloc(ObjModule {
-                            name: path.clone(),
-                            exports,
-                        }));
+                        let mod_val = if let Some(v) = self.module_objects.get(&path) {
+                            v.clone()
+                        } else {
+                            let v = Value::Module(self.heap.alloc(ObjModule {
+                                name: path.clone(),
+                                exports,
+                            }));
+                            self.module_objects.insert(path.clone(), v.clone());
+                            v
+                        };
                         self.globals.insert(local_name, mod_val);
                     } else {
                         // Destructuring import: read count, then (exported_name, local_name) pairs.
@@ -1663,6 +1703,28 @@ mod tests {
     #[test]
     fn test_use_unknown_module_is_runtime_error() {
         expect_runtime_error(r#"use bad = "@stl/nonexistent";"#, "unknown module path");
+    }
+
+    #[test]
+    fn test_use_module_cache_preserves_identity() {
+        let vm = run_src(
+            r#"use a = "@stl/io";
+               use b = "@stl/io";"#,
+        )
+        .expect("repeated imports should succeed");
+
+        let Some(Value::Module(a)) = vm.globals.get("a") else {
+            panic!("expected module `a`");
+        };
+        let Some(Value::Module(b)) = vm.globals.get("b") else {
+            panic!("expected module `b`");
+        };
+        assert_eq!(a, b, "cached module value should be reused");
+    }
+
+    #[test]
+    fn test_use_module_cycle_is_runtime_error() {
+        expect_runtime_error(r#"use a = "@stl/cycle_a";"#, "module import cycle");
     }
 
     // ── String interpolation runtime correctness ───────────────────────────────

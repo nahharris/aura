@@ -19,4 +19,4 @@
 ///
 /// The parameter label `with` names the closure argument for readable calls:
 /// `match(status, f with: { ... })`.
-pub def[T, U] match(value: T, f with: Func[T, U]) -> U { f(value) }
+def[T, U] match(value: T, f with: Func[T, U]) -> U { f(value) }

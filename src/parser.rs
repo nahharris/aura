@@ -216,8 +216,7 @@ impl Parser {
                     break;
                 }
                 // Common declaration starters.
-                TokenKind::Pub
-                | TokenKind::Use
+                TokenKind::Use
                 | TokenKind::Let
                 | TokenKind::Return
                 | TokenKind::Break
@@ -334,10 +333,9 @@ impl Parser {
         })
     }
 
-    /// Parse a declaration (optionally preceded by `pub`).
+    /// Parse a declaration.
     fn parse_decl(&mut self) -> Result<Decl, ParseError> {
         let start = self.cur_span();
-        let public = self.eat(TokenKind::Pub);
 
         let kind = if self.cur_is_def_family() {
             let name = match self.cur_kind() {
@@ -358,7 +356,7 @@ impl Parser {
         };
 
         let span = start.merge(self.cur_span());
-        Ok(Decl { public, kind, span })
+        Ok(Decl { kind, span })
     }
 
     // ── def ───────────────────────────────────────────────────────────────────
@@ -763,14 +761,8 @@ impl Parser {
         }
         let mut mode = Mode::Tuple;
         if let TokenKind::Ident(ref name) = self.cur_kind().clone() {
-            let has_lower_start = name
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_lowercase());
-            let has_upper_start = name
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_uppercase());
+            let has_lower_start = name.chars().next().is_some_and(|c| c.is_ascii_lowercase());
+            let has_upper_start = name.chars().next().is_some_and(|c| c.is_ascii_uppercase());
             mode = match self.peek_kind() {
                 TokenKind::Colon => Mode::Struct,
                 TokenKind::Comma | TokenKind::RParen if has_lower_start && !has_upper_start => {
@@ -811,9 +803,9 @@ impl Parser {
                         };
                         items.push((Some(field_name), void_ty));
                     } else {
-                        return Err(self.error(
-                            "expected `:` or `,` / `)` after struct field name".into(),
-                        ));
+                        return Err(
+                            self.error("expected `:` or `,` / `)` after struct field name".into())
+                        );
                     }
                     let _ = field_start;
                 }
@@ -915,9 +907,7 @@ impl Parser {
             };
 
             // `let _: Type = expr` — `_` alone is `Wildcard`; `: Type` is not part of patterns.
-            if matches!(pattern, Pattern::Wildcard(_))
-                && ty.is_none()
-                && self.eat(TokenKind::Colon)
+            if matches!(pattern, Pattern::Wildcard(_)) && ty.is_none() && self.eat(TokenKind::Colon)
             {
                 ty = Some(self.parse_type_expr()?);
             }
@@ -1136,30 +1126,9 @@ impl Parser {
         Ok(LabelledBlock { label, block, span })
     }
 
-    /// Parse a builtin reference: `builtin("name")`
+    /// Parse a builtin reference: `builtin name`
     fn parse_builtin(&mut self, start: Span) -> Result<Expr, ParseError> {
-        self.expect(TokenKind::LParen)?;
-        let name = match self.cur_kind().clone() {
-            TokenKind::Str(parts) => {
-                self.advance();
-                // Extract the raw string from parts
-                if parts.len() == 1 {
-                    if let StringPart::Raw(s) = &parts[0] {
-                        s.clone()
-                    } else {
-                        return Err(
-                            self.error("builtin name must be a plain string literal".to_string())
-                        );
-                    }
-                } else {
-                    return Err(
-                        self.error("builtin name must be a plain string literal".to_string())
-                    );
-                }
-            }
-            _ => return Err(self.error("expected string literal for builtin name".to_string())),
-        };
-        self.expect(TokenKind::RParen)?;
+        let name = self.expect_ident()?;
         let span = start.merge(self.cur_span());
         Ok(Expr::Builtin { name, span })
     }
@@ -1852,7 +1821,11 @@ impl Parser {
     }
 
     /// `array[ e1, e2, ... ]` or `set[ e1, e2, ... ]` — list syntax only (no dict `key = val`).
-    fn parse_array_or_set_literal(&mut self, kind: String, start: Span) -> Result<Expr, ParseError> {
+    fn parse_array_or_set_literal(
+        &mut self,
+        kind: String,
+        start: Span,
+    ) -> Result<Expr, ParseError> {
         let items = self.parse_list_only_bracket_contents()?;
         let span = start.merge(self.cur_span());
         match kind.as_str() {
@@ -2605,6 +2578,27 @@ mod tests {
         } else {
             panic!("expected use decl");
         }
+    }
+
+    #[test]
+    fn test_parse_builtin_prefix_ident() {
+        let e = parse_expr_ok("builtin io_write");
+        assert!(matches!(e, Expr::Builtin { name, .. } if name == "io_write"));
+    }
+
+    #[test]
+    fn test_parse_builtin_string_form_rejected() {
+        let (_, errs) = parse(r#"def f() { builtin("io_write"); }"#);
+        assert!(!errs.is_empty(), "builtin string form must be rejected");
+    }
+
+    #[test]
+    fn test_parse_pub_decl_rejected() {
+        let (_, errs) = parse("pub def x = 1;");
+        assert!(
+            !errs.is_empty(),
+            "pub-prefixed declarations must be rejected"
+        );
     }
 
     #[test]

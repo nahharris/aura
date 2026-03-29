@@ -722,14 +722,14 @@ mod tests {
     fn test_keywords() {
         // `const`, `true`, `false`, `null` are no longer reserved keywords;
         // they lex as plain identifiers. The prelude provides them as globals.
-        let k = kinds("let pub use return break continue self");
+        let k = kinds("let use return break continue self pub");
         assert_eq!(k[0], TokenKind::Let);
-        assert_eq!(k[1], TokenKind::Pub);
-        assert_eq!(k[2], TokenKind::Use);
-        assert_eq!(k[3], TokenKind::Return);
-        assert_eq!(k[4], TokenKind::Break);
-        assert_eq!(k[5], TokenKind::Continue);
-        assert_eq!(k[6], TokenKind::SelfKw);
+        assert_eq!(k[1], TokenKind::Use);
+        assert_eq!(k[2], TokenKind::Return);
+        assert_eq!(k[3], TokenKind::Break);
+        assert_eq!(k[4], TokenKind::Continue);
+        assert_eq!(k[5], TokenKind::SelfKw);
+        assert_eq!(k[6], TokenKind::Ident("pub".into()));
     }
 
     #[test]

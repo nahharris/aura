@@ -14,7 +14,7 @@
 //!
 //! | Category | Examples |
 //! |----------|----------|
-//! | Structural / module / jump keywords | `let`, `pub`, `use`, `return`, `break`, `continue` |
+//! | Structural / module / jump keywords | `let`, `use`, `return`, `break`, `continue` |
 //! | Reserved / forward-compat / `self` | `fn`, `type`, `macro`, `self` |
 //! | Contextual only (plain [`TokenKind::Ident`]) | `def`, `defmacro`, `if`, `cases`, `loop`, `const`, … |
 //!
@@ -198,8 +198,6 @@ pub enum TokenKind {
     Type,
     /// `macro` — kept for forward-compat
     Macro,
-    /// `pub`
-    Pub,
     /// `use`
     Use,
     /// `return`
@@ -307,7 +305,6 @@ impl fmt::Display for TokenKind {
             TokenKind::Fn => write!(f, "`fn`"),
             TokenKind::Type => write!(f, "`type`"),
             TokenKind::Macro => write!(f, "`macro`"),
-            TokenKind::Pub => write!(f, "`pub`"),
             TokenKind::Use => write!(f, "`use`"),
             TokenKind::Return => write!(f, "`return`"),
             TokenKind::Break => write!(f, "`break`"),
@@ -391,7 +388,6 @@ pub fn keyword(s: &str) -> Option<TokenKind> {
         "fn" => Some(TokenKind::Fn),
         "type" => Some(TokenKind::Type),
         "macro" => Some(TokenKind::Macro),
-        "pub" => Some(TokenKind::Pub),
         "use" => Some(TokenKind::Use),
         "return" => Some(TokenKind::Return),
         "break" => Some(TokenKind::Break),

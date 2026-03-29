@@ -182,6 +182,15 @@ use io = "@stl/io";           // Namespace import
 use (map = my_map) = "@stl/list";  // Rename on import
 ```
 
+Kernel bindings inside STL modules use the `builtin` form with bare identifiers:
+
+```aura
+def _io_write = builtin io_write;
+def _to_str = builtin to_str;
+```
+
+The old string form is invalid: `builtin("io_write")`.
+
 ## Current Status
 
 ### Completed
@@ -225,8 +234,8 @@ Macros will be defined using Aura syntax and process entire forms:
 
 ```aura
 // Macro application (no parentheses required)
-pub def foo() -> Void { ... }
-// Equivalent to: pub (def foo() -> Void { ... })
+def foo() -> Void { ... }
+// Equivalent to: def(foo() -> Void { ... })
 
 // Macros with type parameters
 get["/help"] def Server.help() -> Response { ... }

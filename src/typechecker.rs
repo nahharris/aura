@@ -84,6 +84,12 @@ pub enum Type {
         methods: Vec<(std::string::String, Type)>,
     },
 
+    /// Imported module namespace with known exports.
+    Module {
+        path: std::string::String,
+        exports: HashMap<std::string::String, Type>,
+    },
+
     // ── Function types ──────────────────────────────────────────────────────
     /// `Func[(Param, ...), Ret]`
     Func {
@@ -184,6 +190,7 @@ impl Type {
                     format!("interface({})", parts.join(", "))
                 }
             }
+            Type::Module { path, .. } => format!("Module[{path}]"),
             Type::Func { params, ret } => {
                 let ps: Vec<_> = params.iter().map(|t| t.display_name()).collect();
                 format!("Func[({}), {}]", ps.join(", "), ret.display_name())
@@ -395,6 +402,148 @@ pub struct TypeChecker {
 }
 
 impl TypeChecker {
+    fn stl_module_exports(path: &str) -> Option<HashMap<String, Type>> {
+        let mut exports = HashMap::new();
+        match path {
+            "@stl/core" => {
+                exports.insert(
+                    "match".into(),
+                    Type::Func {
+                        params: vec![Type::Any, Type::Any],
+                        ret: Box::new(Type::Any),
+                    },
+                );
+            }
+            "@stl/io" => {
+                for name in ["print", "println", "eprint", "eprintln"] {
+                    exports.insert(
+                        name.into(),
+                        Type::Func {
+                            params: vec![Type::Any],
+                            ret: Box::new(Type::Void),
+                        },
+                    );
+                }
+                exports.insert("_io_write".into(), Type::Any);
+                exports.insert("_to_str".into(), Type::Any);
+            }
+            "@stl/string" => {
+                for name in [
+                    "_str_len",
+                    "_str_upper",
+                    "_str_lower",
+                    "_str_trim",
+                    "_str_contains",
+                    "_str_starts_with",
+                    "_str_ends_with",
+                    "_str_split",
+                    "_str_join",
+                    "_str_replace",
+                    "_str_slice",
+                    "_str_parse_int",
+                    "_str_parse_float",
+                    "String.len",
+                    "String.isEmpty",
+                    "String.contains",
+                    "String.startsWith",
+                    "String.endsWith",
+                    "String.upper",
+                    "String.lower",
+                    "String.trim",
+                    "String.replace",
+                    "String.slice",
+                    "String.split",
+                    "String.join",
+                    "String.parseInt",
+                    "String.parseFloat",
+                ] {
+                    exports.insert(name.into(), Type::Any);
+                }
+            }
+            "@stl/list" => {
+                for name in [
+                    "_list_len",
+                    "_list_push",
+                    "_list_pop",
+                    "_list_contains",
+                    "_list_slice",
+                    "_list_concat",
+                    "_list_reverse",
+                    "_list_index_of",
+                    "List.len",
+                    "List.isEmpty",
+                    "List.contains",
+                    "List.indexOf",
+                    "List.get",
+                    "List.push",
+                    "List.pop",
+                    "List.slice",
+                    "List.concat",
+                    "List.reverse",
+                    "List.map",
+                    "List.filter",
+                    "List.each",
+                ] {
+                    exports.insert(name.into(), Type::Any);
+                }
+            }
+            "@stl/collections" => {
+                exports.insert("__collections_prelude_loaded".into(), Type::Bool);
+            }
+            "@stl/bool" => {
+                for name in ["Bool", "Bool.not", "Bool.and", "Bool.or", "Bool.toString"] {
+                    exports.insert(name.into(), Type::Any);
+                }
+            }
+            "@stl/option" => {
+                for name in [
+                    "Option",
+                    "Option.truthy",
+                    "Option.is_some",
+                    "Option.is_none",
+                    "Option.unwrap",
+                    "Option.unwrap_or",
+                    "Option.unwrap_or_else",
+                    "Option.and",
+                    "Option.or",
+                    "Option.flat_map",
+                ] {
+                    exports.insert(name.into(), Type::Any);
+                }
+            }
+            "@stl/result" => {
+                for name in [
+                    "Result",
+                    "Result.is_ok",
+                    "Result.is_err",
+                    "Result.ok",
+                    "Result.err",
+                    "Result.unwrap",
+                    "Result.unwrap_or",
+                    "Result.unwrap_or_else",
+                    "Result.unwrap_err",
+                    "Result.unwrap_err_or",
+                    "Result.unwrap_err_or_else",
+                    "Result.map",
+                    "Result.map_err",
+                    "Result.and_then",
+                    "Result.or_else",
+                ] {
+                    exports.insert(name.into(), Type::Any);
+                }
+            }
+            _ => return None,
+        }
+        Some(exports)
+    }
+
+    fn stl_module_type(path: &str) -> Option<Type> {
+        Self::stl_module_exports(path).map(|exports| Type::Module {
+            path: path.to_string(),
+            exports,
+        })
+    }
+
     /// Create a new type checker with prelude globals pre-registered.
     pub fn new() -> Self {
         let mut tc = TypeChecker {
@@ -837,22 +986,37 @@ impl TypeChecker {
             .collect()
     }
 
-    /// Register imported names from a `use` declaration into the environment as `Type::Any`.
-    ///
-    /// This ensures that body checking does not produce "unknown identifier" errors
-    /// for names brought into scope via `use`.  The actual types are not known statically
-    /// without resolving the module — using `Any` is the safe conservative choice.
+    /// Register imported names from a `use` declaration into the environment.
     fn register_use_names(&mut self, use_decl: &UseDecl) {
+        let Some(exports) = Self::stl_module_exports(&use_decl.path) else {
+            self.error(
+                format!(
+                    "unknown module path `{}` in typechecker import pass",
+                    use_decl.path
+                ),
+                use_decl.span,
+            );
+            return;
+        };
+
         match &use_decl.pattern {
             Pattern::Bind(local_name, _) => {
-                // Namespace import: `use io = "@stl/io"` — bind `io` as Any.
-                self.env.bindings.insert(local_name.clone(), Type::Any);
+                if let Some(module_ty) = Self::stl_module_type(&use_decl.path) {
+                    self.env.bindings.insert(local_name.clone(), module_ty);
+                }
             }
             Pattern::Struct { fields, .. } => {
-                // Destructuring import: `use (print, read = my_read) = "@stl/io"`
+                // Destructuring import: validate exports and bind local aliases.
                 for field in fields {
+                    if !exports.contains_key(&field.name) {
+                        self.error(
+                            format!("module `{}` has no export `{}`", use_decl.path, field.name),
+                            field.span,
+                        );
+                    }
                     let local_name = field.binding.as_ref().unwrap_or(&field.name);
-                    self.env.bindings.insert(local_name.clone(), Type::Any);
+                    let ty = exports.get(&field.name).cloned().unwrap_or(Type::Any);
+                    self.env.bindings.insert(local_name.clone(), ty);
                 }
             }
             _ => {
@@ -1133,14 +1297,28 @@ impl TypeChecker {
             return;
         }
         // Array ↔ Tuple: same runtime representation for homogeneous fixed data
-        if let (Type::Array { elem: e_arr, len: n_arr }, Type::Tuple(elems)) = (from_ty, to_ty) {
+        if let (
+            Type::Array {
+                elem: e_arr,
+                len: n_arr,
+            },
+            Type::Tuple(elems),
+        ) = (from_ty, to_ty)
+        {
             if (*n_arr == 0 || elems.len() == *n_arr)
                 && elems.iter().all(|t| self.is_assignable(e_arr, t))
             {
                 return;
             }
         }
-        if let (Type::Tuple(elems), Type::Array { elem: e_arr, len: n_arr }) = (from_ty, to_ty) {
+        if let (
+            Type::Tuple(elems),
+            Type::Array {
+                elem: e_arr,
+                len: n_arr,
+            },
+        ) = (from_ty, to_ty)
+        {
             if (*n_arr == 0 || elems.len() == *n_arr)
                 && elems.iter().all(|t| self.is_assignable(t, e_arr))
             {
@@ -1196,7 +1374,7 @@ impl TypeChecker {
             // `.ok`, `.null` — variant constructors; type depends on context
             Expr::DotIdent(..) => Type::Any,
 
-            // `builtin("name")` — native function; type is unknown statically
+            // `builtin name` — native function; type is unknown statically
             Expr::Builtin { .. } => Type::Any,
 
             // ── Arithmetic / logic ────────────────────────────────────────────
@@ -1683,6 +1861,14 @@ impl TypeChecker {
     /// Infer the type of `object.field` access.
     fn infer_field_access(&mut self, obj_ty: &Type, field: &str, span: Span) -> Type {
         match obj_ty {
+            Type::Module { path, exports } => {
+                if let Some(ty) = exports.get(field) {
+                    ty.clone()
+                } else {
+                    self.error(format!("module `{path}` has no export `{field}`"), span);
+                    Type::Any
+                }
+            }
             Type::Struct { fields, .. } => {
                 if let Some((_, ty)) = fields.iter().find(|(n, _)| n == field) {
                     ty.clone()
@@ -1768,11 +1954,22 @@ impl TypeChecker {
                 .lookup_function(name)
                 .or_else(|| env.lookup_binding(name))
                 .cloned(),
-            Expr::FieldAccess { object, field, .. } => {
-                // Method call: look up "TypeName.method" if object type is known
+            Expr::FieldAccess {
+                object,
+                field,
+                span: field_span,
+            } => {
                 let obj_ty = self.infer_expr(object, env);
-                let qualified = format!("{}.{}", obj_ty.display_name(), field);
-                env.lookup_function(&qualified).cloned()
+                match &obj_ty {
+                    Type::Module { .. } => {
+                        Some(self.infer_field_access(&obj_ty, field, *field_span))
+                    }
+                    _ => {
+                        // Method call: look up "TypeName.method" if object type is known
+                        let qualified = format!("{}.{}", obj_ty.display_name(), field);
+                        env.lookup_function(&qualified).cloned()
+                    }
+                }
             }
             Expr::Closure(closure) => {
                 // Immediately-invoked closure (e.g. desugared `match`).
@@ -2768,11 +2965,35 @@ mod tests {
 
     #[test]
     fn test_register_method_signature() {
-        let tc = check_src_env("def String.len(self: String) -> Int { builtin(\"str_len\") }");
+        let tc = check_src_env("def String.len(self: String) -> Int { builtin str_len }");
         assert!(
             tc.env.lookup_function("String.len").is_some(),
             "method should be registered as 'String.len'"
         );
+    }
+
+    #[test]
+    fn test_use_destructure_unknown_export_errors() {
+        let result = check_src("use (missing) = \"@stl/io\";");
+        assert!(result.is_err(), "missing export should be a type error");
+    }
+
+    #[test]
+    fn test_use_unknown_module_path_errors() {
+        let result = check_src("use io = \"@stl/not-real\";");
+        assert!(
+            result.is_err(),
+            "unknown module path should be a type error"
+        );
+    }
+
+    #[test]
+    fn test_use_namespace_binds_module_type() {
+        let tc = check_src_env("use io = \"@stl/io\";");
+        let Some(ty) = tc.env.lookup_binding("io") else {
+            panic!("expected `io` binding");
+        };
+        assert!(matches!(ty, Type::Module { path, .. } if path == "@stl/io"));
     }
 
     // ── Def value registration ────────────────────────────────────────────────
@@ -3239,6 +3460,24 @@ mod tests {
         assert!(
             errs.iter().any(|e| e.message.contains("argument 1")),
             "expected arg type error, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn test_namespace_call_known_export_ok() {
+        let result = check_src("use io = \"@stl/io\"; def main() -> Void { io.println(123); }");
+        assert!(result.is_ok(), "expected no errors, got: {result:?}");
+    }
+
+    #[test]
+    fn test_namespace_call_missing_export_errors() {
+        let result = check_src("use io = \"@stl/io\"; def main() -> Void { io.nope(123); }");
+        assert!(result.is_err(), "expected missing export error");
+        let errs = result.unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("has no export `nope`")),
+            "expected missing export diagnostic, got: {errs:?}"
         );
     }
 

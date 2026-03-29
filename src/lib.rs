@@ -123,40 +123,7 @@ pub fn run_source(src: &str, file_path: &str) -> AuraResult<()> {
     let mut heap = gc::GcHeap::new();
     let mut machine = vm::Vm::new(&mut heap, file_path);
 
-    // Load STL modules before user code
-    load_stl(&mut machine)?;
-
     machine
         .run(chunk)
         .map_err(|e| AuraError::Runtime(e.to_string()))
-}
-
-/// Load the standard library into the VM.
-///
-/// This runs the STL files to register their globals before user code executes.
-/// Only the minimal set of modules needed by the type checker is loaded:
-/// string, list, and io.
-///
-/// **Policy:** STL sources use [`parse_source`] and [`compile_program`] but
-/// **skip** [`typecheck_program`], so loosely typed bootstrap code does not
-/// produce false-positive diagnostics for user programs.
-fn load_stl(vm: &mut vm::Vm) -> AuraResult<()> {
-    let modules: [(&str, &str); 4] = [
-        ("stl/string", include_str!("../stl/string.aura")),
-        ("stl/list", include_str!("../stl/list.aura")),
-        ("stl/collections", include_str!("../stl/collections.aura")),
-        ("stl/io", include_str!("../stl/io.aura")),
-    ];
-
-    for (name, source) in modules {
-        let program = parse_source(source)?;
-        // STL files are trusted internal code; skip the typechecker so that
-        // intentionally loose signatures (bare `List`, `Any` params) do not
-        // produce false-positive type errors.
-        let chunk = compile_program(program)?;
-        vm.run_module(chunk, name)
-            .map_err(|e| AuraError::Runtime(e.to_string()))?;
-    }
-
-    Ok(())
 }

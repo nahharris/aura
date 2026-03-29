@@ -1,12 +1,12 @@
 //! Native (Rust) built-in functions for the Aura VM.
 //!
-//! This module provides the [`register_all`] function that registers all
+//! This module provides registration functions for VM native kernels.
 //! built-in native functions into a [`Vm`] instance.  Each native is a plain
 //! Rust function with the signature `fn(&[Value]) -> Result<Value, String>`.
 //!
 //! # Organisation
 //!
-//! Builtins are grouped by domain:
+//! Builtins are grouped by domain and registration tier:
 //!
 //! | Group | Functions |
 //! |-------|-----------|
@@ -26,15 +26,11 @@ use crate::vm::Vm;
 // Registration entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Register all built-in native functions into `vm`.
+/// Register the minimal runtime kernel into `vm`.
 ///
-/// After this call every built-in is available as a global variable with the
-/// same name as the registered identifier.
-///
-/// Also registers the three prelude constants `true`, `false`, and `null`.
-/// These were formerly keywords but are now plain identifiers resolved via
-/// the global environment.
-pub fn register_all(vm: &mut Vm) {
+/// This kernel is intentionally small and contains only language/runtime
+/// primitives required by core execution and shipped STL modules.
+pub fn register_kernel(vm: &mut Vm) {
     // ── Prelude constants (formerly keywords) ─────────────────────────────────
     vm.set_global("true", Value::Bool(true));
     vm.set_global("false", Value::Bool(false));
@@ -108,6 +104,8 @@ pub fn register_all(vm: &mut Vm) {
     vm.register_native("dict_merge", dict_merge);
 
     // ── Math ─────────────────────────────────────────────────────────────────
+    // Included in kernel for now; this can be moved behind optional modules
+    // once numeric STL layers are fully separated.
     vm.register_native("math_abs", math_abs);
     vm.register_native("math_floor", math_floor);
     vm.register_native("math_ceil", math_ceil);
@@ -136,7 +134,13 @@ pub fn register_all(vm: &mut Vm) {
     vm.register_native("math_trunc", math_trunc);
     vm.register_native("math_fract", math_fract);
     vm.register_native("math_sign", math_sign);
+}
 
+/// Register extended host-capability natives into `vm`.
+///
+/// These APIs expose filesystem/process/network capabilities and are intended
+/// to sit behind explicit module imports rather than language-core semantics.
+pub fn register_extended(vm: &mut Vm) {
     // ── OS ───────────────────────────────────────────────────────────────────
     vm.register_native("os_args", os_args);
     vm.register_native("os_env", os_env);
@@ -164,6 +168,12 @@ pub fn register_all(vm: &mut Vm) {
     vm.register_native("net_udp_close", net_udp_close);
     vm.register_native("net_http_get", net_http_get);
     vm.register_native("net_http_post", net_http_post);
+}
+
+/// Backward-compatible convenience for tests/tools that want every native.
+pub fn register_all(vm: &mut Vm) {
+    register_kernel(vm);
+    register_extended(vm);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

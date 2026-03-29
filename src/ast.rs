@@ -39,7 +39,7 @@ pub struct Program {
 pub enum Item {
     /// `use (x, y) = "path";` — module import with optional destructuring.
     Use(UseDecl),
-    /// Any declaration: `def`, `defmacro`, or a `pub`-prefixed one.
+    /// Any declaration: `def` or `defmacro`.
     Decl(Decl),
 }
 
@@ -75,11 +75,9 @@ pub struct UseDecl {
 // Declarations
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A module-level declaration, optionally prefixed with `pub`.
+/// A module-level declaration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decl {
-    /// Whether this declaration is publicly exported.
-    pub public: bool,
     /// The declaration kind.
     pub kind: DeclKind,
     pub span: Span,
@@ -474,7 +472,7 @@ pub enum Expr {
     Ident(String, Span),
     /// A dot-identifier variant constructor: `.ok`, `.null`, `.some`.
     DotIdent(String, Span),
-    /// A builtin reference: `builtin("name")` — binds to a native function.
+    /// A builtin reference: `builtin name` — binds to a native function.
     Builtin { name: String, span: Span },
 
     // ── Arithmetic / logic ───────────────────────────────────────────────────
