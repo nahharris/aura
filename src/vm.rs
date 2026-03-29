@@ -49,6 +49,12 @@ impl std::error::Error for RuntimeError {}
 
 type VmResult<T> = Result<T, RuntimeError>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeProfile {
+    KernelOnly,
+    FullHost,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // CallFrame
 // ─────────────────────────────────────────────────────────────────────────────
@@ -106,6 +112,8 @@ pub struct Vm<'heap> {
     file_path: String,
     /// Registered native functions (index → function).
     natives: Vec<(String, NativeFn)>,
+    /// Runtime native exposure profile.
+    profile: RuntimeProfile,
     /// Module export cache keyed by module path.
     module_cache: HashMap<String, HashMap<String, Value>>,
     /// Cached namespace module objects keyed by module path.
@@ -117,6 +125,15 @@ pub struct Vm<'heap> {
 impl<'heap> Vm<'heap> {
     /// Create a new VM.  Call [`Vm::run`] to execute a module chunk.
     pub fn new(heap: &'heap mut GcHeap, file_path: &str) -> Self {
+        Self::new_with_profile(heap, file_path, RuntimeProfile::FullHost)
+    }
+
+    /// Create a new VM with explicit native exposure profile.
+    pub fn new_with_profile(
+        heap: &'heap mut GcHeap,
+        file_path: &str,
+        profile: RuntimeProfile,
+    ) -> Self {
         let mut vm = Vm {
             heap,
             stack: Vec::with_capacity(256),
@@ -124,12 +141,15 @@ impl<'heap> Vm<'heap> {
             globals: HashMap::new(),
             file_path: file_path.to_string(),
             natives: Vec::new(),
+            profile,
             module_cache: HashMap::new(),
             module_objects: HashMap::new(),
             module_stack: Vec::new(),
         };
         crate::builtins::register_kernel(&mut vm);
-        crate::builtins::register_extended(&mut vm);
+        if profile == RuntimeProfile::FullHost {
+            crate::builtins::register_extended(&mut vm);
+        }
         vm
     }
 
@@ -260,7 +280,7 @@ impl<'heap> Vm<'heap> {
         // The sub-VM starts fresh: `Vm::new` registers the minimal native kernel.
         // We do NOT copy self.globals — that would include preloaded STL globals
         // and would make all exports appear as "already existed".
-        let mut sub_vm = Vm::new(heap_ref, name);
+        let mut sub_vm = Vm::new_with_profile(heap_ref, name, self.profile);
         sub_vm.module_stack = self.module_stack.clone();
 
         // Snapshot the native-only globals so we can filter them from exports.
@@ -1725,6 +1745,27 @@ mod tests {
     #[test]
     fn test_unknown_global_runtime_error() {
         expect_runtime_error(r#"def main() { missing_global(); }"#, "unknown global");
+    }
+
+    #[test]
+    fn test_kernel_only_profile_hides_extended_natives() {
+        let heap: &'static mut GcHeap = Box::leak(Box::new(GcHeap::new()));
+        let mut vm = Vm::new_with_profile(heap, "<test>", RuntimeProfile::KernelOnly);
+
+        let (tokens, lex_errs) = lex("def main() { os_now(); }");
+        assert!(lex_errs.is_empty(), "lex errors: {lex_errs:?}");
+        let (program, parse_errs) = parse_tokens(tokens);
+        assert!(parse_errs.is_empty(), "parse errors: {parse_errs:?}");
+        let chunk: Chunk = compile(program).expect("compile error");
+
+        let err = vm
+            .run(chunk)
+            .expect_err("kernel-only profile should not expose os_now");
+        assert!(
+            err.message.contains("unknown global `os_now`"),
+            "unexpected runtime error: {}",
+            err.message
+        );
     }
 
     #[test]

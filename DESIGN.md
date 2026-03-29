@@ -1253,6 +1253,7 @@ Static import typing:
 Runtime native tiers:
 - Kernel tier is minimal and always present (`io_*`, `str_*`, `list_*`, `dict_*`, and core conversion/assert/panic primitives).
 - Extended tier exposes host capabilities (`os_*`, `math_*`, `net_*`). Current runtime bootstrap registers this tier by default.
+- Library pipeline default (`run_source`) uses a kernel-only runtime profile.
 
 ---
 

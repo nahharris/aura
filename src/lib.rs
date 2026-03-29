@@ -123,7 +123,8 @@ pub fn run_source(src: &str, file_path: &str) -> AuraResult<()> {
     typecheck_program(&program)?;
     let chunk = compile_program(program)?;
     let mut heap = gc::GcHeap::new();
-    let mut machine = vm::Vm::new(&mut heap, file_path);
+    let mut machine =
+        vm::Vm::new_with_profile(&mut heap, file_path, vm::RuntimeProfile::KernelOnly);
 
     machine
         .run(chunk)
