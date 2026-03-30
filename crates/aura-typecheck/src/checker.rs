@@ -4,7 +4,7 @@ use aura_frontend::ast::{Decl, Expr, Program, StaticArg, StaticValueExpr, TypeEx
 
 use crate::aliases::TypeAliases;
 use crate::builtins::BuiltinRegistry;
-use crate::checked_ir::{CheckedDecl, CheckedExpr, CheckedIr};
+use crate::checked_ir::{CheckedDecl, CheckedExpr, CheckedIr, CheckedStaticArg};
 use crate::diagnostics::Diagnostic;
 use crate::modules::ModuleChecker;
 use crate::numeric::can_implicitly_widen;
@@ -291,8 +291,70 @@ impl TypeChecker {
                 );
                 self.interner.intern(Ty::Any)
             }
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                static_args,
+            } => {
+                if macro_name == "add"
+                    || macro_name == "sub"
+                    || macro_name == "mul"
+                    || macro_name == "div"
+                {
+                    return self.infer_numeric_operator(macro_name, operand, static_args);
+                }
+                self.interner.intern(Ty::Any)
+            }
             _ => self.interner.intern(Ty::Any),
         }
+    }
+
+    fn infer_numeric_operator(
+        &mut self,
+        op: &str,
+        operand: &Expr,
+        _static_args: &[StaticArg],
+    ) -> TyId {
+        let (lhs_expr, rhs_expr) = match operand {
+            Expr::List(items) if items.len() == 2 => (&items[0], &items[1]),
+            _ => {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "E_OP_ARITY",
+                        format!("operator macro '{op}' expects exactly two operands"),
+                    )
+                    .with_obligations(&self.obligation_stack)
+                    .with_hint("use form like add [lhs, rhs]"),
+                );
+                return self.interner.intern(Ty::Any);
+            }
+        };
+
+        let lhs_ty = self.infer_expr(lhs_expr);
+        let rhs_ty = self.infer_expr(rhs_expr);
+
+        self.require_assignable(lhs_ty, rhs_ty, "numeric operator");
+        let result = self.unifier.resolve(lhs_ty);
+        let Some(result_ty) = self.interner.get(result).cloned() else {
+            return self.interner.intern(Ty::Any);
+        };
+
+        if is_numeric_ty(&result_ty) {
+            return result;
+        }
+
+        self.diagnostics.push(
+            Diagnostic::error(
+                "E_OP_NON_NUMERIC",
+                format!(
+                    "operator '{op}' requires numeric operands, got {:?}",
+                    result_ty
+                ),
+            )
+            .with_obligations(&self.obligation_stack)
+            .with_hint("cast operands to numeric types before applying arithmetic operators"),
+        );
+        self.interner.intern(Ty::Any)
     }
 
     fn resolve_type_expr(&mut self, ty: &TypeExpr) -> TyId {
@@ -569,9 +631,16 @@ impl TypeChecker {
             Expr::MacroApply {
                 macro_name,
                 operand,
-                ..
+                static_args,
             } => CheckedExpr::MacroApply {
                 macro_name: macro_name.clone(),
+                static_args: static_args
+                    .iter()
+                    .map(|arg| match arg {
+                        StaticArg::Type(ty) => CheckedStaticArg::Type(format!("{:?}", ty)),
+                        StaticArg::Value(value) => CheckedStaticArg::Value(format!("{:?}", value)),
+                    })
+                    .collect(),
                 operand: Box::new(self.lower_expr(operand)),
             },
             Expr::Label { label, expr } => CheckedExpr::Label {
@@ -588,6 +657,26 @@ impl TypeChecker {
     }
 }
 
+fn is_numeric_ty(ty: &Ty) -> bool {
+    matches!(
+        ty,
+        Ty::Int8
+            | Ty::Int16
+            | Ty::Int32
+            | Ty::Int64
+            | Ty::Int128
+            | Ty::ISize
+            | Ty::UInt8
+            | Ty::UInt16
+            | Ty::UInt32
+            | Ty::UInt64
+            | Ty::UInt128
+            | Ty::USize
+            | Ty::Float32
+            | Ty::Float64
+    )
+}
+
 impl Default for TypeChecker {
     fn default() -> Self {
         Self::new()
@@ -598,6 +687,7 @@ impl Default for TypeChecker {
 mod tests {
     use crate::checked_ir::CheckedExpr;
     use aura_frontend::ast::{Decl, Expr, FunctionDecl, Pattern, Program, TypeExpr};
+    use aura_frontend::ast::{StaticArg, StaticValueExpr};
 
     use crate::check_module;
 
@@ -949,5 +1039,50 @@ mod tests {
             .find(|d| d.code == "E_UNIFY_MISMATCH")
             .expect("expected unify mismatch diagnostic");
         assert!(!diag.obligations.is_empty());
+    }
+
+    #[test]
+    fn numeric_operator_macro_requires_numeric_operands() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                name: "x".to_string(),
+                value: Expr::MacroApply {
+                    macro_name: "add".to_string(),
+                    static_args: Vec::new(),
+                    operand: Box::new(Expr::List(vec![
+                        Expr::String("a".to_string()),
+                        Expr::Int("1".to_string()),
+                    ])),
+                },
+            }],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked.module.is_none());
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "E_OP_NON_NUMERIC"));
+    }
+
+    #[test]
+    fn lower_macro_apply_keeps_static_args_in_ir() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                name: "x".to_string(),
+                value: Expr::MacroApply {
+                    macro_name: "m".to_string(),
+                    static_args: vec![StaticArg::Value(StaticValueExpr::Int("4".to_string()))],
+                    operand: Box::new(Expr::Ident("node".to_string())),
+                },
+            }],
+        };
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        let CheckedExpr::MacroApply { static_args, .. } = &module.ir.declarations[0].value else {
+            panic!("expected macro apply in IR")
+        };
+        assert_eq!(static_args.len(), 1);
     }
 }

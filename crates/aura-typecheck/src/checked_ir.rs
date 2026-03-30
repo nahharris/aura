@@ -13,6 +13,12 @@ pub struct CheckedDecl {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckedStaticArg {
+    Type(String),
+    Value(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckedExpr {
     Ident(String),
     Int(String),
@@ -32,6 +38,7 @@ pub enum CheckedExpr {
     },
     MacroApply {
         macro_name: String,
+        static_args: Vec<CheckedStaticArg>,
         operand: Box<CheckedExpr>,
     },
     Label {
