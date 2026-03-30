@@ -2,7 +2,7 @@
 
 This report tracks current implementation status against the 4 remaining phases before LLVM backend handoff.
 
-Last updated: 2026-03-30 (build mode)
+Last updated: 2026-03-30 (build mode, latest: cast/jump/control-flow normalization)
 
 ## 1) Deep inference + unification
 
@@ -29,6 +29,7 @@ Last updated: 2026-03-30 (build mode)
 - ✅ Operator macro typing path exists for `add/sub/mul/div`
 - ✅ Branch-join and function/macro return compatibility checks are present
 - ✅ `cast` macro lowers to explicit typed `Cast` IR node
+- ✅ `if/cases/return/break/continue` macro surfaces typecheck and lower to dedicated IR nodes
 
 ### Left
 - ❌ Uniform coercion API applied to all contexts:
@@ -61,6 +62,7 @@ Last updated: 2026-03-30 (build mode)
 - ✅ Coerce/Cast nodes introduced
 - ✅ Control-flow nodes added (`If`, `Cases`, `Return`, `Break`, `Continue`)
 - ✅ Draft checked-IR contract doc added: `docs/typecheck-ir.md`
+- ✅ Macro static args are preserved in IR macro-apply nodes
 
 ### Left
 - ❌ Freeze schema with backend-oriented invariants (draft exists; formal freeze + compatibility policy pending)
@@ -82,3 +84,4 @@ Last updated: 2026-03-30 (build mode)
 - `00c1338` explicit `cast` macro IR lowering + jump macro typing paths.
 - `8e2b9db` + `8f77fbb` + `00c1338` + `5c31cc9` together expanded control-flow/operator/cast IR semantics.
 - `docs/typecheck-ir.md` added as backend-facing IR contract draft.
+- `8f77fbb` + `00c1338` + follow-ups: jump macros + explicit cast IR + control-flow normalization expanded.
