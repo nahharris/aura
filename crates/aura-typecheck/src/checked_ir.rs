@@ -46,6 +46,14 @@ pub enum CheckedExpr {
         expr: Box<CheckedExpr>,
     },
     MultiArm(Vec<CheckedExpr>),
+    If {
+        condition: Box<CheckedExpr>,
+        then_branch: Box<CheckedExpr>,
+        else_branch: Option<Box<CheckedExpr>>,
+    },
+    Cases {
+        arms: Vec<CheckedExpr>,
+    },
     Coerce {
         from: TyId,
         to: TyId,

@@ -295,6 +295,16 @@ impl TypeChecker {
                 macro_name,
                 operand,
                 static_args,
+            } if macro_name == "if" => self.infer_if_macro(operand),
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                static_args,
+            } if macro_name == "cases" => self.infer_cases_macro(operand),
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                static_args,
             } => {
                 if macro_name == "add"
                     || macro_name == "sub"
@@ -355,6 +365,72 @@ impl TypeChecker {
             .with_hint("cast operands to numeric types before applying arithmetic operators"),
         );
         self.interner.intern(Ty::Any)
+    }
+
+    fn infer_if_macro(&mut self, operand: &Expr) -> TyId {
+        let Expr::List(items) = operand else {
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "E_IF_FORM",
+                    "if expects list operand [condition, then, else?]",
+                )
+                .with_obligations(&self.obligation_stack)
+                .with_hint("use form: if [condition, then_branch, else_branch]"),
+            );
+            return self.interner.intern(Ty::Any);
+        };
+
+        if items.len() < 2 || items.len() > 3 {
+            self.diagnostics.push(
+                Diagnostic::error("E_IF_ARITY", "if expects 2 or 3 operands")
+                    .with_obligations(&self.obligation_stack)
+                    .with_hint(
+                        "if [condition, then_branch] or if [condition, then_branch, else_branch]",
+                    ),
+            );
+            return self.interner.intern(Ty::Any);
+        }
+
+        let cond_ty = self.infer_expr(&items[0]);
+        let bool_ty = self.interner.intern(Ty::Bool);
+        self.require_assignable(bool_ty, cond_ty, "if condition");
+
+        let then_ty = self.infer_expr(&items[1]);
+        if items.len() == 2 {
+            return then_ty;
+        }
+
+        let else_ty = self.infer_expr(&items[2]);
+        self.require_assignable(then_ty, else_ty, "if branch join");
+        self.unifier.resolve(then_ty)
+    }
+
+    fn infer_cases_macro(&mut self, operand: &Expr) -> TyId {
+        let Expr::MultiArm(arms) = operand else {
+            self.diagnostics.push(
+                Diagnostic::error("E_CASES_FORM", "cases expects a multi-arm closure operand")
+                    .with_obligations(&self.obligation_stack)
+                    .with_hint("use form: cases { ~cond -> expr, ~true -> default }"),
+            );
+            return self.interner.intern(Ty::Any);
+        };
+
+        if arms.is_empty() {
+            self.diagnostics.push(
+                Diagnostic::error("E_CASES_EMPTY", "cases requires at least one arm")
+                    .with_obligations(&self.obligation_stack)
+                    .with_hint("add one or more guarded arms"),
+            );
+            return self.interner.intern(Ty::Any);
+        }
+
+        let first_ty = self.infer_expr(&arms[0].body);
+        for arm in arms.iter().skip(1) {
+            let ty = self.infer_expr(&arm.body);
+            self.require_assignable(first_ty, ty, "cases arm join");
+        }
+
+        self.unifier.resolve(first_ty)
     }
 
     fn resolve_type_expr(&mut self, ty: &TypeExpr) -> TyId {
@@ -489,6 +565,10 @@ impl TypeChecker {
         let Some(actual_ty) = self.interner.get(actual).cloned() else {
             return;
         };
+
+        if matches!(expected_ty, Ty::Any) || matches!(actual_ty, Ty::Any) {
+            return;
+        }
 
         if matches!(expected_ty, Ty::InferVar(_)) || matches!(actual_ty, Ty::InferVar(_)) {
             self.unify_with_context(expected, actual, context);
@@ -628,6 +708,37 @@ impl TypeChecker {
                 callee: Box::new(self.lower_expr(callee)),
                 args: args.iter().map(|a| self.lower_expr(a)).collect(),
             },
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                static_args,
+            } if macro_name == "if" => {
+                if let Expr::List(items) = operand.as_ref() {
+                    if items.len() >= 2 {
+                        let condition = self.lower_expr(&items[0]);
+                        let then_branch = self.lower_expr(&items[1]);
+                        let else_branch = items.get(2).map(|e| Box::new(self.lower_expr(e)));
+                        return CheckedExpr::If {
+                            condition: Box::new(condition),
+                            then_branch: Box::new(then_branch),
+                            else_branch,
+                        };
+                    }
+                }
+                CheckedExpr::Any
+            }
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                static_args,
+            } if macro_name == "cases" => {
+                if let Expr::MultiArm(arms) = operand.as_ref() {
+                    return CheckedExpr::Cases {
+                        arms: arms.iter().map(|a| self.lower_expr(&a.body)).collect(),
+                    };
+                }
+                CheckedExpr::Any
+            }
             Expr::MacroApply {
                 macro_name,
                 operand,
@@ -1084,5 +1195,60 @@ mod tests {
             panic!("expected macro apply in IR")
         };
         assert_eq!(static_args.len(), 1);
+    }
+
+    #[test]
+    fn if_macro_typechecks_and_lowers_to_if_ir() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                name: "x".to_string(),
+                value: Expr::MacroApply {
+                    macro_name: "if".to_string(),
+                    static_args: Vec::new(),
+                    operand: Box::new(Expr::List(vec![
+                        Expr::Ident("true".to_string()),
+                        Expr::Int("1".to_string()),
+                        Expr::Int("2".to_string()),
+                    ])),
+                },
+            }],
+        };
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        assert!(matches!(
+            module.ir.declarations[0].value,
+            CheckedExpr::If { .. }
+        ));
+    }
+
+    #[test]
+    fn cases_macro_lowers_to_cases_ir() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                name: "x".to_string(),
+                value: Expr::MacroApply {
+                    macro_name: "cases".to_string(),
+                    static_args: Vec::new(),
+                    operand: Box::new(Expr::MultiArm(vec![
+                        aura_frontend::ast::Arm {
+                            patterns: vec![Pattern::Ident("a".to_string())],
+                            body: Expr::Int("1".to_string()),
+                        },
+                        aura_frontend::ast::Arm {
+                            patterns: vec![Pattern::Wildcard],
+                            body: Expr::Int("2".to_string()),
+                        },
+                    ])),
+                },
+            }],
+        };
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        assert!(matches!(
+            module.ir.declarations[0].value,
+            CheckedExpr::Cases { .. }
+        ));
     }
 }
