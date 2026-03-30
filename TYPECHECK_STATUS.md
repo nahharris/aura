@@ -14,6 +14,8 @@ Last updated: 2026-03-30 (build mode, latest: cast/jump/control-flow normalizati
 - ✅ Multi-arm result join checks for body compatibility
 - ✅ Identifier resolution in type inference now emits explicit unresolved diagnostics
 - ✅ Closure typing/lowering baseline added (typed function shape)
+- ✅ Builtin macro typing now returns concrete function types from registry
+- ✅ Dot-ident no-payload typing now defaults to `Void` (instead of broad `Any`)
 
 ### Left
 - ❌ Full bidirectional inference across all expression forms (not just current subset)
@@ -90,3 +92,4 @@ Last updated: 2026-03-30 (build mode, latest: cast/jump/control-flow normalizati
 - `8f77fbb` + `00c1338` + follow-ups: jump macros + explicit cast IR + control-flow normalization expanded.
 - Current pass: unresolved identifier diagnostics + closure typed lowering baseline added.
 - Current pass: unresolved identifiers downgraded to warnings for build continuity while still reducing silent `Any` fallthrough.
+- Current pass: additional `Any` reduction via typed builtin macro resolution and dot-ident default typing.

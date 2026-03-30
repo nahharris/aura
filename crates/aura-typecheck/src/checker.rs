@@ -176,9 +176,10 @@ impl TypeChecker {
             Expr::String(_) => self.interner.intern(Ty::Nominal("String".to_string())),
             Expr::DotIdent { payload, .. } => {
                 if let Some(inner) = payload {
-                    self.infer_expr(inner);
+                    self.infer_expr(inner)
+                } else {
+                    self.interner.intern(Ty::Void)
                 }
-                self.interner.intern(Ty::Any)
             }
             Expr::Closure {
                 params,
@@ -264,7 +265,18 @@ impl TypeChecker {
                 static_args,
             } if macro_name == "builtin" => {
                 if let Expr::Ident(name) = operand.as_ref() {
-                    if self.builtins.get(name).is_none() {
+                    if let Some(sig) = self.builtins.get(name).cloned() {
+                        let param_tys = sig
+                            .params
+                            .iter()
+                            .map(|ty| self.intern_ty(ty))
+                            .collect::<Vec<_>>();
+                        let ret = self.intern_ty(&sig.ret);
+                        return self.interner.intern(Ty::Func {
+                            params: param_tys,
+                            ret,
+                        });
+                    } else {
                         self.diagnostics.push(
                             Diagnostic::error(
                                 "E_BUILTIN_UNKNOWN",
@@ -382,8 +394,78 @@ impl TypeChecker {
                     .with_obligations(&self.obligation_stack)
                     .with_hint("add a typing rule for this macro before backend lowering"),
                 );
-                self.interner.intern(Ty::Any)
+                self.infer_expr(operand)
             }
+        }
+    }
+
+    fn intern_ty(&mut self, ty: &Ty) -> TyId {
+        match ty {
+            Ty::Nominal(name) => self.interner.intern(Ty::Nominal(name.clone())),
+            Ty::List(item) => {
+                let item_ty = self.interner.get(*item).cloned().unwrap_or(Ty::Any);
+                let lowered_item = self.intern_ty(&item_ty);
+                self.interner.intern(Ty::List(lowered_item))
+            }
+            Ty::Dict { key, value } => {
+                let k = self.interner.get(*key).cloned().unwrap_or(Ty::Any);
+                let v = self.interner.get(*value).cloned().unwrap_or(Ty::Any);
+                let lowered_k = self.intern_ty(&k);
+                let lowered_v = self.intern_ty(&v);
+                self.interner.intern(Ty::Dict {
+                    key: lowered_k,
+                    value: lowered_v,
+                })
+            }
+            Ty::Set(item) => {
+                let item_ty = self.interner.get(*item).cloned().unwrap_or(Ty::Any);
+                let lowered_item = self.intern_ty(&item_ty);
+                self.interner.intern(Ty::Set(lowered_item))
+            }
+            Ty::Array { item, size } => {
+                let item_ty = self.interner.get(*item).cloned().unwrap_or(Ty::Any);
+                let lowered_item = self.intern_ty(&item_ty);
+                self.interner.intern(Ty::Array {
+                    item: lowered_item,
+                    size: *size,
+                })
+            }
+            Ty::Func { params, ret } => {
+                let lowered_params = params
+                    .iter()
+                    .map(|p| {
+                        let t = self.interner.get(*p).cloned().unwrap_or(Ty::Any);
+                        self.intern_ty(&t)
+                    })
+                    .collect();
+                let ret_ty = self.interner.get(*ret).cloned().unwrap_or(Ty::Any);
+                let lowered_ret = self.intern_ty(&ret_ty);
+                self.interner.intern(Ty::Func {
+                    params: lowered_params,
+                    ret: lowered_ret,
+                })
+            }
+            Ty::Tuple(items) => {
+                let lowered = items
+                    .iter()
+                    .map(|i| {
+                        let t = self.interner.get(*i).cloned().unwrap_or(Ty::Any);
+                        self.intern_ty(&t)
+                    })
+                    .collect();
+                self.interner.intern(Ty::Tuple(lowered))
+            }
+            Ty::Struct(fields) => {
+                let lowered = fields
+                    .iter()
+                    .map(|(n, t)| {
+                        let ty = self.interner.get(*t).cloned().unwrap_or(Ty::Any);
+                        (n.clone(), self.intern_ty(&ty))
+                    })
+                    .collect();
+                self.interner.intern(Ty::Struct(lowered))
+            }
+            other => self.interner.intern(other.clone()),
         }
     }
 
@@ -953,6 +1035,7 @@ impl Default for TypeChecker {
 #[cfg(test)]
 mod tests {
     use crate::checked_ir::CheckedExpr;
+    use crate::types::Ty;
     use aura_frontend::ast::{Decl, Expr, FunctionDecl, Pattern, Program, TypeExpr};
     use aura_frontend::ast::{StaticArg, StaticValueExpr};
 
@@ -1523,5 +1606,50 @@ mod tests {
             module.ir.declarations[0].value,
             CheckedExpr::Closure { .. }
         ));
+    }
+
+    #[test]
+    fn builtin_macro_produces_function_type() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                name: "w".to_string(),
+                value: Expr::MacroApply {
+                    macro_name: "builtin".to_string(),
+                    static_args: Vec::new(),
+                    operand: Box::new(Expr::Ident("io_write".to_string())),
+                },
+            }],
+        };
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        let ty_id = module
+            .value_types
+            .get("w")
+            .expect("value type should exist");
+        let ty = module.types.get(*ty_id).expect("type should exist");
+        assert!(matches!(ty, Ty::Func { .. }));
+    }
+
+    #[test]
+    fn dot_identifier_without_payload_is_void_typed() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                name: "v".to_string(),
+                value: Expr::DotIdent {
+                    name: "null".to_string(),
+                    payload: None,
+                },
+            }],
+        };
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        let ty_id = module
+            .value_types
+            .get("v")
+            .expect("value type should exist");
+        let ty = module.types.get(*ty_id).expect("type should exist");
+        assert!(matches!(ty, Ty::Void));
     }
 }
