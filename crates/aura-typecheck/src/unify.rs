@@ -43,18 +43,64 @@ impl Unifier {
             (Some(Ty::Any), Some(_)) => Ok(rhs),
             (Some(_), Some(Ty::Any)) => Ok(lhs),
             (Some(Ty::InferVar(_)), Some(_)) => {
+                if self.occurs(interner, lhs, rhs) {
+                    return Err(Box::new(
+                        Diagnostic::error(
+                            "E_UNIFY_OCCURS",
+                            format!(
+                                "occurs-check failed while binding infer variable in {context}"
+                            ),
+                        )
+                        .with_related("infinite type would be created", None)
+                        .with_hint("introduce explicit annotation to break recursive inference"),
+                    ));
+                }
                 self.bind(lhs, rhs);
                 Ok(rhs)
             }
             (Some(_), Some(Ty::InferVar(_))) => {
+                if self.occurs(interner, rhs, lhs) {
+                    return Err(Box::new(
+                        Diagnostic::error(
+                            "E_UNIFY_OCCURS",
+                            format!(
+                                "occurs-check failed while binding infer variable in {context}"
+                            ),
+                        )
+                        .with_related("infinite type would be created", None)
+                        .with_hint("introduce explicit annotation to break recursive inference"),
+                    ));
+                }
                 self.bind(rhs, lhs);
                 Ok(lhs)
             }
             (Some(Ty::List(a)), Some(Ty::List(b))) => {
+                if self.occurs(interner, lhs, b) || self.occurs(interner, rhs, a) {
+                    return Err(Box::new(
+                        Diagnostic::error(
+                            "E_UNIFY_OCCURS",
+                            format!("occurs-check failed while unifying list types in {context}"),
+                        )
+                        .with_related("infinite type would be created", None)
+                        .with_hint("introduce explicit annotation to break recursive inference"),
+                    ));
+                }
                 let item = self.unify(interner, a, b, context)?;
                 Ok(interner.intern(Ty::List(item)))
             }
             (Some(Ty::Dict { key: ka, value: va }), Some(Ty::Dict { key: kb, value: vb })) => {
+                if self.occurs(interner, lhs, kb) || self.occurs(interner, rhs, ka) {
+                    return Err(Box::new(
+                        Diagnostic::error(
+                            "E_UNIFY_OCCURS",
+                            format!(
+                                "occurs-check failed while unifying dict key types in {context}"
+                            ),
+                        )
+                        .with_related("infinite type would be created", None)
+                        .with_hint("introduce explicit annotation to break recursive inference"),
+                    ));
+                }
                 let key = self.unify(interner, ka, kb, context)?;
                 let value = self.unify(interner, va, vb, context)?;
                 Ok(interner.intern(Ty::Dict { key, value }))
@@ -88,6 +134,26 @@ impl Unifier {
 
     fn bind(&mut self, var: TyId, to: TyId) {
         self.subs.map.insert(var, to);
+    }
+
+    fn occurs(&self, interner: &TyInterner, var: TyId, within: TyId) -> bool {
+        let within = self.resolve(within);
+        if var == within {
+            return true;
+        }
+        match interner.get(within) {
+            Some(Ty::List(item)) => self.occurs(interner, var, *item),
+            Some(Ty::Dict { key, value }) => {
+                self.occurs(interner, var, *key) || self.occurs(interner, var, *value)
+            }
+            Some(Ty::Func { params, ret }) => {
+                params.iter().any(|p| self.occurs(interner, var, *p))
+                    || self.occurs(interner, var, *ret)
+            }
+            Some(Ty::Tuple(items)) => items.iter().any(|t| self.occurs(interner, var, *t)),
+            Some(Ty::Struct(fields)) => fields.iter().any(|(_, t)| self.occurs(interner, var, *t)),
+            _ => false,
+        }
     }
 }
 
@@ -123,5 +189,19 @@ mod tests {
             .unify(&mut interner, int, float, "call argument")
             .expect_err("unification should fail");
         assert_eq!(err.code, "E_UNIFY_MISMATCH");
+    }
+
+    #[test]
+    fn occurs_check_rejects_infinite_type() {
+        let mut interner = TyInterner::new();
+        let mut next = 0;
+        let mut unifier = Unifier::new();
+        let var = interner.fresh_infer_var(&mut next);
+        let list_of_var = interner.intern(Ty::List(var));
+
+        let err = unifier
+            .unify(&mut interner, var, list_of_var, "occurs test")
+            .expect_err("occurs check must fail");
+        assert_eq!(err.code, "E_UNIFY_OCCURS");
     }
 }

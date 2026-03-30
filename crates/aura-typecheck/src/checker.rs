@@ -21,6 +21,7 @@ pub struct TypeChecker {
     pattern_checker: PatternChecker,
     unifier: Unifier,
     next_infer_var: u32,
+    obligation_stack: Vec<String>,
     diagnostics: Vec<Diagnostic>,
     ir: CheckedIr,
 }
@@ -38,6 +39,7 @@ impl TypeChecker {
             pattern_checker: PatternChecker::new(),
             unifier: Unifier::new(),
             next_infer_var: 0,
+            obligation_stack: Vec::new(),
             diagnostics: Vec::new(),
             ir: CheckedIr::empty(),
         }
@@ -49,6 +51,7 @@ impl TypeChecker {
 
         for decl in &program.declarations {
             if let Decl::Assign { name, value } = decl {
+                self.push_obligation(format!("checking declaration '{name}'"));
                 let ty = self.infer_expr(value);
                 if let Some(existing) = values.get(name).copied() {
                     self.require_assignable(existing, ty, name);
@@ -59,6 +62,7 @@ impl TypeChecker {
                     ty,
                     value: self.lower_expr(value),
                 });
+                self.pop_obligation();
             }
 
             if let Decl::Function(function) = decl {
@@ -169,6 +173,7 @@ impl TypeChecker {
     }
 
     fn infer_call_expr(&mut self, callee_ty: TyId, args: &[Expr]) -> TyId {
+        self.push_obligation("checking call expression".to_string());
         let expected_params: Vec<TyId> = args
             .iter()
             .map(|_| self.interner.fresh_infer_var(&mut self.next_infer_var))
@@ -182,19 +187,24 @@ impl TypeChecker {
         self.unify_with_context(callee_ty, expected_func, "callable expression");
 
         for (idx, arg) in args.iter().enumerate() {
+            self.push_obligation(format!("checking call argument #{idx}"));
             let arg_ty = self.infer_expr(arg);
             let expected = expected_params[idx];
             self.require_assignable(expected, arg_ty, "call argument");
+            self.pop_obligation();
         }
 
-        self.unifier.resolve(expected_ret)
+        let resolved = self.unifier.resolve(expected_ret);
+        self.pop_obligation();
+        resolved
     }
 
     fn unify_with_context(&mut self, lhs: TyId, rhs: TyId, context: &str) -> TyId {
         match self.unifier.unify(&mut self.interner, lhs, rhs, context) {
             Ok(id) => id,
             Err(diag) => {
-                self.diagnostics.push(*diag);
+                self.diagnostics
+                    .push((*diag).with_obligations(&self.obligation_stack));
                 self.interner.intern(Ty::Any)
             }
         }
@@ -221,6 +231,11 @@ impl TypeChecker {
             return;
         }
 
+        if let Some(coerce) = self.try_build_coercion_ir(expected, actual) {
+            let _ = coerce;
+            return;
+        }
+
         self.diagnostics.push(
             Diagnostic::error(
                 "E_TYPE_MISMATCH",
@@ -230,8 +245,30 @@ impl TypeChecker {
                 ),
             )
             .with_related("assignment compatibility check failed", None)
+            .with_obligations(&self.obligation_stack)
             .with_hint("use an explicit cast for narrowing or cross-domain numeric conversions"),
         );
+    }
+
+    fn try_build_coercion_ir(&mut self, expected: TyId, actual: TyId) -> Option<CheckedExpr> {
+        let expected_ty = self.interner.get(expected)?.clone();
+        let actual_ty = self.interner.get(actual)?.clone();
+        if can_implicitly_widen(&actual_ty, &expected_ty) {
+            return Some(CheckedExpr::Coerce {
+                from: actual,
+                to: expected,
+                expr: Box::new(CheckedExpr::Any),
+            });
+        }
+        None
+    }
+
+    fn push_obligation(&mut self, obligation: String) {
+        self.obligation_stack.push(obligation);
+    }
+
+    fn pop_obligation(&mut self) {
+        let _ = self.obligation_stack.pop();
     }
 
     fn lower_expr(&self, expr: &Expr) -> CheckedExpr {
@@ -484,5 +521,28 @@ mod tests {
             .iter()
             .any(|d| d.code == "E_UNIFY_MISMATCH");
         assert!(!has_unify_error);
+    }
+
+    #[test]
+    fn unify_mismatch_includes_obligation_trace() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                name: "x".to_string(),
+                value: Expr::Call {
+                    callee: Box::new(Expr::Int("1".to_string())),
+                    static_args: Vec::new(),
+                    args: vec![Expr::Int("2".to_string())],
+                },
+            }],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked.module.is_none());
+        let diag = checked
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "E_UNIFY_MISMATCH")
+            .expect("expected unify mismatch diagnostic");
+        assert!(!diag.obligations.is_empty());
     }
 }

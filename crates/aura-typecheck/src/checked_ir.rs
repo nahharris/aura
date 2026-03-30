@@ -21,6 +21,16 @@ pub enum CheckedExpr {
     Any,
     List(Vec<CheckedExpr>),
     Dict(Vec<(CheckedExpr, CheckedExpr)>),
+    Coerce {
+        from: TyId,
+        to: TyId,
+        expr: Box<CheckedExpr>,
+    },
+    Cast {
+        from: TyId,
+        to: TyId,
+        expr: Box<CheckedExpr>,
+    },
 }
 
 impl CheckedIr {
