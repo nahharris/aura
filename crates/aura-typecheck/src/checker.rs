@@ -54,14 +54,21 @@ impl TypeChecker {
                 self.push_obligation(format!("checking declaration '{name}'"));
                 let ty = self.infer_expr(value);
                 if let Some(existing) = values.get(name).copied() {
-                    self.require_assignable(existing, ty, name);
+                    let lowered = self.lower_expr(value);
+                    let coerced = self.coerce_or_cast_for_ir(existing, ty, lowered, name);
+                    self.ir.declarations.push(CheckedDecl {
+                        name: name.clone(),
+                        ty: existing,
+                        value: coerced,
+                    });
+                } else {
+                    self.ir.declarations.push(CheckedDecl {
+                        name: name.clone(),
+                        ty,
+                        value: self.lower_expr(value),
+                    });
                 }
                 values.insert(name.clone(), ty);
-                self.ir.declarations.push(CheckedDecl {
-                    name: name.clone(),
-                    ty,
-                    value: self.lower_expr(value),
-                });
                 self.pop_obligation();
             }
 
@@ -231,11 +238,6 @@ impl TypeChecker {
             return;
         }
 
-        if let Some(coerce) = self.try_build_coercion_ir(expected, actual) {
-            let _ = coerce;
-            return;
-        }
-
         self.diagnostics.push(
             Diagnostic::error(
                 "E_TYPE_MISMATCH",
@@ -250,17 +252,87 @@ impl TypeChecker {
         );
     }
 
-    fn try_build_coercion_ir(&mut self, expected: TyId, actual: TyId) -> Option<CheckedExpr> {
-        let expected_ty = self.interner.get(expected)?.clone();
-        let actual_ty = self.interner.get(actual)?.clone();
+    fn coerce_or_cast_for_ir(
+        &mut self,
+        expected: TyId,
+        actual: TyId,
+        expr: CheckedExpr,
+        context: &str,
+    ) -> CheckedExpr {
+        if expected == actual {
+            return expr;
+        }
+
+        let Some(expected_ty) = self.interner.get(expected).cloned() else {
+            return expr;
+        };
+        let Some(actual_ty) = self.interner.get(actual).cloned() else {
+            return expr;
+        };
+
         if can_implicitly_widen(&actual_ty, &expected_ty) {
-            return Some(CheckedExpr::Coerce {
+            return CheckedExpr::Coerce {
                 from: actual,
                 to: expected,
-                expr: Box::new(CheckedExpr::Any),
-            });
+                expr: Box::new(expr),
+            };
         }
-        None
+
+        if self.is_explicit_cast_pair(&actual_ty, &expected_ty) {
+            return CheckedExpr::Cast {
+                from: actual,
+                to: expected,
+                expr: Box::new(expr),
+            };
+        }
+
+        self.diagnostics.push(
+            Diagnostic::error(
+                "E_TYPE_MISMATCH",
+                format!(
+                    "type mismatch in {context}: expected {:?}, got {:?}",
+                    expected_ty, actual_ty
+                ),
+            )
+            .with_related("IR coercion/cast decision failed", None)
+            .with_obligations(&self.obligation_stack)
+            .with_hint("use an explicit cast for narrowing or cross-domain numeric conversions"),
+        );
+        expr
+    }
+
+    fn is_explicit_cast_pair(&self, from: &Ty, to: &Ty) -> bool {
+        use Ty::*;
+        matches!(
+            (from, to),
+            (Int8 | Int16 | Int32 | Int64 | Int128, Float32 | Float64)
+                | (
+                    UInt8 | UInt16 | UInt32 | UInt64 | UInt128,
+                    Float32 | Float64
+                )
+                | (Float32 | Float64, Int8 | Int16 | Int32 | Int64 | Int128)
+                | (
+                    Float32 | Float64,
+                    UInt8 | UInt16 | UInt32 | UInt64 | UInt128
+                )
+                | (
+                    Int8 | Int16 | Int32 | Int64 | Int128,
+                    UInt8 | UInt16 | UInt32 | UInt64 | UInt128
+                )
+                | (
+                    UInt8 | UInt16 | UInt32 | UInt64 | UInt128,
+                    Int8 | Int16 | Int32 | Int64 | Int128
+                )
+                | (Int16, Int8)
+                | (Int32, Int8 | Int16)
+                | (Int64, Int8 | Int16 | Int32)
+                | (Int128, Int8 | Int16 | Int32 | Int64)
+                | (UInt16, UInt8)
+                | (UInt32, UInt8 | UInt16)
+                | (UInt64, UInt8 | UInt16 | UInt32)
+                | (UInt128, UInt8 | UInt16 | UInt32 | UInt64)
+                | (Float64, Float32)
+        )
     }
 
     fn push_obligation(&mut self, obligation: String) {
@@ -273,10 +345,15 @@ impl TypeChecker {
 
     fn lower_expr(&self, expr: &Expr) -> CheckedExpr {
         match expr {
+            Expr::Ident(v) => CheckedExpr::Ident(v.clone()),
             Expr::Int(v) => CheckedExpr::Int(v.clone()),
             Expr::Float(v) => CheckedExpr::Float(v.clone()),
             Expr::Char(v) => CheckedExpr::Char(v.clone()),
             Expr::String(v) => CheckedExpr::String(v.clone()),
+            Expr::DotIdent { name, payload } => CheckedExpr::DotIdent {
+                name: name.clone(),
+                payload: payload.as_ref().map(|p| Box::new(self.lower_expr(p))),
+            },
             Expr::List(items) => {
                 CheckedExpr::List(items.iter().map(|item| self.lower_expr(item)).collect())
             }
@@ -285,6 +362,27 @@ impl TypeChecker {
                     .iter()
                     .map(|(k, v)| (self.lower_expr(k), self.lower_expr(v)))
                     .collect(),
+            ),
+            Expr::Call { callee, args, .. } => CheckedExpr::Call {
+                callee: Box::new(self.lower_expr(callee)),
+                args: args.iter().map(|a| self.lower_expr(a)).collect(),
+            },
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                ..
+            } => CheckedExpr::MacroApply {
+                macro_name: macro_name.clone(),
+                operand: Box::new(self.lower_expr(operand)),
+            },
+            Expr::Label { label, expr } => CheckedExpr::Label {
+                label: label.clone(),
+                expr: Box::new(self.lower_expr(expr)),
+            },
+            Expr::MultiArm(arms) => CheckedExpr::MultiArm(
+                arms.iter()
+                    .map(|arm| self.lower_expr(&arm.body))
+                    .collect::<Vec<_>>(),
             ),
             _ => CheckedExpr::Any,
         }
@@ -299,6 +397,7 @@ impl Default for TypeChecker {
 
 #[cfg(test)]
 mod tests {
+    use crate::checked_ir::CheckedExpr;
     use aura_frontend::ast::{Decl, Expr, FunctionDecl, Pattern, Program, TypeExpr};
 
     use crate::check_module;
@@ -424,6 +523,50 @@ mod tests {
         let module = checked.module.expect("checked module should exist");
         assert_eq!(module.ir.declarations.len(), 1);
         assert_eq!(module.ir.declarations[0].name, "x");
+        assert!(matches!(
+            module.ir.declarations[0].value,
+            CheckedExpr::Int(_)
+        ));
+    }
+
+    #[test]
+    fn checked_ir_preserves_call_shape() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                name: "v".to_string(),
+                value: Expr::Call {
+                    callee: Box::new(Expr::Ident("f".to_string())),
+                    static_args: Vec::new(),
+                    args: vec![Expr::Int("1".to_string())],
+                },
+            }],
+        };
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        assert!(matches!(
+            module.ir.declarations[0].value,
+            CheckedExpr::Call { .. }
+        ));
+    }
+
+    #[test]
+    fn checked_ir_emits_coerce_for_widening_assignment() {
+        let program = Program {
+            declarations: vec![
+                Decl::Assign {
+                    name: "x".to_string(),
+                    value: Expr::Int("1".to_string()),
+                },
+                Decl::Assign {
+                    name: "x".to_string(),
+                    value: Expr::Float("2.0".to_string()),
+                },
+            ],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked.module.is_none());
     }
 
     #[test]

@@ -14,13 +14,31 @@ pub struct CheckedDecl {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckedExpr {
+    Ident(String),
     Int(String),
     Float(String),
     Char(String),
     String(String),
+    DotIdent {
+        name: String,
+        payload: Option<Box<CheckedExpr>>,
+    },
     Any,
     List(Vec<CheckedExpr>),
     Dict(Vec<(CheckedExpr, CheckedExpr)>),
+    Call {
+        callee: Box<CheckedExpr>,
+        args: Vec<CheckedExpr>,
+    },
+    MacroApply {
+        macro_name: String,
+        operand: Box<CheckedExpr>,
+    },
+    Label {
+        label: String,
+        expr: Box<CheckedExpr>,
+    },
+    MultiArm(Vec<CheckedExpr>),
     Coerce {
         from: TyId,
         to: TyId,
