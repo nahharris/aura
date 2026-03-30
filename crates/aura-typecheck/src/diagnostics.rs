@@ -36,6 +36,18 @@ impl Diagnostic {
         }
     }
 
+    pub fn warning(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            severity: Severity::Warning,
+            message: message.into(),
+            span: None,
+            hint: None,
+            related: Vec::new(),
+            obligations: Vec::new(),
+        }
+    }
+
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
         self

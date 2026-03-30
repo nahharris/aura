@@ -29,6 +29,10 @@ pub enum CheckedExpr {
         name: String,
         payload: Option<Box<CheckedExpr>>,
     },
+    Closure {
+        params: Vec<String>,
+        return_ty: Option<TyId>,
+    },
     Any,
     List(Vec<CheckedExpr>),
     Dict(Vec<(CheckedExpr, CheckedExpr)>),

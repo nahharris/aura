@@ -153,15 +153,51 @@ impl TypeChecker {
 
     fn infer_expr(&mut self, expr: &Expr) -> TyId {
         match expr {
-            Expr::Ident(name) => self
-                .value_env
-                .get(name)
-                .copied()
-                .unwrap_or_else(|| self.interner.intern(Ty::Any)),
+            Expr::Ident(name) => {
+                if let Some(ty) = self.value_env.get(name).copied() {
+                    ty
+                } else if name == "true" || name == "false" {
+                    self.interner.intern(Ty::Bool)
+                } else {
+                    self.diagnostics.push(
+                        Diagnostic::warning(
+                            "W_UNRESOLVED_IDENT",
+                            format!("unresolved identifier '{name}'"),
+                        )
+                        .with_obligations(&self.obligation_stack)
+                        .with_hint("declare the identifier in scope before use"),
+                    );
+                    self.interner.intern(Ty::Any)
+                }
+            }
             Expr::Int(_) => self.aliases.get("Int").expect("Int alias must exist"),
             Expr::Float(_) => self.aliases.get("Float").expect("Float alias must exist"),
             Expr::Char(_) => self.interner.intern(Ty::Char),
             Expr::String(_) => self.interner.intern(Ty::Nominal("String".to_string())),
+            Expr::DotIdent { payload, .. } => {
+                if let Some(inner) = payload {
+                    self.infer_expr(inner);
+                }
+                self.interner.intern(Ty::Any)
+            }
+            Expr::Closure {
+                params,
+                return_type,
+            } => {
+                let param_tys = params
+                    .iter()
+                    .map(|p| self.resolve_type_expr(&p.ty))
+                    .collect::<Vec<_>>();
+                let ret = return_type
+                    .as_ref()
+                    .map(|t| self.resolve_type_expr(t))
+                    .unwrap_or_else(|| self.interner.intern(Ty::Any));
+                self.interner.intern(Ty::Func {
+                    params: param_tys,
+                    ret,
+                })
+            }
+            Expr::Label { expr, .. } => self.infer_expr(expr),
             Expr::List(items) => {
                 if let Some(first) = items.first() {
                     let item_ty = self.infer_expr(first);
@@ -338,9 +374,16 @@ impl TypeChecker {
                 {
                     return self.infer_numeric_operator(macro_name, operand, static_args);
                 }
+                self.diagnostics.push(
+                    Diagnostic::warning(
+                        "W_MACRO_UNTYPED",
+                        format!("macro '{macro_name}' has no typing rule yet"),
+                    )
+                    .with_obligations(&self.obligation_stack)
+                    .with_hint("add a typing rule for this macro before backend lowering"),
+                );
                 self.interner.intern(Ty::Any)
             }
-            _ => self.interner.intern(Ty::Any),
         }
     }
 
@@ -720,6 +763,13 @@ impl TypeChecker {
                 name: name.clone(),
                 payload: payload.as_ref().map(|p| Box::new(self.lower_expr(p))),
             },
+            Expr::Closure {
+                params,
+                return_type,
+            } => CheckedExpr::Closure {
+                params: params.iter().map(|p| p.name.clone()).collect(),
+                return_ty: return_type.as_ref().map(|t| self.resolve_type_expr(t)),
+            },
             Expr::List(items) => {
                 CheckedExpr::List(items.iter().map(|item| self.lower_expr(item)).collect())
             }
@@ -830,17 +880,18 @@ impl TypeChecker {
                     .map(|arm| self.lower_expr(&arm.body))
                     .collect::<Vec<_>>(),
             ),
-            _ => CheckedExpr::Any,
         }
     }
 
     fn preview_expr_ty(&mut self, expr: &Expr) -> TyId {
         match expr {
-            Expr::Ident(name) => self
-                .value_env
-                .get(name)
-                .copied()
-                .unwrap_or_else(|| self.interner.intern(Ty::Any)),
+            Expr::Ident(name) => self.value_env.get(name).copied().unwrap_or_else(|| {
+                if name == "true" || name == "false" {
+                    self.interner.intern(Ty::Bool)
+                } else {
+                    self.interner.intern(Ty::Any)
+                }
+            }),
             Expr::Int(_) => self
                 .aliases
                 .get("Int")
@@ -851,7 +902,24 @@ impl TypeChecker {
                 .unwrap_or_else(|| self.interner.intern(Ty::Float32)),
             Expr::Char(_) => self.interner.intern(Ty::Char),
             Expr::String(_) => self.interner.intern(Ty::Nominal("String".to_string())),
-            _ => self.interner.intern(Ty::Any),
+            Expr::Closure {
+                params,
+                return_type,
+            } => {
+                let param_tys = params
+                    .iter()
+                    .map(|p| self.resolve_type_expr(&p.ty))
+                    .collect::<Vec<_>>();
+                let ret = return_type
+                    .as_ref()
+                    .map(|t| self.resolve_type_expr(t))
+                    .unwrap_or_else(|| self.interner.intern(Ty::Any));
+                self.interner.intern(Ty::Func {
+                    params: param_tys,
+                    ret,
+                })
+            }
+            _ => self.infer_expr(expr),
         }
     }
 }
@@ -1408,6 +1476,52 @@ mod tests {
         assert!(matches!(
             module.ir.declarations[0].value,
             CheckedExpr::Cast { .. }
+        ));
+    }
+
+    #[test]
+    fn unresolved_identifier_reports_diagnostic() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                name: "x".to_string(),
+                value: Expr::Ident("missing".to_string()),
+            }],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked.module.is_some());
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "W_UNRESOLVED_IDENT"));
+    }
+
+    #[test]
+    fn closure_lowers_to_typed_closure_ir() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                name: "f".to_string(),
+                value: Expr::Closure {
+                    params: vec![aura_frontend::ast::Param {
+                        name: "x".to_string(),
+                        ty: TypeExpr::Named {
+                            name: "Int".to_string(),
+                            args: Vec::new(),
+                        },
+                    }],
+                    return_type: Some(TypeExpr::Named {
+                        name: "Int".to_string(),
+                        args: Vec::new(),
+                    }),
+                },
+            }],
+        };
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        assert!(matches!(
+            module.ir.declarations[0].value,
+            CheckedExpr::Closure { .. }
         ));
     }
 }

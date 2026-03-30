@@ -12,6 +12,8 @@ Last updated: 2026-03-30 (build mode, latest: cast/jump/control-flow normalizati
 - ✅ Basic env tracking for identifiers/functions
 - ✅ Function/macro return compatibility checks against declared type expressions
 - ✅ Multi-arm result join checks for body compatibility
+- ✅ Identifier resolution in type inference now emits explicit unresolved diagnostics
+- ✅ Closure typing/lowering baseline added (typed function shape)
 
 ### Left
 - ❌ Full bidirectional inference across all expression forms (not just current subset)
@@ -30,6 +32,7 @@ Last updated: 2026-03-30 (build mode, latest: cast/jump/control-flow normalizati
 - ✅ Branch-join and function/macro return compatibility checks are present
 - ✅ `cast` macro lowers to explicit typed `Cast` IR node
 - ✅ `if/cases/return/break/continue` macro surfaces typecheck and lower to dedicated IR nodes
+- ✅ Reduced core-path `Any` fallthrough by adding typed closure lowering and unresolved identifier diagnostics
 
 ### Left
 - ❌ Uniform coercion API applied to all contexts:
@@ -37,8 +40,8 @@ Last updated: 2026-03-30 (build mode, latest: cast/jump/control-flow normalizati
   - call arguments (all paths)
   - branch joins (all paths)
   - return-flow joins (all paths)
-- ❌ Explicit parsed cast expression lowering into typed cast IR consistently (currently `cast` macro path)
-- ❌ Eliminate remaining ad-hoc type compatibility checks
+- ❌ Explicit parsed cast expression lowering into typed cast IR consistently across non-macro surfaces
+- ❌ Eliminate remaining ad-hoc type compatibility checks and `Any` fallthroughs
 
 ---
 
@@ -85,3 +88,5 @@ Last updated: 2026-03-30 (build mode, latest: cast/jump/control-flow normalizati
 - `8e2b9db` + `8f77fbb` + `00c1338` + `5c31cc9` together expanded control-flow/operator/cast IR semantics.
 - `docs/typecheck-ir.md` added as backend-facing IR contract draft.
 - `8f77fbb` + `00c1338` + follow-ups: jump macros + explicit cast IR + control-flow normalization expanded.
+- Current pass: unresolved identifier diagnostics + closure typed lowering baseline added.
+- Current pass: unresolved identifiers downgraded to warnings for build continuity while still reducing silent `Any` fallthrough.
