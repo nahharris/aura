@@ -80,3 +80,35 @@ impl CheckedIr {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::checked_ir::{CheckedDecl, CheckedExpr, CheckedIr};
+    use crate::types::TyId;
+
+    #[test]
+    fn checked_ir_contract_supports_control_flow_and_conversion_nodes() {
+        let ir = CheckedIr {
+            declarations: vec![CheckedDecl {
+                name: "x".to_string(),
+                ty: TyId(0),
+                value: CheckedExpr::If {
+                    condition: Box::new(CheckedExpr::Ident("cond".to_string())),
+                    then_branch: Box::new(CheckedExpr::Coerce {
+                        from: TyId(1),
+                        to: TyId(2),
+                        expr: Box::new(CheckedExpr::Int("1".to_string())),
+                    }),
+                    else_branch: Some(Box::new(CheckedExpr::Cast {
+                        from: TyId(3),
+                        to: TyId(4),
+                        expr: Box::new(CheckedExpr::Float("2.0".to_string())),
+                    })),
+                },
+            }],
+        };
+
+        assert_eq!(ir.declarations.len(), 1);
+        assert!(matches!(ir.declarations[0].value, CheckedExpr::If { .. }));
+    }
+}
