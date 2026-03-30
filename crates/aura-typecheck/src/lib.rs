@@ -11,6 +11,7 @@ pub mod patterns;
 pub mod resolver;
 pub mod symbols;
 pub mod types;
+pub mod unify;
 
 use aura_frontend::ast::Program;
 use std::collections::HashMap;

@@ -10,6 +10,7 @@ use crate::modules::ModuleChecker;
 use crate::numeric::can_implicitly_widen;
 use crate::patterns::PatternChecker;
 use crate::types::{Ty, TyId, TyInterner};
+use crate::unify::Unifier;
 
 #[derive(Debug, Clone)]
 pub struct TypeChecker {
@@ -18,6 +19,8 @@ pub struct TypeChecker {
     builtins: BuiltinRegistry,
     module_checker: ModuleChecker,
     pattern_checker: PatternChecker,
+    unifier: Unifier,
+    next_infer_var: u32,
     diagnostics: Vec<Diagnostic>,
     ir: CheckedIr,
 }
@@ -33,6 +36,8 @@ impl TypeChecker {
             builtins: BuiltinRegistry::with_prelude(),
             module_checker: ModuleChecker::new(),
             pattern_checker: PatternChecker::new(),
+            unifier: Unifier::new(),
+            next_infer_var: 0,
             diagnostics: Vec::new(),
             ir: CheckedIr::empty(),
         }
@@ -96,12 +101,12 @@ impl TypeChecker {
                     let item_ty = self.infer_expr(first);
                     for item in items.iter().skip(1) {
                         let ty = self.infer_expr(item);
-                        self.require_assignable(item_ty, ty, "list item");
+                        self.unify_with_context(item_ty, ty, "list item");
                     }
                     self.interner.intern(Ty::List(item_ty))
                 } else {
-                    let any = self.interner.intern(Ty::Any);
-                    self.interner.intern(Ty::List(any))
+                    let infer = self.interner.fresh_infer_var(&mut self.next_infer_var);
+                    self.interner.intern(Ty::List(infer))
                 }
             }
             Expr::Dict(entries) => {
@@ -111,8 +116,8 @@ impl TypeChecker {
                     for (k, v) in entries.iter().skip(1) {
                         let k_ty = self.infer_expr(k);
                         let v_ty = self.infer_expr(v);
-                        self.require_assignable(key_ty, k_ty, "dict key");
-                        self.require_assignable(val_ty, v_ty, "dict value");
+                        self.unify_with_context(key_ty, k_ty, "dict key");
+                        self.unify_with_context(val_ty, v_ty, "dict value");
                     }
                     self.interner.intern(Ty::Dict {
                         key: key_ty,
@@ -126,6 +131,10 @@ impl TypeChecker {
                         value: any_value,
                     })
                 }
+            }
+            Expr::Call { callee, args, .. } => {
+                let callee_ty = self.infer_expr(callee);
+                self.infer_call_expr(callee_ty, args)
             }
             Expr::MacroApply {
                 macro_name,
@@ -159,6 +168,38 @@ impl TypeChecker {
         }
     }
 
+    fn infer_call_expr(&mut self, callee_ty: TyId, args: &[Expr]) -> TyId {
+        let expected_params: Vec<TyId> = args
+            .iter()
+            .map(|_| self.interner.fresh_infer_var(&mut self.next_infer_var))
+            .collect();
+        let expected_ret = self.interner.fresh_infer_var(&mut self.next_infer_var);
+        let expected_func = self.interner.intern(Ty::Func {
+            params: expected_params.clone(),
+            ret: expected_ret,
+        });
+
+        self.unify_with_context(callee_ty, expected_func, "callable expression");
+
+        for (idx, arg) in args.iter().enumerate() {
+            let arg_ty = self.infer_expr(arg);
+            let expected = expected_params[idx];
+            self.require_assignable(expected, arg_ty, "call argument");
+        }
+
+        self.unifier.resolve(expected_ret)
+    }
+
+    fn unify_with_context(&mut self, lhs: TyId, rhs: TyId, context: &str) -> TyId {
+        match self.unifier.unify(&mut self.interner, lhs, rhs, context) {
+            Ok(id) => id,
+            Err(diag) => {
+                self.diagnostics.push(*diag);
+                self.interner.intern(Ty::Any)
+            }
+        }
+    }
+
     fn require_assignable(&mut self, expected: TyId, actual: TyId, context: &str) {
         if expected == actual {
             return;
@@ -170,6 +211,11 @@ impl TypeChecker {
         let Some(actual_ty) = self.interner.get(actual).cloned() else {
             return;
         };
+
+        if matches!(expected_ty, Ty::InferVar(_)) || matches!(actual_ty, Ty::InferVar(_)) {
+            self.unify_with_context(expected, actual, context);
+            return;
+        }
 
         if can_implicitly_widen(&actual_ty, &expected_ty) {
             return;
@@ -411,5 +457,32 @@ mod tests {
             .find(|d| d.code == "E_TYPE_MISMATCH")
             .expect("expected mismatch diagnostic");
         assert!(!diag.related.is_empty());
+    }
+
+    #[test]
+    fn call_inference_uses_function_signature_shape() {
+        let program = Program {
+            declarations: vec![
+                Decl::Assign {
+                    name: "f".to_string(),
+                    value: Expr::Ident("unknown_callable".to_string()),
+                },
+                Decl::Assign {
+                    name: "y".to_string(),
+                    value: Expr::Call {
+                        callee: Box::new(Expr::Ident("f".to_string())),
+                        static_args: Vec::new(),
+                        args: vec![Expr::Int("1".to_string())],
+                    },
+                },
+            ],
+        };
+
+        let checked = check_module(&program);
+        let has_unify_error = checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "E_UNIFY_MISMATCH");
+        assert!(!has_unify_error);
     }
 }

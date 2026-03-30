@@ -5,6 +5,7 @@ pub struct TyId(pub usize);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Ty {
+    InferVar(u32),
     Int8,
     Int16,
     Int32,
@@ -81,6 +82,12 @@ impl TyInterner {
             never: self.intern(Ty::Never),
             any: self.intern(Ty::Any),
         }
+    }
+
+    pub fn fresh_infer_var(&mut self, next: &mut u32) -> TyId {
+        let id = self.intern(Ty::InferVar(*next));
+        *next += 1;
+        id
     }
 }
 
