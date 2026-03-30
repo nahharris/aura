@@ -22,6 +22,7 @@ pub struct TypeChecker {
     unifier: Unifier,
     next_infer_var: u32,
     obligation_stack: Vec<String>,
+    value_env: HashMap<String, TyId>,
     diagnostics: Vec<Diagnostic>,
     ir: CheckedIr,
 }
@@ -40,6 +41,7 @@ impl TypeChecker {
             unifier: Unifier::new(),
             next_infer_var: 0,
             obligation_stack: Vec::new(),
+            value_env: HashMap::new(),
             diagnostics: Vec::new(),
             ir: CheckedIr::empty(),
         }
@@ -69,6 +71,7 @@ impl TypeChecker {
                     });
                 }
                 values.insert(name.clone(), ty);
+                self.value_env.insert(name.clone(), ty);
                 self.pop_obligation();
             }
 
@@ -84,11 +87,27 @@ impl TypeChecker {
                 let expected_ret = self.resolve_type_expr(&function.return_type);
                 let actual_ret = self.infer_expr(&function.body);
                 self.require_assignable(expected_ret, actual_ret, "function return");
+                let lowered_body = self.coerce_or_cast_for_ir(
+                    expected_ret,
+                    actual_ret,
+                    self.lower_expr(&function.body),
+                    "function return",
+                );
                 self.ir.declarations.push(CheckedDecl {
                     name: function.name.clone(),
                     ty: expected_ret,
-                    value: self.lower_expr(&function.body),
+                    value: lowered_body,
                 });
+                let param_tys: Vec<TyId> = function
+                    .params
+                    .iter()
+                    .map(|p| self.resolve_type_expr(&p.ty))
+                    .collect();
+                let func_ty = self.interner.intern(Ty::Func {
+                    params: param_tys,
+                    ret: expected_ret,
+                });
+                self.value_env.insert(function.name.clone(), func_ty);
                 self.pop_obligation();
             }
 
@@ -104,10 +123,16 @@ impl TypeChecker {
                 let expected_ret = self.resolve_type_expr(&macro_decl.return_type);
                 let actual_ret = self.infer_expr(&macro_decl.body);
                 self.require_assignable(expected_ret, actual_ret, "macro return");
+                let lowered_body = self.coerce_or_cast_for_ir(
+                    expected_ret,
+                    actual_ret,
+                    self.lower_expr(&macro_decl.body),
+                    "macro return",
+                );
                 self.ir.declarations.push(CheckedDecl {
                     name: macro_decl.name.clone(),
                     ty: expected_ret,
-                    value: self.lower_expr(&macro_decl.body),
+                    value: lowered_body,
                 });
                 self.pop_obligation();
             }
@@ -125,6 +150,11 @@ impl TypeChecker {
 
     fn infer_expr(&mut self, expr: &Expr) -> TyId {
         match expr {
+            Expr::Ident(name) => self
+                .value_env
+                .get(name)
+                .copied()
+                .unwrap_or_else(|| self.interner.intern(Ty::Any)),
             Expr::Int(_) => self.aliases.get("Int").expect("Int alias must exist"),
             Expr::Float(_) => self.aliases.get("Float").expect("Float alias must exist"),
             Expr::Char(_) => self.interner.intern(Ty::Char),
@@ -192,7 +222,7 @@ impl TypeChecker {
             Expr::MacroApply {
                 macro_name,
                 operand,
-                ..
+                static_args,
             } if macro_name == "builtin" => {
                 if let Expr::Ident(name) = operand.as_ref() {
                     if self.builtins.get(name).is_none() {
@@ -215,6 +245,50 @@ impl TypeChecker {
                         .with_hint("use form: builtin io_write"),
                     );
                 }
+                self.interner.intern(Ty::Any)
+            }
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                static_args,
+            } if macro_name == "cast" => {
+                let source = self.infer_expr(operand);
+                let Some(target) = static_args
+                    .first()
+                    .and_then(|a| self.resolve_static_arg_type(a))
+                else {
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            "E_CAST_TARGET",
+                            "cast requires one target type static argument",
+                        )
+                        .with_obligations(&self.obligation_stack)
+                        .with_hint("use form like cast[Int] value"),
+                    );
+                    return self.interner.intern(Ty::Any);
+                };
+
+                let Some(source_ty) = self.interner.get(source).cloned() else {
+                    return self.interner.intern(Ty::Any);
+                };
+                let Some(target_ty) = self.interner.get(target).cloned() else {
+                    return self.interner.intern(Ty::Any);
+                };
+
+                if can_implicitly_widen(&source_ty, &target_ty)
+                    || self.is_explicit_cast_pair(&source_ty, &target_ty)
+                {
+                    return target;
+                }
+
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "E_CAST_INVALID",
+                        format!("invalid cast from {:?} to {:?}", source_ty, target_ty),
+                    )
+                    .with_obligations(&self.obligation_stack)
+                    .with_hint("check cast matrix or change source/target types"),
+                );
                 self.interner.intern(Ty::Any)
             }
             _ => self.interner.intern(Ty::Any),
