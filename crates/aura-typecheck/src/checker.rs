@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use aura_frontend::ast::{Decl, Expr, Program};
+use aura_frontend::ast::{Decl, Expr, Program, StaticArg, StaticValueExpr, TypeExpr};
 
 use crate::aliases::TypeAliases;
 use crate::builtins::BuiltinRegistry;
@@ -73,21 +73,43 @@ impl TypeChecker {
             }
 
             if let Decl::Function(function) = decl {
+                self.push_obligation(format!("checking function '{}'", function.name));
                 if let Expr::MultiArm(arms) = &function.body {
                     self.diagnostics
                         .extend(self.pattern_checker.validate_multi_arm_exhaustiveness(arms));
                     self.diagnostics
                         .extend(self.pattern_checker.validate_redundancy(arms));
                 }
+
+                let expected_ret = self.resolve_type_expr(&function.return_type);
+                let actual_ret = self.infer_expr(&function.body);
+                self.require_assignable(expected_ret, actual_ret, "function return");
+                self.ir.declarations.push(CheckedDecl {
+                    name: function.name.clone(),
+                    ty: expected_ret,
+                    value: self.lower_expr(&function.body),
+                });
+                self.pop_obligation();
             }
 
             if let Decl::Macro(macro_decl) = decl {
+                self.push_obligation(format!("checking macro '{}'", macro_decl.name));
                 if let Expr::MultiArm(arms) = &macro_decl.body {
                     self.diagnostics
                         .extend(self.pattern_checker.validate_multi_arm_exhaustiveness(arms));
                     self.diagnostics
                         .extend(self.pattern_checker.validate_redundancy(arms));
                 }
+
+                let expected_ret = self.resolve_type_expr(&macro_decl.return_type);
+                let actual_ret = self.infer_expr(&macro_decl.body);
+                self.require_assignable(expected_ret, actual_ret, "macro return");
+                self.ir.declarations.push(CheckedDecl {
+                    name: macro_decl.name.clone(),
+                    ty: expected_ret,
+                    value: self.lower_expr(&macro_decl.body),
+                });
+                self.pop_obligation();
             }
         }
 
@@ -147,6 +169,26 @@ impl TypeChecker {
                 let callee_ty = self.infer_expr(callee);
                 self.infer_call_expr(callee_ty, args)
             }
+            Expr::MultiArm(arms) => {
+                if let Some(first) = arms.first() {
+                    let first_ty = self.infer_expr(&first.body);
+                    for arm in arms.iter().skip(1) {
+                        let arm_ty = self.infer_expr(&arm.body);
+                        self.require_assignable(first_ty, arm_ty, "multi-arm result");
+                    }
+                    self.unifier.resolve(first_ty)
+                } else {
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            "E_PATTERN_EMPTY_ARMS",
+                            "multi-arm expression must contain at least one arm",
+                        )
+                        .with_obligations(&self.obligation_stack)
+                        .with_hint("add at least one pattern arm"),
+                    );
+                    self.interner.intern(Ty::Any)
+                }
+            }
             Expr::MacroApply {
                 macro_name,
                 operand,
@@ -176,6 +218,89 @@ impl TypeChecker {
                 self.interner.intern(Ty::Any)
             }
             _ => self.interner.intern(Ty::Any),
+        }
+    }
+
+    fn resolve_type_expr(&mut self, ty: &TypeExpr) -> TyId {
+        match ty {
+            TypeExpr::Static(inner) => self.resolve_type_expr(inner),
+            TypeExpr::Named { name, args } => {
+                if let Some(alias) = self.aliases.get(name) {
+                    return alias;
+                }
+
+                match name.as_str() {
+                    "Bool" => self.interner.intern(Ty::Bool),
+                    "Char" => self.interner.intern(Ty::Char),
+                    "Void" => self.interner.intern(Ty::Void),
+                    "Never" => self.interner.intern(Ty::Never),
+                    "Any" => self.interner.intern(Ty::Any),
+                    "String" => self.interner.intern(Ty::Nominal("String".to_string())),
+                    "List" => {
+                        let item = args
+                            .first()
+                            .and_then(|a| self.resolve_static_arg_type(a))
+                            .unwrap_or_else(|| self.interner.intern(Ty::Any));
+                        self.interner.intern(Ty::List(item))
+                    }
+                    "Dict" => {
+                        let key = args
+                            .first()
+                            .and_then(|a| self.resolve_static_arg_type(a))
+                            .unwrap_or_else(|| self.interner.intern(Ty::Any));
+                        let value = args
+                            .get(1)
+                            .and_then(|a| self.resolve_static_arg_type(a))
+                            .unwrap_or_else(|| self.interner.intern(Ty::Any));
+                        self.interner.intern(Ty::Dict { key, value })
+                    }
+                    "Set" => {
+                        let item = args
+                            .first()
+                            .and_then(|a| self.resolve_static_arg_type(a))
+                            .unwrap_or_else(|| self.interner.intern(Ty::Any));
+                        self.interner.intern(Ty::Set(item))
+                    }
+                    "Array" => {
+                        let item = args
+                            .first()
+                            .and_then(|a| self.resolve_static_arg_type(a))
+                            .unwrap_or_else(|| self.interner.intern(Ty::Any));
+                        let size = args
+                            .get(1)
+                            .and_then(|arg| match arg {
+                                StaticArg::Value(StaticValueExpr::Int(raw)) => {
+                                    raw.parse::<u64>().ok()
+                                }
+                                _ => None,
+                            })
+                            .unwrap_or(0);
+                        self.interner.intern(Ty::Array { item, size })
+                    }
+                    "Func" => {
+                        let a = args
+                            .first()
+                            .and_then(|a| self.resolve_static_arg_type(a))
+                            .unwrap_or_else(|| self.interner.intern(Ty::Any));
+                        let b = args
+                            .get(1)
+                            .and_then(|a| self.resolve_static_arg_type(a))
+                            .unwrap_or_else(|| self.interner.intern(Ty::Any));
+                        self.interner.intern(Ty::Func {
+                            params: vec![a],
+                            ret: b,
+                        })
+                    }
+                    _ => self.interner.intern(Ty::Nominal(name.clone())),
+                }
+            }
+        }
+    }
+
+    fn resolve_static_arg_type(&mut self, arg: &StaticArg) -> Option<TyId> {
+        match arg {
+            StaticArg::Type(ty) => Some(self.resolve_type_expr(ty)),
+            StaticArg::Value(_) => None,
         }
     }
 
@@ -567,6 +692,69 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
+    }
+
+    #[test]
+    fn function_return_mismatch_produces_diagnostic() {
+        let program = Program {
+            declarations: vec![Decl::Function(FunctionDecl {
+                static_params: Vec::new(),
+                receiver: Some(TypeExpr::Named {
+                    name: "Example".to_string(),
+                    args: Vec::new(),
+                }),
+                name: "f".to_string(),
+                params: Vec::new(),
+                return_type: TypeExpr::Named {
+                    name: "Int".to_string(),
+                    args: Vec::new(),
+                },
+                body: Expr::String("oops".to_string()),
+            })],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked.module.is_none());
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "E_TYPE_MISMATCH"));
+    }
+
+    #[test]
+    fn multi_arm_result_type_mismatch_produces_diagnostic() {
+        let program = Program {
+            declarations: vec![Decl::Function(FunctionDecl {
+                static_params: Vec::new(),
+                receiver: Some(TypeExpr::Named {
+                    name: "Example".to_string(),
+                    args: Vec::new(),
+                }),
+                name: "g".to_string(),
+                params: Vec::new(),
+                return_type: TypeExpr::Named {
+                    name: "Any".to_string(),
+                    args: Vec::new(),
+                },
+                body: Expr::MultiArm(vec![
+                    aura_frontend::ast::Arm {
+                        patterns: vec![Pattern::Ident("a".to_string())],
+                        body: Expr::Int("1".to_string()),
+                    },
+                    aura_frontend::ast::Arm {
+                        patterns: vec![Pattern::Wildcard],
+                        body: Expr::String("bad".to_string()),
+                    },
+                ]),
+            })],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked.module.is_none());
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "E_TYPE_MISMATCH"));
     }
 
     #[test]
