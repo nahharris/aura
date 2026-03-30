@@ -54,6 +54,13 @@ pub enum CheckedExpr {
     Cases {
         arms: Vec<CheckedExpr>,
     },
+    Return {
+        value: Box<CheckedExpr>,
+    },
+    Break {
+        value: Option<Box<CheckedExpr>>,
+    },
+    Continue,
     Coerce {
         from: TyId,
         to: TyId,

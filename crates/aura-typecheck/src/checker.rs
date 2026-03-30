@@ -305,6 +305,28 @@ impl TypeChecker {
                 macro_name,
                 operand,
                 static_args,
+            } if macro_name == "return" => self.infer_expr(operand),
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                static_args,
+            } if macro_name == "break" => {
+                if let Expr::List(items) = operand.as_ref() {
+                    if let Some(v) = items.first() {
+                        return self.infer_expr(v);
+                    }
+                }
+                self.interner.intern(Ty::Void)
+            }
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                static_args,
+            } if macro_name == "continue" => self.interner.intern(Ty::Void),
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                static_args,
             } => {
                 if macro_name == "add"
                     || macro_name == "sub"
@@ -739,6 +761,32 @@ impl TypeChecker {
                 }
                 CheckedExpr::Any
             }
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                static_args,
+            } if macro_name == "return" => CheckedExpr::Return {
+                value: Box::new(self.lower_expr(operand)),
+            },
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                static_args,
+            } if macro_name == "break" => {
+                if let Expr::List(items) = operand.as_ref() {
+                    let value = items.first().map(|v| Box::new(self.lower_expr(v)));
+                    CheckedExpr::Break { value }
+                } else {
+                    CheckedExpr::Break {
+                        value: Some(Box::new(self.lower_expr(operand))),
+                    }
+                }
+            }
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                static_args,
+            } if macro_name == "continue" => CheckedExpr::Continue,
             Expr::MacroApply {
                 macro_name,
                 operand,
@@ -1249,6 +1297,53 @@ mod tests {
         assert!(matches!(
             module.ir.declarations[0].value,
             CheckedExpr::Cases { .. }
+        ));
+    }
+
+    #[test]
+    fn return_break_continue_lower_to_control_flow_ir() {
+        let program = Program {
+            declarations: vec![
+                Decl::Assign {
+                    name: "r".to_string(),
+                    value: Expr::MacroApply {
+                        macro_name: "return".to_string(),
+                        static_args: Vec::new(),
+                        operand: Box::new(Expr::Int("1".to_string())),
+                    },
+                },
+                Decl::Assign {
+                    name: "b".to_string(),
+                    value: Expr::MacroApply {
+                        macro_name: "break".to_string(),
+                        static_args: Vec::new(),
+                        operand: Box::new(Expr::List(vec![Expr::Int("9".to_string())])),
+                    },
+                },
+                Decl::Assign {
+                    name: "c".to_string(),
+                    value: Expr::MacroApply {
+                        macro_name: "continue".to_string(),
+                        static_args: Vec::new(),
+                        operand: Box::new(Expr::Ident("unit".to_string())),
+                    },
+                },
+            ],
+        };
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        assert!(matches!(
+            module.ir.declarations[0].value,
+            CheckedExpr::Return { .. }
+        ));
+        assert!(matches!(
+            module.ir.declarations[1].value,
+            CheckedExpr::Break { .. }
+        ));
+        assert!(matches!(
+            module.ir.declarations[2].value,
+            CheckedExpr::Continue
         ));
     }
 }
