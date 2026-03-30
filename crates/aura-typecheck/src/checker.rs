@@ -64,10 +64,11 @@ impl TypeChecker {
                         value: coerced,
                     });
                 } else {
+                    let lowered = self.lower_expr(value);
                     self.ir.declarations.push(CheckedDecl {
                         name: name.clone(),
                         ty,
-                        value: self.lower_expr(value),
+                        value: lowered,
                     });
                 }
                 values.insert(name.clone(), ty);
@@ -87,10 +88,11 @@ impl TypeChecker {
                 let expected_ret = self.resolve_type_expr(&function.return_type);
                 let actual_ret = self.infer_expr(&function.body);
                 self.require_assignable(expected_ret, actual_ret, "function return");
+                let lowered_function_body = self.lower_expr(&function.body);
                 let lowered_body = self.coerce_or_cast_for_ir(
                     expected_ret,
                     actual_ret,
-                    self.lower_expr(&function.body),
+                    lowered_function_body,
                     "function return",
                 );
                 self.ir.declarations.push(CheckedDecl {
@@ -123,10 +125,11 @@ impl TypeChecker {
                 let expected_ret = self.resolve_type_expr(&macro_decl.return_type);
                 let actual_ret = self.infer_expr(&macro_decl.body);
                 self.require_assignable(expected_ret, actual_ret, "macro return");
+                let lowered_macro_body = self.lower_expr(&macro_decl.body);
                 let lowered_body = self.coerce_or_cast_for_ir(
                     expected_ret,
                     actual_ret,
-                    self.lower_expr(&macro_decl.body),
+                    lowered_macro_body,
                     "macro return",
                 );
                 self.ir.declarations.push(CheckedDecl {
@@ -706,7 +709,7 @@ impl TypeChecker {
         let _ = self.obligation_stack.pop();
     }
 
-    fn lower_expr(&self, expr: &Expr) -> CheckedExpr {
+    fn lower_expr(&mut self, expr: &Expr) -> CheckedExpr {
         match expr {
             Expr::Ident(v) => CheckedExpr::Ident(v.clone()),
             Expr::Int(v) => CheckedExpr::Int(v.clone()),
@@ -765,6 +768,22 @@ impl TypeChecker {
                 macro_name,
                 operand,
                 static_args,
+            } if macro_name == "cast" => {
+                let source_ty = self.preview_expr_ty(operand);
+                let target_ty = static_args
+                    .first()
+                    .and_then(|a| self.resolve_static_arg_type(a))
+                    .unwrap_or_else(|| self.interner.intern(Ty::Any));
+                CheckedExpr::Cast {
+                    from: source_ty,
+                    to: target_ty,
+                    expr: Box::new(self.lower_expr(operand)),
+                }
+            }
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                static_args,
             } if macro_name == "return" => CheckedExpr::Return {
                 value: Box::new(self.lower_expr(operand)),
             },
@@ -812,6 +831,27 @@ impl TypeChecker {
                     .collect::<Vec<_>>(),
             ),
             _ => CheckedExpr::Any,
+        }
+    }
+
+    fn preview_expr_ty(&mut self, expr: &Expr) -> TyId {
+        match expr {
+            Expr::Ident(name) => self
+                .value_env
+                .get(name)
+                .copied()
+                .unwrap_or_else(|| self.interner.intern(Ty::Any)),
+            Expr::Int(_) => self
+                .aliases
+                .get("Int")
+                .unwrap_or_else(|| self.interner.intern(Ty::Int32)),
+            Expr::Float(_) => self
+                .aliases
+                .get("Float")
+                .unwrap_or_else(|| self.interner.intern(Ty::Float32)),
+            Expr::Char(_) => self.interner.intern(Ty::Char),
+            Expr::String(_) => self.interner.intern(Ty::Nominal("String".to_string())),
+            _ => self.interner.intern(Ty::Any),
         }
     }
 }
@@ -1344,6 +1384,30 @@ mod tests {
         assert!(matches!(
             module.ir.declarations[2].value,
             CheckedExpr::Continue
+        ));
+    }
+
+    #[test]
+    fn cast_macro_lowers_to_explicit_cast_ir() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                name: "x".to_string(),
+                value: Expr::MacroApply {
+                    macro_name: "cast".to_string(),
+                    static_args: vec![StaticArg::Type(TypeExpr::Named {
+                        name: "Float".to_string(),
+                        args: Vec::new(),
+                    })],
+                    operand: Box::new(Expr::Int("1".to_string())),
+                },
+            }],
+        };
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        assert!(matches!(
+            module.ir.declarations[0].value,
+            CheckedExpr::Cast { .. }
         ));
     }
 }
