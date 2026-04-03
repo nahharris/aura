@@ -1,0 +1,9 @@
+[package]
+name = "aura-typecheck"
+version = "0.1.0"
+edition = "2021"
+description = "Aura typechecker and semantic analysis"
+
+[dependencies]
+aura-frontend = { path = "../aura-frontend" }
+aura-diagnostics = { path = "../aura-diagnostics" }

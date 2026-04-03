@@ -1,13 +1,11 @@
 def falsey(value: union(Int, Float, Char, String, List[Any], Bool)) -> Bool {
-    {
-        0 -> true,
-        0.0 -> true,
-        '\0' -> true,
-        "" -> true,
-        [] -> true,
-        false -> true,
-        _ -> false
-    }(value)
+    0 -> true,
+    0.0 -> true,
+    '\0' -> true,
+    "" -> true,
+    [] -> true,
+    false -> true,
+    _ -> false
 }
 
 def main() -> Void {

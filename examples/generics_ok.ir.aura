@@ -1,0 +1,85 @@
+# Aura Checked IR
+
+## Declarations
+- id: ty#19
+Ident(
+    "x",
+)
+
+- a: ty#2
+Call {
+    callee: Ident(
+        "id",
+    ),
+    args: [
+        Int(
+            "1",
+        ),
+    ],
+}
+
+- b: ty#2
+Call {
+    callee: Ident(
+        "id",
+    ),
+    args: [
+        Int(
+            "2",
+        ),
+    ],
+}
+
+- c: ty#2
+Call {
+    callee: Ident(
+        "id",
+    ),
+    args: [
+        Int(
+            "3",
+        ),
+    ],
+}
+
+## Value Types
+- a: ty#2
+- b: ty#2
+- c: ty#2
+
+## Type Table
+- ty#0: Int8
+- ty#1: Int16
+- ty#2: Int32
+- ty#3: Int64
+- ty#4: Int128
+- ty#5: ISize
+- ty#6: UInt8
+- ty#7: UInt16
+- ty#8: UInt32
+- ty#9: UInt64
+- ty#10: UInt128
+- ty#11: USize
+- ty#12: Float32
+- ty#13: Float64
+- ty#14: Bool
+- ty#15: Char
+- ty#16: Void
+- ty#17: Never
+- ty#18: Any
+- ty#19: GenericParam("T")
+- ty#20: Func { params: [TyId(19)], ret: TyId(19) }
+- ty#21: InferVar(0)
+- ty#22: Func { params: [TyId(21)], ret: TyId(21) }
+- ty#23: InferVar(1)
+- ty#24: InferVar(2)
+- ty#25: Func { params: [TyId(23)], ret: TyId(24) }
+- ty#26: InferVar(3)
+- ty#27: Func { params: [TyId(26)], ret: TyId(26) }
+- ty#28: InferVar(4)
+- ty#29: InferVar(5)
+- ty#30: Func { params: [TyId(28)], ret: TyId(29) }
+- ty#31: Func { params: [TyId(2)], ret: TyId(2) }
+- ty#32: InferVar(6)
+- ty#33: InferVar(7)
+- ty#34: Func { params: [TyId(32)], ret: TyId(33) }

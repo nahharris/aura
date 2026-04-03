@@ -1,0 +1,84 @@
+# Aura Checked IR
+
+## Declarations
+- sum: ty#2
+BinaryOp {
+    op: Add,
+    lhs: Int(
+        "1",
+    ),
+    rhs: Int(
+        "2",
+    ),
+    ty: TyId(
+        2,
+    ),
+}
+
+- cmp: ty#14
+BinaryOp {
+    op: Gt,
+    lhs: Float(
+        "3.0",
+    ),
+    rhs: Float(
+        "2.0",
+    ),
+    ty: TyId(
+        14,
+    ),
+}
+
+- logic: ty#14
+BinaryOp {
+    op: And,
+    lhs: Ident(
+        "true",
+    ),
+    rhs: Ident(
+        "false",
+    ),
+    ty: TyId(
+        14,
+    ),
+}
+
+- ratio: ty#12
+Cast {
+    from: TyId(
+        2,
+    ),
+    to: TyId(
+        12,
+    ),
+    expr: Int(
+        "1",
+    ),
+}
+
+## Value Types
+- cmp: ty#14
+- logic: ty#14
+- ratio: ty#12
+- sum: ty#2
+
+## Type Table
+- ty#0: Int8
+- ty#1: Int16
+- ty#2: Int32
+- ty#3: Int64
+- ty#4: Int128
+- ty#5: ISize
+- ty#6: UInt8
+- ty#7: UInt16
+- ty#8: UInt32
+- ty#9: UInt64
+- ty#10: UInt128
+- ty#11: USize
+- ty#12: Float32
+- ty#13: Float64
+- ty#14: Bool
+- ty#15: Char
+- ty#16: Void
+- ty#17: Never
+- ty#18: Any

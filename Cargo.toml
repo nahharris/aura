@@ -1,13 +1,6 @@
-[package]
-name = "aura"
-version = "0.1.0"
-edition = "2021"
-description = "The Aura programming language — a functional language with bytecode VM and garbage collection"
-authors = ["Aura Language Team"]
-
-[[bin]]
-name = "aura"
-path = "src/main.rs"
-
-[dependencies]
-thiserror = "1.0"
+[workspace]
+members = ["crates/aura-cli","crates/aura-diagnostics",
+    "crates/aura-frontend",
+    "crates/aura-typecheck",
+]
+resolver = "2"

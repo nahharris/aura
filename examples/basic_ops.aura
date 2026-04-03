@@ -1,0 +1,4 @@
+def sum = 1 + 2
+def cmp = 3.0 > 2.0
+def logic = true && false
+def ratio = 1: Float

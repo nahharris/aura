@@ -1,0 +1,96 @@
+{
+  "contract_version": "v1",
+  "declarations": [
+    {
+      "name": "sum",
+      "ty": 2,
+      "value": {
+        "kind": "BinaryOp",
+        "op": "add",
+        "lhs": {
+          "kind": "Int",
+          "value": "1"
+        },
+        "rhs": {
+          "kind": "Int",
+          "value": "2"
+        },
+        "ty": 2
+      }
+    },
+    {
+      "name": "cmp",
+      "ty": 14,
+      "value": {
+        "kind": "BinaryOp",
+        "op": "gt",
+        "lhs": {
+          "kind": "Float",
+          "value": "3.0"
+        },
+        "rhs": {
+          "kind": "Float",
+          "value": "2.0"
+        },
+        "ty": 14
+      }
+    },
+    {
+      "name": "logic",
+      "ty": 14,
+      "value": {
+        "kind": "BinaryOp",
+        "op": "and",
+        "lhs": {
+          "kind": "Ident",
+          "value": "true"
+        },
+        "rhs": {
+          "kind": "Ident",
+          "value": "false"
+        },
+        "ty": 14
+      }
+    },
+    {
+      "name": "ratio",
+      "ty": 12,
+      "value": {
+        "kind": "Cast",
+        "from": 2,
+        "to": 12,
+        "expr": {
+          "kind": "Int",
+          "value": "1"
+        }
+      }
+    }
+  ],
+  "value_types": {
+    "cmp": 14,
+    "logic": 14,
+    "ratio": 12,
+    "sum": 2
+  },
+  "types": [
+    "Int8",
+    "Int16",
+    "Int32",
+    "Int64",
+    "Int128",
+    "ISize",
+    "UInt8",
+    "UInt16",
+    "UInt32",
+    "UInt64",
+    "UInt128",
+    "USize",
+    "Float32",
+    "Float64",
+    "Bool",
+    "Char",
+    "Void",
+    "Never",
+    "Any"
+  ]
+}

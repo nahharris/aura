@@ -84,11 +84,29 @@ let array = [
 
 ### Macro Application
 
-Macro application is written as `macro_name ast_node`. They will do transformations at compile time on a single AST node. They do support arguments using the `[ ]` syntax.
+Macro application is written as `macro_name[args] node` and always consumes exactly one AST-node operand.
+
+Grammar:
+
+```
+macro_apply_expr ::= macro_head macro_operand
+macro_head       ::= identifier static_args?
+macro_operand    ::= atom_expr | macro_apply_expr
+```
+
+This grammar makes chaining right-associative:
 
 ```aura
-def name = "Aura"; // Macro `def` applied on a assignment AST node
-def[T, U] Pair = (T, U); // Macro `def` applied on a assignment AST node with arguments
+a b node   // parses as: a (b node)
+```
+
+`static_args` accept both type expressions and compile-time-known values (see [Generic parameter constraints](#generic-parameter-constraints)).
+
+```aura
+def name = "Aura";
+def[T, U] Pair = (T, U);
+macro_name node;
+macro_name[T, 4] node;
 ```
 
 ### Function Calls
@@ -121,7 +139,8 @@ Aura is a statically type-safe language. Every expression has a type, and types 
 Types are written in `PascalCase`. Generic static arguments use square brackets.
 
 ```
-type_expr ::= identifier type_args?
+type_expr ::= "static" type_expr
+           |  identifier type_args?
            |  "(" type_expr ("," type_expr)* ")"
            |  "(" struct_field_ty ("," struct_field_ty)* ","? ")"
 
@@ -151,11 +170,20 @@ def Person.to_string(self) -> String {
 
 ### Generic parameter constraints
 
-On `def` declarations, type parameters may carry interface constraints, mirroring the reference implementation:
+On `def` and `defmacro` declarations, static parameters may carry interface-like constraints:
 
 - `def[T: Show] ...` — single bound
 - `def[T: (Show, Eq)] ...` — multiple bounds as a parenthesised list
 - `def[n: static Int] ...` — compile-time constant value as a bound
+
+`static` is a reusable compile-time constraint interface, not feature-specific syntax. A value satisfies `static T` iff it is known at compile time under one shared rule:
+
+1. Literal values of type `T` satisfy `static T`.
+2. Bindings proven compile-time-known by the frontend's static-evaluation pass also satisfy `static T`.
+
+The same rule is used for declaration bounds and macro static argument validation.
+
+`static` is a regular type-expression constructor, so it is valid anywhere a type expression is valid, for example `n: static Int`, `-> static Expr[T]`, and `Expr[static Int]`.
 
 Examples of built-in / standard types:
 
@@ -478,7 +506,7 @@ Macro definition:
 
 ```aura
 defmacro let(
-    ...assignments: List[Assignment]
+    assignment: Assignment
 ) -> Stmt
 ```
 
@@ -820,7 +848,7 @@ add(b = 2, a = 1)
 
 ### Trailing-Lambda Syntax
 
-Closure arguments (`{ }`) may be placed *outside* the parentheses as trailing arguments. This is the mechanism that makes `if`, `loop`, and similar macros feel like built-in syntax.
+Closure arguments (`{ }`) may be placed *outside* the parentheses as trailing arguments.
 
 **Only closures** can be trailing arguments. Lists, dicts, and other values must always be passed inside `( )`.
 
@@ -828,19 +856,19 @@ Rules:
 
 1. **Parentheses are mandatory** for all non-closure arguments, even when there are none: `loop do { }` is valid because `loop` takes no non-closure arguments. A call like `foo 42 { }` (passing a non-closure value outside parentheses) is a syntax error.
 2. The trailing closure arguments must be the **last** parameters in the function signature.
-3. The **first** trailing closure needs no label; subsequent ones require their external parameter label.
+3. All trailing closures must be labeled by their external parameter name.
 4. Continuation trailing closures must begin on the **same line** as the preceding `}` (due to the implicit-semicolon rule after `}`).
 
 ```aura
 def do2(value: Int, this: Func[Int, Void], that: Func[Int, Void])
 
-// All three forms are equivalent:
+// Equivalent forms:
 do2(1, this = { v -> print(v); }, that = { v -> print(v); })
 
-do2(1) { v -> print(v); } that { v -> print(v); }
+do2(1) this { v -> print(v); } that { v -> print(v); }
 ```
 
-A single trailing closure with no label:
+A single trailing closure still uses its label:
 
 ```aura
 loop do {
@@ -862,7 +890,7 @@ do_stuff(12, "hi", value = false) task {
 
 ## Control Flow
 
-All control flow is implemented as macros. Their bodies are closures that are **inlined** into the call site — `return` inside an `if` branch returns from the enclosing function, not from the `if` itself.
+`if` and `cases` are inline functions. Their bodies are closures that are **inlined** into the call site — `return` inside an `if` branch returns from the enclosing function, not from the `if` itself.
 
 ### `if`
 
@@ -880,19 +908,21 @@ if (condition) then {
 
 The `then` block is a `Func[Void, T]` trailing lambda. The `else` block is a second trailing lambda with the label `else`. Both blocks must have the same type `T`; the version without an `else` branch returns `Void`.
 
-Macro definitions:
+`if` is an inline function, it desugars to a function call with the following signature:
 
 ```aura
-defmacro if(
-    condition: Expr[Bool],
-    then: Expr[Func[Void, Void]]
-) -> Expr[Void]
+inline def if[T](
+    condition: Bool,
+    then:      Func[Void, T],
+) -> Never
+```
 
-defmacro if[T](
-    condition: Expr[Bool],
-    then:      Expr[Func[Void, T]],
-    else:      Expr[Func[Void, T]]
-) -> Expr[T]
+```aura
+inline def if[T](
+    condition: Bool,
+    then:      Func[Void, T],
+    else:      Func[Void, T]
+) -> T
 ```
 
 `if` is an expression. It can appear anywhere an expression is valid:
@@ -914,7 +944,7 @@ Multi-branch conditionals are handled by `cases` — see [`cases`](#cases).
 `cases` is the multi-branch conditional. It takes no initial argument; instead, each arm is a guard-only pattern (`~ condition -> expr`) evaluated in order. The first arm whose condition is `true` is taken. This replaces the `else if` chain found in other languages.
 
 ```aura
-cases {
+cases when {
     ~ x > 0  -> "positive",
     ~ x < 0  -> "negative",
     ~ true   -> "zero"
@@ -925,19 +955,19 @@ The final arm's condition is conventionally `~ true` to serve as the default (ca
 
 `cases` is an expression and returns the value of the taken arm. All arms must have the same type.
 
-Macro definition:
+`cases` is an inline function, it desugars to a function call with the following signature:
 
 ```aura
-defmacro cases[T](
-    arms: Expr[Func[Void, T]]
-) -> Expr[T]
+inline def cases[T](
+    arms: Func[Void, T]
+) -> T
 ```
 
 The `arms` argument is a multi-arm closure where every arm has no patterns — only a guard. This is ordinary multi-arm closure syntax with the pattern list omitted:
 
 ```aura
 // cases desugars to calling its closure argument with no input:
-cases {
+cases when {
     ~ cond1 -> expr1,
     ~ cond2 -> expr2,
     ~ true  -> exprDefault
@@ -984,16 +1014,16 @@ Iteration over collections uses the `.each` method on `Iterable[T]`:
 Macro definitions:
 
 ```aura
-defmacro loop(
-    body do: Expr[Func[Void, Void]]
-) -> Void
+inline def loop(
+    do: Func[Void, Void]
+) -> Never
 
-defmacro loop(
-    condition while: Expr[Func[Void, Bool]],
-    body      do:    Expr[Func[Void, Void]]
-) -> Void
+inline def loop(
+    while: Func[Void, Bool],
+    do: Func[Void, Void]
+) -> Never
 ```
-
+****
 ### `return`
 
 Exits a labelled scope with a value. In the common case, `return` targets the enclosing `def` function body, whose implicit atom is the function's name.
@@ -1101,6 +1131,22 @@ loop do {
 
 Declarations that use the `def`-family macros (`def`, `defmacro`) are *static* — they exist at module scope, are resolved at compile time, and may also appear inside function bodies. `let` and `const` are *dynamic* — they exist inside local scopes.
 
+### Declaration Normalization
+
+Function-like declaration syntax is surface sugar over assignment semantics. The normalized internal shape is always an assignment of a closure-like value to a name.
+
+```aura
+name(args...) -> R { body }
+// normalizes to
+name = { args... -> body }
+
+defmacro[static_args] m(node) -> T { body }
+// normalizes to
+m = <macro-closure value with static interface metadata>
+```
+
+This rule is semantic, not stylistic: parser/typechecker/compiler phases may use normalized assignment form as the canonical internal representation.
+
 ### `def` — Static Value and Type Declarations
 
 `def` is the universal module-level declaration. It handles compile-time constant values, type aliases (named tuples, structs, unions, enums, interfaces), and destructuring assignments with full pattern support.
@@ -1157,6 +1203,14 @@ def add(a: Int, b: Int) -> Int {
 }
 ```
 
+Function-form declarations are syntax sugar over assignment-form semantics:
+
+```aura
+add(a: Int, b: Int) -> Int { a + b }
+// normalizes to
+add = { a: Int, b: Int -> a + b }
+```
+
 The return type after `->` is optional when it can be inferred. The body is a block; its final expression is the return value (a `return` statement is also valid).
 
 **Method declaration:** prefix the name with the receiver type and `.`:
@@ -1183,6 +1237,27 @@ defmacro def[T, U](
 ### Macro Declarations
 
 `defmacro` declares a compile-time macro. The macro receives *unevaluated* expressions (`Expr[T]`) and produces an `Expr` or `Stmt` node that is spliced into the AST at the call site.
+
+Canonical declaration form:
+
+```aura
+defmacro[static_args] macro_name(ast_node) -> T { ... }
+```
+
+Grammar:
+
+```
+macro_decl      ::= "defmacro" static_params? identifier "(" param_list? ")" "->" type_expr block
+static_params   ::= "[" static_param ("," static_param)* ","? "]"
+static_param    ::= identifier | identifier ":" "static" type_expr
+```
+
+As with functions, function-like `defmacro` declaration syntax is assignment sugar:
+
+```aura
+defmacro[T, n: static Int] m(node: Expr[T]) -> Expr[T] { body }
+// normalizes to assignment semantics using a macro-closure value bound to `m`
+```
 
 ```aura
 defmacro unless(

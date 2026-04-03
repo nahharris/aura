@@ -1,0 +1,3 @@
+def bad(x: Int) -> Int { "oops" }
+
+def y = bad(1)
