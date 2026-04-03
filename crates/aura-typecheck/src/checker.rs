@@ -37,6 +37,7 @@ pub struct TypeChecker {
     function_generics: HashMap<String, Vec<FunctionGenericInfo>>,
     pending_constraints: Vec<TypeConstraint>,
     solving_constraints: bool,
+    current_expr_span: Option<aura_diagnostics::Span>,
     diagnostics: Vec<Diagnostic>,
     ir: CheckedIr,
 }
@@ -48,23 +49,27 @@ enum TypeConstraint {
         rhs: TyId,
         context: String,
         obligations: Vec<String>,
+        span: Option<aura_diagnostics::Span>,
     },
     Assignable {
         expected: TyId,
         actual: TyId,
         context: String,
         obligations: Vec<String>,
+        span: Option<aura_diagnostics::Span>,
     },
     InterfaceBound {
         ty: TyId,
         interface: String,
         context: String,
         obligations: Vec<String>,
+        span: Option<aura_diagnostics::Span>,
     },
     InterfaceExists {
         interface: String,
         context: String,
         obligations: Vec<String>,
+        span: Option<aura_diagnostics::Span>,
     },
     StaticBound {
         arg: Option<StaticArg>,
@@ -72,6 +77,7 @@ enum TypeConstraint {
         expected: TypeExpr,
         context: String,
         obligations: Vec<String>,
+        span: Option<aura_diagnostics::Span>,
     },
 }
 
@@ -115,9 +121,18 @@ impl TypeChecker {
             function_generics: HashMap::new(),
             pending_constraints: Vec::new(),
             solving_constraints: false,
+            current_expr_span: None,
             diagnostics: Vec::new(),
             ir: CheckedIr::empty(),
         }
+    }
+
+    fn base_expr(expr: &Expr) -> &Expr {
+        let mut cur = expr;
+        while let Expr::Spanned { expr, .. } = cur {
+            cur = expr.as_ref();
+        }
+        cur
     }
 
     pub fn check_program(&mut self, program: &Program) -> HashMap<String, TyId> {
@@ -126,6 +141,8 @@ impl TypeChecker {
 
         for decl in &program.declarations {
             if let Decl::Assign { name, value } = decl {
+                let prev_span = self.current_expr_span;
+                self.current_expr_span = Expr::span(value);
                 self.push_obligation(format!("checking declaration '{name}'"));
                 self.pending_constraints.clear();
                 let ty = self.infer_expr(value);
@@ -157,9 +174,12 @@ impl TypeChecker {
                 values.insert(name.clone(), ty);
                 self.insert_value(name.clone(), ty);
                 self.pop_obligation();
+                self.current_expr_span = prev_span;
             }
 
             if let Decl::Function(function) = decl {
+                let prev_span = self.current_expr_span;
+                self.current_expr_span = Expr::span(&function.body);
                 self.push_obligation(format!("checking function '{}'", function.name));
                 self.pending_constraints.clear();
                 self.push_generic_scope();
@@ -172,7 +192,7 @@ impl TypeChecker {
                     let param_ty = self.resolve_type_expr(&param.ty);
                     self.insert_value(param.name.clone(), param_ty);
                 }
-                if let Expr::MultiArm(arms) = &function.body {
+                if let Expr::MultiArm(arms) = TypeChecker::base_expr(&function.body) {
                     self.diagnostics
                         .extend(self.pattern_checker.validate_multi_arm_exhaustiveness(arms));
                     self.diagnostics
@@ -219,9 +239,12 @@ impl TypeChecker {
                     );
                 }
                 self.pop_obligation();
+                self.current_expr_span = prev_span;
             }
 
             if let Decl::Macro(macro_decl) = decl {
+                let prev_span = self.current_expr_span;
+                self.current_expr_span = Expr::span(&macro_decl.body);
                 self.push_obligation(format!("checking macro '{}'", macro_decl.name));
                 self.pending_constraints.clear();
                 self.push_scope();
@@ -229,7 +252,7 @@ impl TypeChecker {
                     let param_ty = self.resolve_type_expr(&param.ty);
                     self.insert_value(param.name.clone(), param_ty);
                 }
-                if let Expr::MultiArm(arms) = &macro_decl.body {
+                if let Expr::MultiArm(arms) = TypeChecker::base_expr(&macro_decl.body) {
                     self.diagnostics
                         .extend(self.pattern_checker.validate_multi_arm_exhaustiveness(arms));
                     self.diagnostics
@@ -255,6 +278,7 @@ impl TypeChecker {
                 });
                 self.pop_scope();
                 self.pop_obligation();
+                self.current_expr_span = prev_span;
             }
         }
 
@@ -270,6 +294,13 @@ impl TypeChecker {
 
     fn infer_expr(&mut self, expr: &Expr) -> TyId {
         match expr {
+            Expr::Spanned { span, expr } => {
+                let prev = self.current_expr_span;
+                self.current_expr_span = Some(*span);
+                let ty = self.infer_expr(expr);
+                self.current_expr_span = prev;
+                ty
+            }
             Expr::Ident(name) => {
                 if let Some(ty) = self.lookup_value(name) {
                     ty
@@ -359,7 +390,7 @@ impl TypeChecker {
                 trailing,
                 ..
             } => {
-                let callee_name = match callee.as_ref() {
+                let callee_name = match TypeChecker::base_expr(callee.as_ref()) {
                     Expr::Ident(name) => Some(name.clone()),
                     _ => None,
                 };
@@ -452,7 +483,7 @@ impl TypeChecker {
                 operand,
                 static_args,
             } if macro_name == "builtin" => {
-                if let Expr::Ident(name) = operand.as_ref() {
+                if let Expr::Ident(name) = TypeChecker::base_expr(operand.as_ref()) {
                     if let Some(sig) = self.builtins.get(name).cloned() {
                         let param_tys = sig
                             .params
@@ -572,7 +603,7 @@ impl TypeChecker {
                 operand,
                 static_args,
             } if macro_name == "break" => {
-                if let Expr::List(items) = operand.as_ref() {
+                if let Expr::List(items) = TypeChecker::base_expr(operand.as_ref()) {
                     if let Some(v) = items.first() {
                         return self.infer_expr(v);
                     }
@@ -602,10 +633,17 @@ impl TypeChecker {
     }
 
     fn infer_expr_with_expected(&mut self, expr: &Expr, expected: TyId) -> TyId {
+        if let Expr::Spanned { span, expr: inner } = expr {
+            let prev = self.current_expr_span;
+            self.current_expr_span = Some(*span);
+            let ty = self.infer_expr_with_expected(inner, expected);
+            self.current_expr_span = prev;
+            return ty;
+        }
         let expected = self.unifier.resolve(expected);
         let expected_ty = self.interner.get(expected).cloned();
 
-        match (expr, expected_ty) {
+        match (Self::base_expr(expr), expected_ty) {
             (
                 Expr::Call {
                     callee,
@@ -616,7 +654,7 @@ impl TypeChecker {
                 },
                 _,
             ) => {
-                let callee_name = match callee.as_ref() {
+                let callee_name = match TypeChecker::base_expr(callee.as_ref()) {
                     Expr::Ident(name) => Some(name.clone()),
                     _ => None,
                 };
@@ -941,6 +979,7 @@ impl TypeChecker {
                             result_ty
                         ),
                     )
+                    .with_related("numeric operator operands are not numeric", None)
                     .with_hint(
                         "cast operands to numeric types before applying arithmetic operators",
                     ),
@@ -967,6 +1006,7 @@ impl TypeChecker {
                             result_ty
                         ),
                     )
+                    .with_related("comparison operator operands are not numeric", None)
                     .with_hint(
                         "cast operands to numeric types before applying comparison operators",
                     ),
@@ -1477,7 +1517,7 @@ impl TypeChecker {
             return self.unknown_ty();
         };
 
-        let Expr::MultiArm(arms) = &when.body else {
+        let Expr::MultiArm(arms) = TypeChecker::base_expr(&when.body) else {
             self.diagnostics.push(
                 self.typecheck_error("E_CASES_FORM", "cases 'when' closure must be multi-arm")
                     .with_hint("use form: cases when { ~cond -> expr, ~true -> default }"),
@@ -1552,6 +1592,7 @@ impl TypeChecker {
                                 interface: interface.clone(),
                                 context: format!("generic call '{name}' for '{}'", param.name),
                                 obligations: self.obligation_stack.clone(),
+                                span: self.current_expr_span,
                             });
                         self.pending_constraints
                             .push(TypeConstraint::InterfaceBound {
@@ -1559,6 +1600,7 @@ impl TypeChecker {
                                 interface: interface.clone(),
                                 context: format!("generic call '{name}' for '{}'", param.name),
                                 obligations: self.obligation_stack.clone(),
+                                span: self.current_expr_span,
                             });
                     }
                     GenericConstraint::Static(expected) => {
@@ -1568,6 +1610,7 @@ impl TypeChecker {
                             expected: expected.clone(),
                             context: format!("generic call '{name}' for '{}'", param.name),
                             obligations: self.obligation_stack.clone(),
+                            span: self.current_expr_span,
                         });
                     }
                 }
@@ -1652,6 +1695,7 @@ impl TypeChecker {
                 rhs,
                 context: context.to_string(),
                 obligations: self.obligation_stack.clone(),
+                span: self.current_expr_span,
             });
         }
         match self.unifier.unify(&mut self.interner, lhs, rhs, context) {
@@ -1670,6 +1714,7 @@ impl TypeChecker {
             actual,
             context: context.to_string(),
             obligations: self.obligation_stack.clone(),
+            span: self.current_expr_span,
         });
         if matches!(
             self.conversion_decision(expected, actual, ConversionMode::ImplicitOnly, context),
@@ -1696,20 +1741,27 @@ impl TypeChecker {
                     rhs,
                     context,
                     obligations,
+                    span,
                 } => {
                     let prev_obligations = self.obligation_stack.clone();
+                    let prev_span = self.current_expr_span;
                     self.obligation_stack = obligations;
+                    self.current_expr_span = span;
                     let _ = self.unify_with_context(lhs, rhs, &context);
                     self.obligation_stack = prev_obligations;
+                    self.current_expr_span = prev_span;
                 }
                 TypeConstraint::InterfaceExists {
                     interface,
                     context,
                     obligations,
+                    span,
                 } => {
                     if !self.interfaces.contains(&interface) {
                         let prev_obligations = self.obligation_stack.clone();
+                        let prev_span = self.current_expr_span;
                         self.obligation_stack = obligations;
+                        self.current_expr_span = span;
                         self.diagnostics.push(
                             self.typecheck_error(
                                 "E_UNKNOWN_INTERFACE",
@@ -1721,6 +1773,7 @@ impl TypeChecker {
                             .with_hint("declare the interface or use a known prelude interface"),
                         );
                         self.obligation_stack = prev_obligations;
+                        self.current_expr_span = prev_span;
                     }
                 }
                 TypeConstraint::Assignable {
@@ -1728,9 +1781,12 @@ impl TypeChecker {
                     actual,
                     context,
                     obligations,
+                    span,
                 } => {
                     let prev_obligations = self.obligation_stack.clone();
+                    let prev_span = self.current_expr_span;
                     self.obligation_stack = obligations;
+                    self.current_expr_span = span;
                     if matches!(
                         self.conversion_decision(
                             expected,
@@ -1740,6 +1796,8 @@ impl TypeChecker {
                         ),
                         ConversionDecision::Identity | ConversionDecision::Coerce
                     ) {
+                        self.obligation_stack = prev_obligations;
+                        self.current_expr_span = prev_span;
                         continue;
                     }
                     if !self
@@ -1755,21 +1813,29 @@ impl TypeChecker {
                         );
                     }
                     self.obligation_stack = prev_obligations;
+                    self.current_expr_span = prev_span;
                 }
                 TypeConstraint::InterfaceBound {
                     ty,
                     interface,
                     context,
                     obligations,
+                    span,
                 } => {
                     let prev_obligations = self.obligation_stack.clone();
+                    let prev_span = self.current_expr_span;
                     self.obligation_stack = obligations;
+                    self.current_expr_span = span;
                     let ty = self.unifier.resolve(ty);
                     let Some(resolved) = self.interner.get(ty).cloned() else {
+                        self.obligation_stack = prev_obligations;
+                        self.current_expr_span = prev_span;
                         continue;
                     };
 
                     if matches!(resolved, Ty::InferVar(_)) {
+                        self.obligation_stack = prev_obligations;
+                        self.current_expr_span = prev_span;
                         continue;
                     }
 
@@ -1788,6 +1854,7 @@ impl TypeChecker {
                         );
                     }
                     self.obligation_stack = prev_obligations;
+                    self.current_expr_span = prev_span;
                 }
                 TypeConstraint::StaticBound {
                     arg,
@@ -1795,10 +1862,13 @@ impl TypeChecker {
                     expected,
                     context,
                     obligations,
+                    span,
                 } => match arg {
                     None => {
                         let prev_obligations = self.obligation_stack.clone();
+                        let prev_span = self.current_expr_span;
                         self.obligation_stack = obligations;
+                        self.current_expr_span = span;
                         self.diagnostics.push(
                             self.typecheck_error(
                                 "E_STATIC_ARG_MISSING",
@@ -1811,11 +1881,14 @@ impl TypeChecker {
                             .with_hint("provide a compile-time value for the static constrained parameter"),
                         );
                         self.obligation_stack = prev_obligations;
+                        self.current_expr_span = prev_span;
                     }
                     Some(StaticArg::Value(_)) => {}
                     Some(StaticArg::Type(_)) => {
                         let prev_obligations = self.obligation_stack.clone();
+                        let prev_span = self.current_expr_span;
                         self.obligation_stack = obligations;
+                        self.current_expr_span = span;
                         self.diagnostics.push(
                             self.typecheck_error(
                                 "E_STATIC_ARG_KIND",
@@ -1827,6 +1900,7 @@ impl TypeChecker {
                             .with_hint("replace type argument with compile-time value"),
                         );
                         self.obligation_stack = prev_obligations;
+                        self.current_expr_span = prev_span;
                     }
                 },
             }
@@ -1992,16 +2066,18 @@ impl TypeChecker {
         let Some(actual_ty) = self.interner.get(actual).cloned() else {
             return;
         };
+        let mut diag = self.typecheck_error(
+            "E_TYPE_MISMATCH",
+            format!(
+                "type mismatch in {context}: expected {:?}, got {:?}",
+                expected_ty, actual_ty
+            ),
+        );
+        diag = diag.with_related(related, None);
         self.diagnostics.push(
-            self.typecheck_error(
-                "E_TYPE_MISMATCH",
-                format!(
-                    "type mismatch in {context}: expected {:?}, got {:?}",
-                    expected_ty, actual_ty
-                ),
-            )
-            .with_related(related, None)
-            .with_hint("use an explicit cast for narrowing or cross-domain numeric conversions"),
+            diag.with_hint(
+                "use an explicit cast for narrowing or cross-domain numeric conversions",
+            ),
         );
     }
 
@@ -2050,14 +2126,14 @@ impl TypeChecker {
     fn typecheck_error(&self, code: &'static str, message: impl Into<String>) -> Diagnostic {
         Diagnostic::error(code, message)
             .with_stage(Stage::Typecheck)
-            .with_related("source span unavailable in current typed AST", None)
+            .with_span_opt(self.current_expr_span)
             .with_obligations(&self.obligation_stack)
     }
 
     fn typecheck_warning(&self, code: &'static str, message: impl Into<String>) -> Diagnostic {
         Diagnostic::warning(code, message)
             .with_stage(Stage::Typecheck)
-            .with_related("source span unavailable in current typed AST", None)
+            .with_span_opt(self.current_expr_span)
             .with_obligations(&self.obligation_stack)
     }
 
@@ -2149,6 +2225,7 @@ impl TypeChecker {
 
     fn lower_expr(&mut self, expr: &Expr) -> CheckedExpr {
         match expr {
+            Expr::Spanned { expr, .. } => self.lower_expr(expr),
             Expr::Ident(v) => CheckedExpr::Ident(v.clone()),
             Expr::Int(v) => CheckedExpr::Int(v.clone()),
             Expr::Float(v) => CheckedExpr::Float(v.clone()),
@@ -2207,7 +2284,7 @@ impl TypeChecker {
                 operand,
                 static_args,
             } if macro_name == "if" => {
-                if let Expr::List(items) = operand.as_ref() {
+                if let Expr::List(items) = TypeChecker::base_expr(operand.as_ref()) {
                     if items.len() >= 2 {
                         let condition = self.lower_expr(&items[0]);
                         let then_branch = self.lower_expr(&items[1]);
@@ -2233,7 +2310,7 @@ impl TypeChecker {
                 operand,
                 static_args,
             } if macro_name == "cases" => {
-                if let Expr::MultiArm(arms) = operand.as_ref() {
+                if let Expr::MultiArm(arms) = TypeChecker::base_expr(operand.as_ref()) {
                     return CheckedExpr::Cases {
                         arms: arms.iter().map(|a| self.lower_expr(&a.body)).collect(),
                     };
@@ -2275,7 +2352,7 @@ impl TypeChecker {
                 operand,
                 static_args,
             } if macro_name == "break" => {
-                if let Expr::List(items) = operand.as_ref() {
+                if let Expr::List(items) = TypeChecker::base_expr(operand.as_ref()) {
                     let value = items.first().map(|v| Box::new(self.lower_expr(v)));
                     CheckedExpr::Break { value }
                 } else {
@@ -2327,7 +2404,7 @@ impl TypeChecker {
                     }
                 } else if matches!(op, ParsedBinaryOp::Colon) {
                     let from = self.preview_expr_ty(lhs);
-                    if let Expr::TypeExpr(target_ty_expr) = rhs.as_ref() {
+                    if let Expr::TypeExpr(target_ty_expr) = TypeChecker::base_expr(rhs.as_ref()) {
                         let to = self.resolve_type_expr(target_ty_expr);
                         let lowered_expr = self.lower_expr(lhs);
                         CheckedExpr::Cast {
@@ -2362,6 +2439,7 @@ impl TypeChecker {
 
     fn preview_expr_ty(&mut self, expr: &Expr) -> TyId {
         match expr {
+            Expr::Spanned { expr, .. } => self.preview_expr_ty(expr),
             Expr::Ident(name) => self.lookup_value(name).unwrap_or_else(|| {
                 if name == "true" || name == "false" {
                     self.interner.intern(Ty::Bool)

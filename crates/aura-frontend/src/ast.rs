@@ -77,6 +77,10 @@ pub enum StaticValueExpr {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
+    Spanned {
+        span: aura_diagnostics::Span,
+        expr: Box<Expr>,
+    },
     Ident(String),
     Int(String),
     Float(String),
@@ -122,6 +126,23 @@ pub enum Expr {
         expr: Box<Expr>,
         ty: TypeExpr,
     },
+}
+
+impl Expr {
+    pub fn span(&self) -> Option<aura_diagnostics::Span> {
+        match self {
+            Expr::Spanned { span, .. } => Some(*span),
+            _ => None,
+        }
+    }
+
+    pub fn unspanned(&self) -> &Expr {
+        let mut cur = self;
+        while let Expr::Spanned { expr, .. } = cur {
+            cur = expr.as_ref();
+        }
+        cur
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -71,6 +71,11 @@ impl Diagnostic {
         self
     }
 
+    pub fn with_span_opt(mut self, span: Option<Span>) -> Self {
+        self.span = span;
+        self
+    }
+
     pub fn with_stage(mut self, stage: Stage) -> Self {
         self.stage = stage;
         self

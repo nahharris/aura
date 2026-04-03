@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
-use aura_diagnostics::{Diagnostic, Severity};
+use anstyle::{AnsiColor, Color, Effects, Style};
+use aura_diagnostics::{Diagnostic, Severity, Span};
 use aura_frontend::Parser;
 use aura_typecheck::checked_ir::{
     BinaryOpKind, CheckedExpr, CheckedStaticArg, CheckedStaticValue, CheckedTypeExpr,
@@ -207,7 +209,7 @@ fn build_cmd(
     let program = match Parser::parse_source(&source) {
         Ok(program) => program,
         Err(diag) => {
-            print_diagnostics(&[diag], diagnostics_format)?;
+            print_diagnostics(&[diag], diagnostics_format, input, &source)?;
             return Ok(ExitCode::from(1));
         }
     };
@@ -219,12 +221,12 @@ fn build_cmd(
         .any(|d| d.severity == Severity::Error);
 
     if has_errors {
-        print_diagnostics(&checked.diagnostics, diagnostics_format)?;
+        print_diagnostics(&checked.diagnostics, diagnostics_format, input, &source)?;
         return Ok(ExitCode::from(1));
     }
 
     if !checked.diagnostics.is_empty() {
-        print_diagnostics(&checked.diagnostics, diagnostics_format)?;
+        print_diagnostics(&checked.diagnostics, diagnostics_format, input, &source)?;
     }
 
     let module = checked
@@ -466,47 +468,55 @@ fn binary_op_name(op: BinaryOpKind) -> &'static str {
     }
 }
 
-fn print_diagnostics(diags: &[Diagnostic], fmt: DiagnosticsFormat) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpanOrigin {
+    Reported,
+    Inferred,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedDiagnostic {
+    code: &'static str,
+    stage: String,
+    severity: Severity,
+    message: String,
+    span: Option<Span>,
+    span_origin: Option<SpanOrigin>,
+    hint: Option<String>,
+    related: Vec<aura_diagnostics::RelatedLabel>,
+    obligations: Vec<String>,
+}
+
+fn print_diagnostics(
+    diags: &[Diagnostic],
+    fmt: DiagnosticsFormat,
+    input: &Path,
+    source: &str,
+) -> Result<()> {
+    let prepared = prepare_diagnostics(diags, source);
     match fmt {
         DiagnosticsFormat::Pretty => {
-            for d in diags {
-                let sev = match d.severity {
-                    Severity::Error => "error",
-                    Severity::Warning => "warning",
-                };
-                eprintln!("[{sev}][{:?}][{}] {}", d.stage, d.code, d.message);
-                if let Some(span) = d.span {
-                    eprintln!("  at {}:{}", span.line, span.column);
+            let colors = std::io::stderr().is_terminal();
+            for (idx, d) in prepared.iter().enumerate() {
+                if idx > 0 {
+                    eprintln!();
                 }
-                if !d.obligations.is_empty() {
-                    eprintln!("  obligations: {}", d.obligations.join(" > "));
-                }
-                for related in &d.related {
-                    if let Some(span) = related.span {
-                        eprintln!(
-                            "  related: {} ({}:{})",
-                            related.label, span.line, span.column
-                        );
-                    } else {
-                        eprintln!("  related: {}", related.label);
-                    }
-                }
-                if let Some(hint) = &d.hint {
-                    eprintln!("  hint: {hint}");
-                }
+                render_pretty_diagnostic(d, input, source, colors);
             }
             Ok(())
         }
         DiagnosticsFormat::Json => {
-            let payload: Vec<_> = diags
+            let payload: Vec<_> = prepared
                 .iter()
                 .map(|d| {
                     serde_json::json!({
                         "code": d.code,
-                        "stage": format!("{:?}", d.stage),
+                        "file": input.display().to_string(),
+                        "stage": d.stage,
                         "severity": match d.severity { Severity::Error => "error", Severity::Warning => "warning" },
                         "message": d.message,
                         "span": d.span.map(|s| serde_json::json!({"line": s.line, "column": s.column, "start": s.start, "end": s.end})),
+                        "span_origin": d.span_origin.map(|o| match o { SpanOrigin::Reported => "reported", SpanOrigin::Inferred => "inferred" }),
                         "hint": d.hint,
                         "related": d.related.iter().map(|r| serde_json::json!({"label": r.label, "span": r.span.map(|s| serde_json::json!({"line": s.line, "column": s.column, "start": s.start, "end": s.end}))})).collect::<Vec<_>>(),
                         "obligations": d.obligations,
@@ -516,5 +526,406 @@ fn print_diagnostics(diags: &[Diagnostic], fmt: DiagnosticsFormat) -> Result<()>
             eprintln!("{}", serde_json::to_string_pretty(&payload)?);
             Ok(())
         }
+    }
+}
+
+fn prepare_diagnostics(diags: &[Diagnostic], source: &str) -> Vec<PreparedDiagnostic> {
+    let mut prepared = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for d in diags {
+        let stage = format!("{:?}", d.stage);
+        let (span, span_origin) = match d.span {
+            Some(span) => (Some(span), Some(SpanOrigin::Reported)),
+            None if stage == "Typecheck" => infer_span_from_obligations(source, &d.obligations)
+                .map(|s| (Some(s), Some(SpanOrigin::Inferred)))
+                .unwrap_or((None, None)),
+            None => (None, None),
+        };
+        let related = d
+            .related
+            .iter()
+            .filter(|r| !is_internal_related_label(&r.label))
+            .cloned()
+            .collect::<Vec<_>>();
+        let fingerprint = format!(
+            "{:?}|{:?}|{}|{}|{:?}|{:?}",
+            d.severity, d.stage, d.code, d.message, span, d.hint
+        );
+        if !seen.insert(fingerprint) {
+            continue;
+        }
+        prepared.push(PreparedDiagnostic {
+            code: d.code,
+            stage,
+            severity: d.severity,
+            message: d.message.clone(),
+            span,
+            span_origin,
+            hint: d.hint.clone(),
+            related,
+            obligations: d.obligations.clone(),
+        });
+    }
+    prepared
+}
+
+fn is_internal_related_label(label: &str) -> bool {
+    label == "source span unavailable in current typed AST"
+        || label.ends_with("compatibility check failed")
+        || label.ends_with("decision failed")
+}
+
+fn infer_span_from_obligations(source: &str, obligations: &[String]) -> Option<Span> {
+    for obligation in obligations.iter().rev() {
+        if let Some(name) = extract_obligation_name(obligation, "checking function '")
+            && let Some(span) = find_function_name_span(source, &name)
+        {
+            return Some(span);
+        }
+        if let Some(name) = extract_obligation_name(obligation, "checking declaration '")
+            && let Some(span) = find_static_decl_name_span(source, &name)
+        {
+            return Some(span);
+        }
+    }
+    None
+}
+
+fn extract_obligation_name(obligation: &str, prefix: &str) -> Option<String> {
+    let start = obligation.find(prefix)? + prefix.len();
+    let end_rel = obligation[start..].find('\'')?;
+    Some(obligation[start..start + end_rel].to_string())
+}
+
+fn find_function_name_span(source: &str, name: &str) -> Option<Span> {
+    for (line_idx, line) in source.lines().enumerate() {
+        let marker = format!("def {name}");
+        if let Some(start_idx) = line.find(&marker) {
+            let name_start = start_idx + 4;
+            return Some(span_from_line(source, line_idx + 1, name_start + 1, name.len()));
+        }
+        let method_marker = format!(".{name}(");
+        if let Some(start_idx) = line.find(&method_marker) {
+            let name_start = start_idx + 1;
+            return Some(span_from_line(source, line_idx + 1, name_start + 1, name.len()));
+        }
+    }
+    None
+}
+
+fn find_static_decl_name_span(source: &str, name: &str) -> Option<Span> {
+    for (line_idx, line) in source.lines().enumerate() {
+        let marker = format!("def {name}");
+        if let Some(start_idx) = line.find(&marker) {
+            let name_start = start_idx + 4;
+            return Some(span_from_line(source, line_idx + 1, name_start + 1, name.len()));
+        }
+    }
+    None
+}
+
+fn span_from_line(source: &str, line_number: usize, column: usize, len: usize) -> Span {
+    let mut start = 0usize;
+    let mut line = 1usize;
+    for part in source.split_inclusive('\n') {
+        if line == line_number {
+            break;
+        }
+        start += part.len();
+        line += 1;
+    }
+    let start = start + column.saturating_sub(1);
+    Span {
+        start,
+        end: start + len.max(1),
+        line: line_number,
+        column,
+    }
+}
+
+fn render_pretty_diagnostic(d: &PreparedDiagnostic, input: &Path, source: &str, colors: bool) {
+    let palette = Palette::new(colors);
+    let sev_label = match d.severity {
+        Severity::Error => palette.error("error"),
+        Severity::Warning => palette.warning("warning"),
+    };
+    let stage = palette.dim(&format!(" [{}]", d.stage.to_lowercase()));
+    eprintln!(
+        "{}{}{}{}{}: {}",
+        sev_label,
+        palette.dim("["),
+        palette.dim(d.code),
+        palette.dim("]"),
+        stage,
+        d.message
+    );
+
+    if let Some(span) = d.span {
+        eprintln!(
+            "  {} {}:{}:{}",
+            palette.dim("-->"),
+            input.display(),
+            span.line,
+            span.column
+        );
+        if let Some((line_no, line_text, pointer)) = render_span_snippet(source, span, &d.message, colors)
+        {
+            eprintln!("  {}", palette.dim("|"));
+            eprintln!(
+                "{} {} {}",
+                palette.dim(&format!("{:>3}", line_no)),
+                palette.dim("|"),
+                line_text
+            );
+            eprintln!("{} {} {}", palette.dim("   "), palette.dim("|"), pointer);
+        }
+        if d.span_origin == Some(SpanOrigin::Inferred) {
+            eprintln!(
+                "  {} {}",
+                palette.dim("= note:"),
+                "location inferred from typechecking context"
+            );
+        }
+    }
+
+    if !d.obligations.is_empty() {
+        eprintln!(
+            "  {} {}",
+            palette.dim("= context:"),
+            d.obligations.join(" > ")
+        );
+    }
+
+    for related in &d.related {
+        if let Some(span) = related.span {
+            eprintln!(
+                "  {} {} ({}:{})",
+                palette.dim("= related:"),
+                related.label,
+                span.line,
+                span.column
+            );
+        } else {
+            eprintln!("  {} {}", palette.dim("= related:"), related.label);
+        }
+    }
+
+    if let Some(hint) = &d.hint {
+        eprintln!("  {} {}", palette.help("= help:"), hint);
+    }
+}
+
+fn render_span_snippet(
+    source: &str,
+    span: Span,
+    message: &str,
+    colors: bool,
+) -> Option<(usize, String, String)> {
+    let lines = source.lines().collect::<Vec<_>>();
+    if lines.is_empty() {
+        return None;
+    }
+    let line_idx = span.line.saturating_sub(1).min(lines.len().saturating_sub(1));
+    let line_text = lines[line_idx];
+    let highlighted = highlight_source_line(line_text, colors);
+    let default_col = if line_text.is_empty() {
+        1
+    } else {
+        line_text.chars().count() + 1
+    };
+    let caret_column = if span.line.saturating_sub(1) >= lines.len() {
+        default_col
+    } else {
+        span.column.max(1)
+    };
+    let caret_start = caret_column.saturating_sub(1);
+    let span_len = span.end.saturating_sub(span.start).max(1);
+    let pointer = format!(
+        "{}{} {}",
+        " ".repeat(caret_start),
+        Palette::new(colors).pointer(&"^".repeat(span_len.min(80))),
+        message
+    );
+    Some((line_idx + 1, highlighted, pointer))
+}
+
+fn highlight_source_line(line: &str, colors: bool) -> String {
+    if !colors {
+        return line.to_string();
+    }
+    const RESET: &str = "\x1b[0m";
+    const KW: &str = "\x1b[35;1m";
+    const STR: &str = "\x1b[36m";
+    const NUM: &str = "\x1b[33m";
+    let keywords = ["def", "defmacro", "use", "if", "cases", "when", "static"];
+
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0usize;
+    let mut out = String::new();
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '"' {
+            let start = i;
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == '"' && chars.get(i.saturating_sub(1)) != Some(&'\\') {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            out.push_str(STR);
+            out.push_str(&chars[start..i].iter().collect::<String>());
+            out.push_str(RESET);
+            continue;
+        }
+        if ch.is_ascii_digit() {
+            let start = i;
+            i += 1;
+            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+                i += 1;
+            }
+            out.push_str(NUM);
+            out.push_str(&chars[start..i].iter().collect::<String>());
+            out.push_str(RESET);
+            continue;
+        }
+        if ch.is_ascii_alphabetic() || ch == '_' {
+            let start = i;
+            i += 1;
+            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let ident = chars[start..i].iter().collect::<String>();
+            if keywords.iter().any(|kw| *kw == ident) {
+                out.push_str(KW);
+                out.push_str(&ident);
+                out.push_str(RESET);
+            } else {
+                out.push_str(&ident);
+            }
+            continue;
+        }
+        out.push(ch);
+        i += 1;
+    }
+    out
+}
+
+struct Palette {
+    enabled: bool,
+}
+
+impl Palette {
+    fn new(enabled: bool) -> Self {
+        Self { enabled }
+    }
+
+    fn error(&self, text: &str) -> String {
+        self.style(text, Style::new().fg_color(Some(Color::Ansi(AnsiColor::Red))).effects(Effects::BOLD))
+    }
+
+    fn warning(&self, text: &str) -> String {
+        self.style(text, Style::new().fg_color(Some(Color::Ansi(AnsiColor::Yellow))).effects(Effects::BOLD))
+    }
+
+    fn help(&self, text: &str) -> String {
+        self.style(text, Style::new().fg_color(Some(Color::Ansi(AnsiColor::Cyan))).effects(Effects::BOLD))
+    }
+
+    fn pointer(&self, text: &str) -> String {
+        self.style(text, Style::new().fg_color(Some(Color::Ansi(AnsiColor::Magenta))).effects(Effects::BOLD))
+    }
+
+    fn dim(&self, text: &str) -> String {
+        self.style(text, Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightBlack))))
+    }
+
+    fn style(&self, text: &str, style: Style) -> String {
+        if self.enabled {
+            format!("{style}{text}{style:#}")
+        } else {
+            text.to_string()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aura_diagnostics::{RelatedLabel, Stage};
+
+    #[test]
+    fn prepare_diagnostics_filters_internal_related_labels() {
+        let diag = Diagnostic::error("E_TYPE_MISMATCH", "mismatch")
+            .with_stage(Stage::Typecheck)
+            .with_related("source span unavailable in current typed AST", None)
+            .with_related("assignment compatibility check failed", None)
+            .with_related("useful context", None);
+        let prepared = prepare_diagnostics(&[diag], "def f(x: Int) -> Int { x }");
+        assert_eq!(prepared.len(), 1);
+        assert_eq!(prepared[0].related.len(), 1);
+        assert_eq!(prepared[0].related[0].label, "useful context");
+    }
+
+    #[test]
+    fn prepare_diagnostics_deduplicates_same_payload() {
+        let diag1 = Diagnostic::error("E_X", "same").with_stage(Stage::Parser);
+        let diag2 = Diagnostic::error("E_X", "same").with_stage(Stage::Parser);
+        let prepared = prepare_diagnostics(&[diag1, diag2], "def x = 1");
+        assert_eq!(prepared.len(), 1);
+    }
+
+    #[test]
+    fn infer_span_from_function_obligation_finds_name() {
+        let source = "def bad(x: Int) -> Int { \"oops\" }\n";
+        let obligations = vec!["checking function 'bad'".to_string()];
+        let span = infer_span_from_obligations(source, &obligations).expect("inferred span");
+        assert_eq!(span.line, 1);
+        assert_eq!(span.column, 5);
+    }
+
+    #[test]
+    fn render_span_snippet_handles_out_of_bounds_line() {
+        let span = Span {
+            start: 22,
+            end: 23,
+            line: 2,
+            column: 1,
+        };
+        let rendered = render_span_snippet("def x = macro_name[T]", span, "problem", false)
+            .expect("snippet fallback");
+        assert_eq!(rendered.0, 1);
+        assert!(rendered.2.contains('^'));
+    }
+
+    #[test]
+    fn is_internal_related_label_covers_known_patterns() {
+        assert!(is_internal_related_label(
+            "source span unavailable in current typed AST"
+        ));
+        assert!(is_internal_related_label("assignment compatibility check failed"));
+        assert!(is_internal_related_label("IR coercion/cast decision failed"));
+        assert!(!is_internal_related_label("real related note"));
+    }
+
+    #[test]
+    fn json_prepared_keeps_user_related_labels() {
+        let diag = Diagnostic {
+            code: "E_CUSTOM",
+            stage: Stage::Typecheck,
+            severity: Severity::Error,
+            message: "problem".to_string(),
+            span: None,
+            hint: None,
+            related: vec![RelatedLabel {
+                label: "actual related".to_string(),
+                span: None,
+            }],
+            obligations: vec![],
+        };
+        let prepared = prepare_diagnostics(&[diag], "def x = 1");
+        assert_eq!(prepared[0].related.len(), 1);
+        assert_eq!(prepared[0].related[0].label, "actual related");
     }
 }

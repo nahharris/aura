@@ -45,6 +45,36 @@ impl<C> InnerParser<C>
 where
     C: StaticSatisfies,
 {
+    fn mark(&self) -> usize {
+        self.cursor
+    }
+
+    fn span_from_mark(&self, mark: usize) -> aura_diagnostics::Span {
+        let start_idx = mark.min(self.tokens.len().saturating_sub(1));
+        let end_idx = self
+            .cursor
+            .saturating_sub(1)
+            .min(self.tokens.len().saturating_sub(1));
+        let start = self.tokens[start_idx].span;
+        let end = self.tokens[end_idx].span;
+        aura_diagnostics::Span {
+            start: start.start,
+            end: end.end,
+            line: start.line,
+            column: start.column,
+        }
+    }
+
+    fn with_span(&self, mark: usize, expr: Expr) -> Expr {
+        if matches!(expr, Expr::Spanned { .. }) {
+            return expr;
+        }
+        Expr::Spanned {
+            span: self.span_from_mark(mark),
+            expr: Box::new(expr),
+        }
+    }
+
     fn parse_program(&mut self) -> Result<Program, ParseError> {
         let mut declarations = Vec::new();
         while !self.is_eof() {
@@ -569,21 +599,27 @@ where
     }
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
-        self.parse_elvis_expr()
+        let mark = self.mark();
+        let expr = self.parse_elvis_expr()?;
+        Ok(self.with_span(mark, expr))
     }
 
     fn parse_elvis_expr(&mut self) -> Result<Expr, ParseError> {
+        let mark = self.mark();
         let lhs = self.parse_or_expr()?;
         if self.peek_is(&TokenKind::QuestionColon) {
             self.bump();
             let rhs = self.parse_elvis_expr()?;
-            return Ok(Expr::Binary {
-                op: BinaryOp::Elvis,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            });
+            return Ok(self.with_span(
+                mark,
+                Expr::Binary {
+                    op: BinaryOp::Elvis,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+            ));
         }
-        Ok(lhs)
+        Ok(self.with_span(mark, lhs))
     }
 
     fn parse_or_expr(&mut self) -> Result<Expr, ParseError> {
@@ -645,6 +681,7 @@ where
     }
 
     fn parse_colon_expr(&mut self) -> Result<Expr, ParseError> {
+        let mark = self.mark();
         let mut expr = self.parse_macro_or_postfix_expr()?;
         while self.peek_is(&TokenKind::Colon) {
             self.bump();
@@ -655,7 +692,7 @@ where
                 rhs: Box::new(Expr::TypeExpr(ty)),
             };
         }
-        Ok(expr)
+        Ok(self.with_span(mark, expr))
     }
 
     fn parse_macro_or_postfix_expr(&mut self) -> Result<Expr, ParseError> {
@@ -674,6 +711,7 @@ where
         sub_expr: fn(&mut Self) -> Result<Expr, ParseError>,
         ops: &[(TokenKind, BinaryOp)],
     ) -> Result<Expr, ParseError> {
+        let mark = self.mark();
         let mut expr = sub_expr(self)?;
         while let Some(op) = self.match_binary_op(ops) {
             let rhs = sub_expr(self)?;
@@ -683,7 +721,7 @@ where
                 rhs: Box::new(rhs),
             };
         }
-        Ok(expr)
+        Ok(self.with_span(mark, expr))
     }
 
     fn match_binary_op(&mut self, ops: &[(TokenKind, BinaryOp)]) -> Option<BinaryOp> {
@@ -697,6 +735,7 @@ where
     }
 
     fn parse_label_expr(&mut self) -> Result<Expr, ParseError> {
+        let mark = self.mark();
         self.expect_ident_exact("label")?;
         self.expect_simple(&TokenKind::LBracket, "expected '[' after label", vec!["["])?;
         self.expect_simple(&TokenKind::Dot, "expected '.' in label target", vec!["."])?;
@@ -707,13 +746,17 @@ where
             vec!["]"],
         )?;
         let expr = self.parse_expr()?;
-        Ok(Expr::Label {
-            label,
-            expr: Box::new(expr),
-        })
+        Ok(self.with_span(
+            mark,
+            Expr::Label {
+                label,
+                expr: Box::new(expr),
+            },
+        ))
     }
 
     fn parse_postfix_expr(&mut self) -> Result<Expr, ParseError> {
+        let mark = self.mark();
         let mut expr = self.parse_atom_expr()?;
 
         loop {
@@ -739,10 +782,11 @@ where
             break;
         }
 
-        Ok(expr)
+        Ok(self.with_span(mark, expr))
     }
 
     fn parse_call_suffix(&mut self, callee: Expr) -> Result<Expr, ParseError> {
+        let mark = self.mark();
         let static_args = if self.peek_is(&TokenKind::LBracket) {
             self.parse_static_args()?
         } else {
@@ -777,12 +821,15 @@ where
             ));
         }
 
-        Ok(Expr::Call {
-            callee: Box::new(callee),
-            static_args,
-            args,
-            trailing,
-        })
+        Ok(self.with_span(
+            mark,
+            Expr::Call {
+                callee: Box::new(callee),
+                static_args,
+                args,
+                trailing,
+            },
+        ))
     }
 
     fn parse_labeled_closure_args(&mut self) -> Result<Vec<LabeledClosureArg>, ParseError> {
@@ -824,6 +871,7 @@ where
     }
 
     fn parse_macro_apply_expr(&mut self) -> Result<Expr, ParseError> {
+        let mark = self.mark();
         let head_name = self.expect_ident("expected macro name")?;
         let static_args = if self.peek_is(&TokenKind::LBracket) {
             self.parse_static_args()?
@@ -847,39 +895,43 @@ where
         } else {
             self.parse_postfix_expr()?
         };
-        Ok(Expr::MacroApply {
-            macro_name: head_name,
-            static_args,
-            operand: Box::new(operand),
-        })
+        Ok(self.with_span(
+            mark,
+            Expr::MacroApply {
+                macro_name: head_name,
+                static_args,
+                operand: Box::new(operand),
+            },
+        ))
     }
 
     fn parse_atom_expr(&mut self) -> Result<Expr, ParseError> {
+        let mark = self.mark();
         match self.peek() {
             TokenKind::Ident(name) => {
                 let name = name.clone();
                 self.bump();
-                Ok(Expr::Ident(name))
+                Ok(self.with_span(mark, Expr::Ident(name)))
             }
             TokenKind::Int(raw) => {
                 let value = raw.clone();
                 self.bump();
-                Ok(Expr::Int(value))
+                Ok(self.with_span(mark, Expr::Int(value)))
             }
             TokenKind::Float(raw) => {
                 let value = raw.clone();
                 self.bump();
-                Ok(Expr::Float(value))
+                Ok(self.with_span(mark, Expr::Float(value)))
             }
             TokenKind::String(raw) => {
                 let value = raw.clone();
                 self.bump();
-                Ok(Expr::String(value))
+                Ok(self.with_span(mark, Expr::String(value)))
             }
             TokenKind::Char(raw) => {
                 let value = raw.clone();
                 self.bump();
-                Ok(Expr::Char(value))
+                Ok(self.with_span(mark, Expr::Char(value)))
             }
             TokenKind::Dot => self.parse_dot_ident_expr(),
             TokenKind::LBracket => self.parse_bracket_literal_expr(),
@@ -893,6 +945,7 @@ where
     }
 
     fn parse_dot_ident_expr(&mut self) -> Result<Expr, ParseError> {
+        let mark = self.mark();
         self.expect_simple(&TokenKind::Dot, "expected '.'", vec!["."])?;
         let name = self.expect_ident("expected identifier after '.'")?;
         let payload = if self.peek_is(&TokenKind::LParen) {
@@ -907,7 +960,7 @@ where
         } else {
             None
         };
-        Ok(Expr::DotIdent { name, payload })
+        Ok(self.with_span(mark, Expr::DotIdent { name, payload }))
     }
 
     fn parse_bracket_literal_expr(&mut self) -> Result<Expr, ParseError> {
@@ -1338,6 +1391,10 @@ mod tests {
     use crate::ast::{Decl, Expr, Pattern, StaticArg, StaticParamKind, TypeExpr};
     use crate::parser::Parser;
 
+    fn u(expr: &Expr) -> &Expr {
+        expr.unspanned()
+    }
+
     #[test]
     fn parse_complex_method_declaration_contract() {
         let src = "def[T, E, U] Result[T, E].map(self: Result[T, E], with: Func[T, U]) -> Result[U, E] { .ok(value) -> .ok(with(value)), err -> err }";
@@ -1358,7 +1415,7 @@ mod tests {
         assert!(matches!(function.receiver, Some(TypeExpr::Named { .. })));
         assert!(matches!(function.return_type, TypeExpr::Named { .. }));
 
-        let Expr::MultiArm(arms) = &function.body else {
+        let Expr::MultiArm(arms) = u(&function.body) else {
             panic!("expected multi-arm body")
         };
         assert_eq!(arms.len(), 2);
@@ -1378,7 +1435,7 @@ mod tests {
             _ => panic!("expected assignment"),
         };
 
-        let Expr::MultiArm(arms) = value else {
+        let Expr::MultiArm(arms) = u(value) else {
             panic!("expected multi-arm expression")
         };
         assert_eq!(arms.len(), 3);
@@ -1398,7 +1455,7 @@ mod tests {
             panic!("expected assignment")
         };
 
-        let Expr::Call { static_args, .. } = value else {
+        let Expr::Call { static_args, .. } = u(value) else {
             panic!("expected call")
         };
         let Some(StaticArg::Type(TypeExpr::Named { name, args })) = static_args.first() else {
@@ -1418,11 +1475,11 @@ mod tests {
             _ => panic!("expected assignment"),
         };
 
-        let Expr::Binary { op, lhs, rhs } = value else {
+        let Expr::Binary { op, lhs, rhs } = u(value) else {
             panic!("expected binary cast expression")
         };
         assert!(matches!(op, crate::ast::BinaryOp::Colon));
-        assert!(matches!(lhs.as_ref(), Expr::Ident(name) if name == "y"));
+        assert!(matches!(u(lhs.as_ref()), Expr::Ident(name) if name == "y"));
         assert!(
             matches!(rhs.as_ref(), Expr::TypeExpr(TypeExpr::Named { name, .. }) if name == "Int")
         );
@@ -1435,7 +1492,7 @@ mod tests {
         let Decl::Assign { value, .. } = parsed.declarations.first().expect("expected decl") else {
             panic!("expected assignment")
         };
-        let Expr::Call { static_args, .. } = value else {
+        let Expr::Call { static_args, .. } = u(value) else {
             panic!("expected call")
         };
         assert!(matches!(
@@ -1457,12 +1514,12 @@ mod tests {
             static_args,
             args,
             trailing,
-        } = value
+        } = u(value)
         else {
             panic!("expected call")
         };
 
-        assert!(matches!(callee.as_ref(), Expr::Ident(name) if name == "f"));
+        assert!(matches!(u(callee.as_ref()), Expr::Ident(name) if name == "f"));
         assert!(static_args.is_empty());
         assert_eq!(args.len(), 1);
         assert_eq!(trailing.len(), 2);
@@ -1477,7 +1534,7 @@ mod tests {
         let Decl::Assign { value, .. } = parsed.declarations.first().expect("expected decl") else {
             panic!("expected assignment")
         };
-        let Expr::Call { args, trailing, .. } = value else {
+        let Expr::Call { args, trailing, .. } = u(value) else {
             panic!("expected call")
         };
         assert_eq!(args.len(), 2);
@@ -1496,7 +1553,7 @@ mod tests {
             args,
             trailing,
             ..
-        } = value
+        } = u(value)
         else {
             panic!("expected call")
         };
@@ -1517,7 +1574,7 @@ mod tests {
             args,
             trailing,
             ..
-        } = value
+        } = u(value)
         else {
             panic!("expected call")
         };
@@ -1533,7 +1590,7 @@ mod tests {
         let Decl::Assign { value, .. } = parsed.declarations.first().expect("expected decl") else {
             panic!("expected assignment")
         };
-        let Expr::Call { args, trailing, .. } = value else {
+        let Expr::Call { args, trailing, .. } = u(value) else {
             panic!("expected call")
         };
         assert!(args.is_empty());
@@ -1552,7 +1609,7 @@ mod tests {
             args,
             trailing,
             ..
-        } = value
+        } = u(value)
         else {
             panic!("expected call")
         };
@@ -1570,7 +1627,7 @@ mod tests {
             panic!("expected assignment")
         };
 
-        let Expr::Call { args, trailing, .. } = value else {
+        let Expr::Call { args, trailing, .. } = u(value) else {
             panic!("expected call")
         };
         assert!(args.is_empty());
@@ -1589,7 +1646,7 @@ mod tests {
 
         let Expr::Call {
             callee, trailing, ..
-        } = value
+        } = u(value)
         else {
             panic!("expected call")
         };
@@ -1615,7 +1672,7 @@ mod tests {
             static_args,
             args,
             trailing,
-        } = value
+        } = u(value)
         else {
             panic!("expected call")
         };
@@ -1640,7 +1697,7 @@ mod tests {
             args,
             trailing,
             ..
-        } = value
+        } = u(value)
         else {
             panic!("expected call")
         };
@@ -1657,7 +1714,7 @@ mod tests {
             panic!("expected assignment")
         };
         assert!(matches!(
-            value,
+            u(value),
             Expr::MacroApply { macro_name, .. } if macro_name == "foo"
         ));
     }
@@ -1682,15 +1739,15 @@ mod tests {
             args,
             trailing,
             ..
-        } = value
+        } = u(value)
         else {
             panic!("expected call")
         };
-        assert!(matches!(callee.as_ref(), Expr::Ident(name) if name == "cases"));
+        assert!(matches!(u(callee.as_ref()), Expr::Ident(name) if name == "cases"));
         assert!(args.is_empty());
         assert_eq!(trailing.len(), 1);
         assert_eq!(trailing[0].label, "when");
-        assert!(matches!(trailing[0].body, Expr::MultiArm(_)));
+        assert!(matches!(u(&trailing[0].body), Expr::MultiArm(_)));
     }
 
     #[test]
@@ -1809,14 +1866,14 @@ mod tests {
             macro_name,
             static_args,
             operand,
-        } = value
+        } = u(value)
         else {
             panic!("expected macro application")
         };
 
         assert_eq!(macro_name, "macro_name");
         assert!(static_args.is_empty());
-        assert!(matches!(operand.as_ref(), Expr::Ident(name) if name == "node"));
+        assert!(matches!(u(operand.as_ref()), Expr::Ident(name) if name == "node"));
     }
 
     #[test]
@@ -1829,7 +1886,7 @@ mod tests {
             other => panic!("expected assignment declaration, got {other:?}"),
         };
 
-        let Expr::MacroApply { static_args, .. } = value else {
+        let Expr::MacroApply { static_args, .. } = u(value) else {
             panic!("expected macro application")
         };
 
@@ -1852,7 +1909,7 @@ mod tests {
             macro_name,
             operand,
             ..
-        } = value
+        } = u(value)
         else {
             panic!("expected outer macro apply")
         };
@@ -1862,12 +1919,12 @@ mod tests {
             macro_name,
             operand,
             ..
-        } = operand.as_ref()
+        } = u(operand.as_ref())
         else {
             panic!("expected inner macro apply")
         };
         assert_eq!(macro_name, "b");
-        assert!(matches!(operand.as_ref(), Expr::Ident(name) if name == "node"));
+        assert!(matches!(u(operand.as_ref()), Expr::Ident(name) if name == "node"));
     }
 
     #[test]
@@ -1880,7 +1937,7 @@ mod tests {
             other => panic!("expected assignment declaration, got {other:?}"),
         };
 
-        assert!(matches!(value, Expr::Ident(name) if name == "node"));
+        assert!(matches!(u(value), Expr::Ident(name) if name == "node"));
     }
 
     #[test]
@@ -1893,7 +1950,7 @@ mod tests {
             other => panic!("expected assignment declaration, got {other:?}"),
         };
 
-        assert!(matches!(value, Expr::Int(v) if v == "7"));
+        assert!(matches!(u(value), Expr::Int(v) if v == "7"));
     }
 
     #[test]
@@ -1906,26 +1963,26 @@ mod tests {
             Decl::Assign { value, .. } => value,
             _ => panic!("expected assignment"),
         };
-        assert!(matches!(expr, Expr::Float(v) if v == "3.14"));
+        assert!(matches!(u(expr), Expr::Float(v) if v == "3.14"));
 
         let expr = match &parsed.declarations[1] {
             Decl::Assign { value, .. } => value,
             _ => panic!("expected assignment"),
         };
-        assert!(matches!(expr, Expr::String(v) if v == "hi"));
+        assert!(matches!(u(expr), Expr::String(v) if v == "hi"));
 
         let expr = match &parsed.declarations[2] {
             Decl::Assign { value, .. } => value,
             _ => panic!("expected assignment"),
         };
-        assert!(matches!(expr, Expr::Char(v) if v == "x"));
+        assert!(matches!(u(expr), Expr::Char(v) if v == "x"));
 
         let expr = match &parsed.declarations[3] {
             Decl::Assign { value, .. } => value,
             _ => panic!("expected assignment"),
         };
         assert!(matches!(
-            expr,
+            u(expr),
             Expr::DotIdent {
                 name,
                 payload: None
@@ -1937,7 +1994,7 @@ mod tests {
             _ => panic!("expected assignment"),
         };
         assert!(matches!(
-            expr,
+            u(expr),
             Expr::DotIdent {
                 name,
                 payload: Some(_)
@@ -1955,13 +2012,13 @@ mod tests {
             Decl::Assign { value, .. } => value,
             _ => panic!("expected assignment"),
         };
-        assert!(matches!(list, Expr::List(items) if items.len() == 3));
+        assert!(matches!(u(list), Expr::List(items) if items.len() == 3));
 
         let dict = match &parsed.declarations[1] {
             Decl::Assign { value, .. } => value,
             _ => panic!("expected assignment"),
         };
-        assert!(matches!(dict, Expr::Dict(entries) if entries.len() == 2));
+        assert!(matches!(u(dict), Expr::Dict(entries) if entries.len() == 2));
     }
 
     #[test]
@@ -1974,7 +2031,7 @@ mod tests {
             Decl::Assign { value, .. } => value,
             _ => panic!("expected assignment"),
         };
-        assert!(matches!(last, Expr::Label { label, .. } if label == "outer"));
+        assert!(matches!(u(last), Expr::Label { label, .. } if label == "outer"));
     }
 
     #[test]
