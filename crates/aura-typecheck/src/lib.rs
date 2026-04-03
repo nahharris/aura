@@ -2,7 +2,6 @@ pub mod aliases;
 pub mod builtins;
 pub mod checked_ir;
 pub mod checker;
-pub mod diagnostics;
 pub mod generics;
 pub mod interfaces;
 pub mod modules;
@@ -13,11 +12,11 @@ pub mod symbols;
 pub mod types;
 pub mod unify;
 
+use aura_diagnostics::{Diagnostic, Severity};
 use aura_frontend::ast::Program;
 use std::collections::HashMap;
 
 use checker::TypeChecker;
-pub use diagnostics::{Diagnostic, Severity};
 pub use resolver::Resolver;
 pub use symbols::{ScopeId, SymbolId, SymbolKind};
 pub use types::{Ty, TyId, TyInterner};

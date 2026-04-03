@@ -6,6 +6,7 @@ pub struct TyId(pub usize);
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Ty {
     InferVar(u32),
+    GenericParam(String),
     Int8,
     Int16,
     Int32,

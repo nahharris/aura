@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
+use aura_diagnostics::{Diagnostic, Stage};
 use aura_frontend::ast::{Decl, Program};
 
-use crate::diagnostics::Diagnostic;
 use crate::symbols::{ScopeId, Symbol, SymbolId, SymbolKind};
 
 #[derive(Debug, Clone, Default)]
@@ -59,6 +59,7 @@ impl Resolver {
         if self.resolved.by_name.contains_key(&key) {
             self.diagnostics.push(
                 Diagnostic::error("E_RESOLVE_DUP", format!("duplicate symbol '{name}'"))
+                    .with_stage(Stage::Resolver)
                     .with_hint("rename one declaration or remove the duplicate"),
             );
             return;

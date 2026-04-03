@@ -1,0 +1,5 @@
+def[T] id(x: T) -> T { x }
+
+def a = id(1)
+def b = id[_](2)
+def c = id[Int](3)

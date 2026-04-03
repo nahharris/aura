@@ -14,8 +14,27 @@ pub struct CheckedDecl {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckedStaticArg {
-    Type(String),
-    Value(String),
+    Type(CheckedTypeExpr),
+    Value(CheckedStaticValue),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckedTypeExpr {
+    Named {
+        name: String,
+        args: Vec<CheckedStaticArg>,
+    },
+    Static(Box<CheckedTypeExpr>),
+    InferHole,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckedStaticValue {
+    Int(String),
+    Float(String),
+    Ident(String),
+    String(String),
+    Char(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +58,12 @@ pub enum CheckedExpr {
     Call {
         callee: Box<CheckedExpr>,
         args: Vec<CheckedExpr>,
+    },
+    BinaryOp {
+        op: BinaryOpKind,
+        lhs: Box<CheckedExpr>,
+        rhs: Box<CheckedExpr>,
+        ty: TyId,
     },
     MacroApply {
         macro_name: String,
@@ -77,6 +102,23 @@ pub enum CheckedExpr {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOpKind {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    Eq,
+    Neq,
+    And,
+    Or,
+}
+
 impl CheckedIr {
     pub fn empty() -> Self {
         Self {
@@ -87,7 +129,7 @@ impl CheckedIr {
 
 #[cfg(test)]
 mod tests {
-    use crate::checked_ir::{CheckedDecl, CheckedExpr, CheckedIr};
+    use crate::checked_ir::{BinaryOpKind, CheckedDecl, CheckedExpr, CheckedIr};
     use crate::types::TyId;
 
     #[test]
@@ -114,5 +156,29 @@ mod tests {
 
         assert_eq!(ir.declarations.len(), 1);
         assert!(matches!(ir.declarations[0].value, CheckedExpr::If { .. }));
+    }
+
+    #[test]
+    fn checked_ir_supports_typed_binary_operator_nodes() {
+        let ir = CheckedIr {
+            declarations: vec![CheckedDecl {
+                name: "x".to_string(),
+                ty: TyId(2),
+                value: CheckedExpr::BinaryOp {
+                    op: BinaryOpKind::Add,
+                    lhs: Box::new(CheckedExpr::Int("1".to_string())),
+                    rhs: Box::new(CheckedExpr::Int("2".to_string())),
+                    ty: TyId(2),
+                },
+            }],
+        };
+
+        assert!(matches!(
+            ir.declarations[0].value,
+            CheckedExpr::BinaryOp {
+                op: BinaryOpKind::Add,
+                ..
+            }
+        ));
     }
 }

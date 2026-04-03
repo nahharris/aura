@@ -1,0 +1,3 @@
+def[T: Iterable] f(x: T) -> T { x }
+
+def y = f[Int](1)

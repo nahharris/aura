@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::diagnostics::Diagnostic;
 use crate::types::{Ty, TyId, TyInterner};
+use aura_diagnostics::Diagnostic;
 
 #[derive(Debug, Clone, Default)]
 pub struct Substitutions {
@@ -42,6 +42,7 @@ impl Unifier {
         match (lhs_ty, rhs_ty) {
             (Some(Ty::Any), Some(_)) => Ok(rhs),
             (Some(_), Some(Ty::Any)) => Ok(lhs),
+            (Some(Ty::GenericParam(a)), Some(Ty::GenericParam(b))) if a == b => Ok(lhs),
             (Some(Ty::InferVar(_)), Some(_)) => {
                 if self.occurs(interner, lhs, rhs) {
                     return Err(Box::new(
@@ -104,6 +105,125 @@ impl Unifier {
                 let key = self.unify(interner, ka, kb, context)?;
                 let value = self.unify(interner, va, vb, context)?;
                 Ok(interner.intern(Ty::Dict { key, value }))
+            }
+            (Some(Ty::Set(a)), Some(Ty::Set(b))) => {
+                let item = self.unify(interner, a, b, context)?;
+                Ok(interner.intern(Ty::Set(item)))
+            }
+            (
+                Some(Ty::Array {
+                    item: item_a,
+                    size: size_a,
+                }),
+                Some(Ty::Array {
+                    item: item_b,
+                    size: size_b,
+                }),
+            ) => {
+                if size_a != size_b {
+                    return Err(Box::new(
+                        Diagnostic::error(
+                            "E_UNIFY_MISMATCH",
+                            format!(
+                                "cannot unify arrays with different sizes ({size_a} vs {size_b}) in {context}"
+                            ),
+                        )
+                        .with_related("array length is part of the type", None)
+                        .with_hint("use matching array sizes or an explicit conversion path"),
+                    ));
+                }
+                let item = self.unify(interner, item_a, item_b, context)?;
+                Ok(interner.intern(Ty::Array { item, size: size_a }))
+            }
+            (
+                Some(Ty::Func {
+                    params: params_a,
+                    ret: ret_a,
+                }),
+                Some(Ty::Func {
+                    params: params_b,
+                    ret: ret_b,
+                }),
+            ) => {
+                if params_a.len() != params_b.len() {
+                    return Err(Box::new(
+                        Diagnostic::error(
+                            "E_UNIFY_MISMATCH",
+                            format!(
+                                "cannot unify function arity {} with {} in {context}",
+                                params_a.len(),
+                                params_b.len()
+                            ),
+                        )
+                        .with_related("function parameter count differs", None)
+                        .with_hint("pass a callable with matching arity"),
+                    ));
+                }
+
+                let mut params = Vec::with_capacity(params_a.len());
+                for (a, b) in params_a.iter().zip(params_b.iter()) {
+                    params.push(self.unify(interner, *a, *b, context)?);
+                }
+                let ret = self.unify(interner, ret_a, ret_b, context)?;
+                Ok(interner.intern(Ty::Func { params, ret }))
+            }
+            (Some(Ty::Tuple(items_a)), Some(Ty::Tuple(items_b))) => {
+                if items_a.len() != items_b.len() {
+                    return Err(Box::new(
+                        Diagnostic::error(
+                            "E_UNIFY_MISMATCH",
+                            format!(
+                                "cannot unify tuples of different lengths ({}) and ({}) in {context}",
+                                items_a.len(),
+                                items_b.len()
+                            ),
+                        )
+                        .with_related("tuple length is part of the type", None)
+                        .with_hint("use tuples with matching element counts"),
+                    ));
+                }
+
+                let mut items = Vec::with_capacity(items_a.len());
+                for (a, b) in items_a.iter().zip(items_b.iter()) {
+                    items.push(self.unify(interner, *a, *b, context)?);
+                }
+                Ok(interner.intern(Ty::Tuple(items)))
+            }
+            (Some(Ty::Struct(fields_a)), Some(Ty::Struct(fields_b))) => {
+                if fields_a.len() != fields_b.len() {
+                    return Err(Box::new(
+                        Diagnostic::error(
+                            "E_UNIFY_MISMATCH",
+                            format!(
+                                "cannot unify struct fields with different arity ({}) and ({}) in {context}",
+                                fields_a.len(),
+                                fields_b.len()
+                            ),
+                        )
+                        .with_related("struct field count differs", None)
+                        .with_hint("align struct field sets before unification"),
+                    ));
+                }
+
+                let mut fields = Vec::with_capacity(fields_a.len());
+                for ((name_a, ty_a), (name_b, ty_b)) in fields_a.iter().zip(fields_b.iter()) {
+                    if name_a != name_b {
+                        return Err(Box::new(
+                            Diagnostic::error(
+                                "E_UNIFY_MISMATCH",
+                                format!(
+                                    "cannot unify struct field '{name_a}' with '{name_b}' in {context}"
+                                ),
+                            )
+                            .with_related("struct field names must match positionally", None)
+                            .with_hint("ensure both struct shapes use the same field names/order"),
+                        ));
+                    }
+                    let field_ty = self.unify(interner, *ty_a, *ty_b, context)?;
+                    fields.push((name_a.clone(), field_ty));
+                }
+
+                Ok(interner.intern(Ty::Struct(fields)))
             }
             (Some(a), Some(b)) if a == b => Ok(lhs),
             (Some(a), Some(b)) => Err(Box::new(
@@ -203,5 +323,65 @@ mod tests {
             .unify(&mut interner, var, list_of_var, "occurs test")
             .expect_err("occurs check must fail");
         assert_eq!(err.code, "E_UNIFY_OCCURS");
+    }
+
+    #[test]
+    fn function_types_unify_structurally() {
+        let mut interner = TyInterner::new();
+        let mut next = 0;
+        let mut unifier = Unifier::new();
+
+        let infer_param = interner.fresh_infer_var(&mut next);
+        let infer_ret = interner.fresh_infer_var(&mut next);
+        let left = interner.intern(Ty::Func {
+            params: vec![infer_param],
+            ret: infer_ret,
+        });
+
+        let int = interner.intern(Ty::Int32);
+        let float = interner.intern(Ty::Float32);
+        let right = interner.intern(Ty::Func {
+            params: vec![int],
+            ret: float,
+        });
+
+        let unified = unifier
+            .unify(&mut interner, left, right, "fn unify")
+            .expect("function unification should succeed");
+
+        assert_eq!(unifier.resolve(infer_param), int);
+        assert_eq!(unifier.resolve(infer_ret), float);
+        let ty = interner.get(unified).expect("type should exist");
+        assert!(matches!(ty, Ty::Func { .. }));
+    }
+
+    #[test]
+    fn tuple_length_mismatch_fails_unification() {
+        let mut interner = TyInterner::new();
+        let mut unifier = Unifier::new();
+        let int = interner.intern(Ty::Int32);
+
+        let t2 = interner.intern(Ty::Tuple(vec![int, int]));
+        let t1 = interner.intern(Ty::Tuple(vec![int]));
+
+        let err = unifier
+            .unify(&mut interner, t2, t1, "tuple mismatch")
+            .expect_err("tuple lengths should mismatch");
+        assert_eq!(err.code, "E_UNIFY_MISMATCH");
+    }
+
+    #[test]
+    fn array_size_mismatch_fails_unification() {
+        let mut interner = TyInterner::new();
+        let mut unifier = Unifier::new();
+        let int = interner.intern(Ty::Int32);
+
+        let a4 = interner.intern(Ty::Array { item: int, size: 4 });
+        let a8 = interner.intern(Ty::Array { item: int, size: 8 });
+
+        let err = unifier
+            .unify(&mut interner, a4, a8, "array mismatch")
+            .expect_err("array size mismatch should fail");
+        assert_eq!(err.code, "E_UNIFY_MISMATCH");
     }
 }

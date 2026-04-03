@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
+use aura_diagnostics::Diagnostic;
 use aura_frontend::ast::{Decl, Program};
-
-use crate::diagnostics::Diagnostic;
 
 #[derive(Debug, Clone, Default)]
 pub struct ModuleImports {

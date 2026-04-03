@@ -6,6 +6,28 @@ pub struct Span {
     pub column: usize,
 }
 
+impl From<Span> for aura_diagnostics::Span {
+    fn from(value: Span) -> Self {
+        Self {
+            start: value.start,
+            end: value.end,
+            line: value.line,
+            column: value.column,
+        }
+    }
+}
+
+impl From<aura_diagnostics::Span> for Span {
+    fn from(value: aura_diagnostics::Span) -> Self {
+        Self {
+            start: value.start,
+            end: value.end,
+            line: value.line,
+            column: value.column,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
     Ident(String),

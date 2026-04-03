@@ -1,0 +1,3 @@
+def[n: static Int] f(x: Int) -> Int { x }
+
+def y = f[Int](1)

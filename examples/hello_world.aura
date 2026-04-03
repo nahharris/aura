@@ -20,7 +20,7 @@ def greet(name: String) -> String {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // FizzBuzz via pattern-matching closure
-def fizzbuzz = {
+def fizzbuzz(n: Int) -> String {
     n ~ n % 15 == 0 -> "FizzBuzz",
     n ~ n % 3  == 0 -> "Fizz",
     n ~ n % 5  == 0 -> "Buzz",
@@ -56,7 +56,7 @@ def main() -> Void {
 
     // List and higher-order functions
     let nums = [1, 2, 3, 4, 5];
-    let squares = nums.map { x -> x * x };
+    let squares = nums.map with { x -> x * x };
     println("squares: $(squares)");
 
     let evens = nums.filter({ x -> x % 2 == 0 });

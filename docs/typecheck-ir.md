@@ -1,8 +1,8 @@
-# Aura Typecheck IR Contract (Draft)
+# Aura Typecheck IR Contract (Frozen v1)
 
 This document defines the current checked-IR contract emitted by `crates/aura-typecheck` and consumed by future backend lowering (LLVM target).
 
-Status: draft, iterating toward freeze.
+Status: frozen v1.
 
 ## Goals
 
@@ -37,7 +37,14 @@ Status: draft, iterating toward freeze.
 
 - Invocation/macro surfaces:
   - `Call { callee, args }`
+  - `BinaryOp { op, lhs, rhs, ty }`
   - `MacroApply { macro_name, static_args, operand }`
+
+- Typed operator kinds (`BinaryOpKind`):
+  - Arithmetic: `Add`, `Sub`, `Mul`, `Div`, `Mod`
+  - Comparison: `Lt`, `Gt`, `Le`, `Ge`
+  - Equality: `Eq`, `Neq`
+  - Logical: `And`, `Or`
 
 - Structured control flow:
   - `If { condition, then_branch, else_branch }`
@@ -57,29 +64,48 @@ Status: draft, iterating toward freeze.
 ## Static Arguments
 
 - `CheckedStaticArg`
-  - `Type(String)`
-  - `Value(String)`
+  - `Type(CheckedTypeExpr)`
+  - `Value(CheckedStaticValue)`
 
-Currently represented as strings from AST debug formatting for preservation fidelity. Planned improvement is structural typed static-arg IR.
+- `CheckedTypeExpr`
+  - `Named { name, args }`
+  - `Static(inner)`
+  - `InferHole`
 
-## Invariants (Current)
+- `CheckedStaticValue`
+  - `Int(String)`
+  - `Float(String)`
+  - `Ident(String)`
+  - `String(String)`
+  - `Char(String)`
+
+Static arguments are now structural in the checked IR contract (no debug-string payloads).
+
+## Invariants (Frozen v1)
 
 1. Every `CheckedDecl` carries a resolved `TyId`.
 2. Assignment compatibility may inject `Coerce`/`Cast` wrappers.
 3. `if`/`cases` macro surfaces lower to dedicated control-flow nodes.
 4. `return`/`break`/`continue` macro surfaces lower to dedicated jump nodes.
-
-## Invariants (Target before freeze)
+5. Core assignability, branch-join compatibility, and IR conversion wrappers are driven by one centralized conversion decision path in the checker.
 
 1. No `CheckedExpr::Any` on semantically checked core paths.
-2. Full operator coverage lowered to typed operator nodes.
+2. Full operator macro family lowers to typed `BinaryOp` nodes.
 3. All cast/coerce decisions represented explicitly and consistently.
-4. Stable schema tests ensure backward-compatible backend contract.
+4. Stable schema tests enforce frozen contract expectations.
+
+## Compatibility Policy (v1)
+
+- Any new `CheckedExpr` variant is a breaking change unless version is bumped.
+- Any new `BinaryOpKind` variant is a breaking change and requires version bump.
+- Semantic reinterpretation of existing node fields/variants is breaking.
+- Additive metadata fields are breaking in v1 unless explicitly optional and backend-ignored by contract.
 
 ## Validation Plan
 
 - Add contract tests that assert:
   - control-flow macro lowering shape
+  - typed operator node lowering shape
   - cast/coerce wrappers emitted when expected
   - macro static args preserved
 - Add negative tests to ensure disallowed forms do not silently lower to `Any`.

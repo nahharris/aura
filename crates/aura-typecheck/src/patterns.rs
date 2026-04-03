@@ -1,6 +1,5 @@
+use aura_diagnostics::Diagnostic;
 use aura_frontend::ast::{Arm, Pattern};
-
-use crate::diagnostics::Diagnostic;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatternFamily {
@@ -26,7 +25,7 @@ impl PatternChecker {
             .with_hint("add at least one pattern arm")];
         }
 
-        if has_wildcard_fallback(arms) {
+        if has_fallback_arm(arms) {
             return Vec::new();
         }
 
@@ -69,7 +68,7 @@ impl PatternChecker {
         let mut diagnostics = Vec::new();
         let mut seen_fallback = false;
         for (idx, arm) in arms.iter().enumerate() {
-            let Some(first) = arm.patterns.first() else {
+            let Some(_) = arm.patterns.first() else {
                 continue;
             };
 
@@ -85,7 +84,7 @@ impl PatternChecker {
                 continue;
             }
 
-            if matches!(first, Pattern::Wildcard) {
+            if is_fallback_arm(arm) {
                 seen_fallback = true;
             }
         }
@@ -94,9 +93,15 @@ impl PatternChecker {
     }
 }
 
-fn has_wildcard_fallback(arms: &[Arm]) -> bool {
-    arms.iter()
-        .any(|arm| matches!(arm.patterns.first(), Some(Pattern::Wildcard)))
+fn has_fallback_arm(arms: &[Arm]) -> bool {
+    arms.iter().any(is_fallback_arm)
+}
+
+fn is_fallback_arm(arm: &Arm) -> bool {
+    matches!(arm.patterns.first(), Some(Pattern::Wildcard))
+        || (arm.patterns.is_empty() && arm.guard.is_none())
+        || (arm.patterns.is_empty()
+            && matches!(arm.guard.as_ref(), Some(aura_frontend::ast::Expr::Ident(name)) if name == "true"))
 }
 
 fn classify_family(arms: &[Arm]) -> PatternFamily {
@@ -136,6 +141,15 @@ mod tests {
     fn mk_arm(pattern: Pattern) -> Arm {
         Arm {
             patterns: vec![pattern],
+            guard: None,
+            body: Expr::Ident("x".to_string()),
+        }
+    }
+
+    fn mk_default_arm() -> Arm {
+        Arm {
+            patterns: Vec::new(),
+            guard: None,
             body: Expr::Ident("x".to_string()),
         }
     }
@@ -162,6 +176,21 @@ mod tests {
                 payload: None,
             }),
             mk_arm(Pattern::Wildcard),
+        ];
+
+        let diagnostics = checker.validate_multi_arm_exhaustiveness(&arms);
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn default_arm_without_left_side_is_exhaustive_fallback() {
+        let checker = PatternChecker::new();
+        let arms = vec![
+            mk_arm(Pattern::DotVariant {
+                name: "ok".to_string(),
+                payload: None,
+            }),
+            mk_default_arm(),
         ];
 
         let diagnostics = checker.validate_multi_arm_exhaustiveness(&arms);

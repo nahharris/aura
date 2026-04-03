@@ -22,7 +22,7 @@ pub struct MacroDecl {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionDecl {
-    pub static_params: Vec<String>,
+    pub static_params: Vec<StaticParam>,
     pub receiver: Option<TypeExpr>,
     pub name: String,
     pub params: Vec<Param>,
@@ -57,6 +57,7 @@ pub struct Param {
 pub enum TypeExpr {
     Named { name: String, args: Vec<StaticArg> },
     Static(Box<TypeExpr>),
+    InferHole,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,21 +97,63 @@ pub enum Expr {
         callee: Box<Expr>,
         static_args: Vec<StaticArg>,
         args: Vec<Expr>,
+        trailing: Vec<LabeledClosureArg>,
+    },
+    Member {
+        object: Box<Expr>,
+        field: String,
     },
     MacroApply {
         macro_name: String,
         static_args: Vec<StaticArg>,
         operand: Box<Expr>,
     },
+    Binary {
+        op: BinaryOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
+    TypeExpr(TypeExpr),
     Label {
         label: String,
         expr: Box<Expr>,
     },
+    Cast {
+        expr: Box<Expr>,
+        ty: TypeExpr,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabeledClosureArg {
+    pub label: String,
+    pub body: Expr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOp {
+    Elvis,
+    Or,
+    And,
+    Eq,
+    Neq,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Range,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Colon,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Arm {
     pub patterns: Vec<Pattern>,
+    pub guard: Option<Expr>,
     pub body: Expr,
 }
 

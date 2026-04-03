@@ -848,7 +848,7 @@ add(b = 2, a = 1)
 
 ### Trailing-Lambda Syntax
 
-Closure arguments (`{ }`) may be placed *outside* the parentheses as trailing arguments. This is the mechanism that makes `if`, `loop`, and similar macros feel like built-in syntax.
+Closure arguments (`{ }`) may be placed *outside* the parentheses as trailing arguments.
 
 **Only closures** can be trailing arguments. Lists, dicts, and other values must always be passed inside `( )`.
 
@@ -856,19 +856,19 @@ Rules:
 
 1. **Parentheses are mandatory** for all non-closure arguments, even when there are none: `loop do { }` is valid because `loop` takes no non-closure arguments. A call like `foo 42 { }` (passing a non-closure value outside parentheses) is a syntax error.
 2. The trailing closure arguments must be the **last** parameters in the function signature.
-3. The **first** trailing closure needs no label; subsequent ones require their external parameter label.
+3. All trailing closures must be labeled by their external parameter name.
 4. Continuation trailing closures must begin on the **same line** as the preceding `}` (due to the implicit-semicolon rule after `}`).
 
 ```aura
 def do2(value: Int, this: Func[Int, Void], that: Func[Int, Void])
 
-// All three forms are equivalent:
+// Equivalent forms:
 do2(1, this = { v -> print(v); }, that = { v -> print(v); })
 
-do2(1) { v -> print(v); } that { v -> print(v); }
+do2(1) this { v -> print(v); } that { v -> print(v); }
 ```
 
-A single trailing closure with no label:
+A single trailing closure still uses its label:
 
 ```aura
 loop do {
@@ -890,7 +890,7 @@ do_stuff(12, "hi", value = false) task {
 
 ## Control Flow
 
-All control flow is implemented as macros. Their bodies are closures that are **inlined** into the call site — `return` inside an `if` branch returns from the enclosing function, not from the `if` itself.
+`if` and `cases` are inline functions. Their bodies are closures that are **inlined** into the call site — `return` inside an `if` branch returns from the enclosing function, not from the `if` itself.
 
 ### `if`
 
@@ -944,7 +944,7 @@ Multi-branch conditionals are handled by `cases` — see [`cases`](#cases).
 `cases` is the multi-branch conditional. It takes no initial argument; instead, each arm is a guard-only pattern (`~ condition -> expr`) evaluated in order. The first arm whose condition is `true` is taken. This replaces the `else if` chain found in other languages.
 
 ```aura
-cases {
+cases when {
     ~ x > 0  -> "positive",
     ~ x < 0  -> "negative",
     ~ true   -> "zero"
@@ -967,7 +967,7 @@ The `arms` argument is a multi-arm closure where every arm has no patterns — o
 
 ```aura
 // cases desugars to calling its closure argument with no input:
-cases {
+cases when {
     ~ cond1 -> expr1,
     ~ cond2 -> expr2,
     ~ true  -> exprDefault

@@ -1,5 +1,5 @@
 [workspace]
-members = [
+members = ["crates/aura-cli","crates/aura-diagnostics",
     "crates/aura-frontend",
     "crates/aura-typecheck",
 ]

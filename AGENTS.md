@@ -42,8 +42,13 @@ cargo test -p aura-frontend
 - Macro declaration canonical form:
   - `defmacro[static_args] macro_name(ast_node) -> T { ... }`
 - Macro application canonical form:
+  - `macro_name node`
   - `macro_name[args] node`
 - Macro application operand is single-node and chaining is right-associative.
+- Macro symbols are final and non-shadowable.
+- Top-level scope is static-only (`def`, `defmacro`, `use`).
+- Trailing closure call arguments are labeled.
+- `if` and `cases` are inline function calls (`cases when { ... }`), not macro-special syntax.
 - `static` is a reusable compile-time interface concept shared across features.
 - Function-like declaration syntax is assignment sugar and should normalize to assignment semantics.
 

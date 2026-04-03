@@ -1,6 +1,6 @@
+use aura_diagnostics::Diagnostic;
 use aura_frontend::ast::{StaticArg, TypeExpr};
 
-use crate::diagnostics::Diagnostic;
 use crate::interfaces::InterfaceRegistry;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -4,4 +4,4 @@ pub mod parser;
 pub mod static_eval;
 pub mod token;
 
-pub use parser::{ParseError, Parser};
+pub use parser::Parser;

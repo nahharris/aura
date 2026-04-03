@@ -5,3 +5,4 @@ edition = "2021"
 description = "Aura frontend: token, lexer, AST, parser"
 
 [dependencies]
+aura-diagnostics = { path = "../aura-diagnostics" }

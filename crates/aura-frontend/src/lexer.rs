@@ -1,21 +1,9 @@
+#![allow(clippy::result_large_err)]
+
 use crate::token::{Span, Token, TokenKind};
+use aura_diagnostics::{Diagnostic, Stage};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LexError {
-    pub message: String,
-    pub span: Span,
-}
-
-impl LexError {
-    fn new(message: impl Into<String>, span: Span) -> Self {
-        Self {
-            message: message.into(),
-            span,
-        }
-    }
-}
-
-pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
+pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
     let mut lexer = Lexer::new(source);
     lexer.lex_all()
 }
@@ -45,7 +33,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn lex_all(&mut self) -> Result<Vec<Token>, LexError> {
+    fn lex_all(&mut self) -> Result<Vec<Token>, Diagnostic> {
         while let Some(ch) = self.peek() {
             match ch {
                 ' ' | '\t' | '\r' => {
@@ -76,9 +64,9 @@ impl<'a> Lexer<'a> {
                     if self.peek_n(1) == Some('.') {
                         self.push_pair(TokenKind::Range);
                     } else if self.peek_n(1).map(|c| c.is_ascii_digit()).unwrap_or(false) {
-                        return Err(LexError::new(
+                        return Err(self.error_here(
+                            "E_LEX_FLOAT_NO_INT_PART",
                             "float literal requires integer part before '.'",
-                            self.single_span(),
                         ));
                     } else {
                         self.push_simple(TokenKind::Dot);
@@ -97,9 +85,9 @@ impl<'a> Lexer<'a> {
                     } else if self.peek_n(1) == Some('=') {
                         self.push_pair(TokenKind::NotEq);
                     } else {
-                        return Err(LexError::new(
+                        return Err(self.error_here(
+                            "E_LEX_BANG_FORM",
                             "unexpected '!': expected '!!' or '!='",
-                            self.single_span(),
                         ));
                     }
                 }
@@ -121,20 +109,18 @@ impl<'a> Lexer<'a> {
                     if self.peek_n(1) == Some('|') {
                         self.push_pair(TokenKind::PipePipe);
                     } else {
-                        return Err(LexError::new(
-                            "unexpected '|': expected '||'",
-                            self.single_span(),
-                        ));
+                        return Err(
+                            self.error_here("E_LEX_PIPE_FORM", "unexpected '|': expected '||'")
+                        );
                     }
                 }
                 '&' => {
                     if self.peek_n(1) == Some('&') {
                         self.push_pair(TokenKind::AmpAmp);
                     } else {
-                        return Err(LexError::new(
-                            "unexpected '&': expected '&&'",
-                            self.single_span(),
-                        ));
+                        return Err(
+                            self.error_here("E_LEX_AMP_FORM", "unexpected '&': expected '&&'")
+                        );
                     }
                 }
                 '?' => {
@@ -143,9 +129,9 @@ impl<'a> Lexer<'a> {
                     } else if self.peek_n(1) == Some('.') {
                         self.push_pair(TokenKind::QuestionDot);
                     } else {
-                        return Err(LexError::new(
+                        return Err(self.error_here(
+                            "E_LEX_QUESTION_FORM",
                             "unexpected '?': expected '?:' or '?.'",
-                            self.single_span(),
                         ));
                     }
                 }
@@ -173,9 +159,9 @@ impl<'a> Lexer<'a> {
                 c if c.is_ascii_digit() => self.lex_number()?,
                 c if is_ident_start(c) => self.lex_ident_or_keyword(),
                 other => {
-                    return Err(LexError::new(
+                    return Err(self.error_here(
+                        "E_LEX_UNEXPECTED_CHAR",
                         format!("unexpected character '{other}'"),
-                        self.single_span(),
                     ));
                 }
             }
@@ -220,7 +206,7 @@ impl<'a> Lexer<'a> {
         ));
     }
 
-    fn lex_number(&mut self) -> Result<(), LexError> {
+    fn lex_number(&mut self) -> Result<(), Diagnostic> {
         let start_pos = self.pos;
         let start_line = self.line;
         let start_col = self.column;
@@ -252,7 +238,8 @@ impl<'a> Lexer<'a> {
                     }
                 }
             } else {
-                return Err(LexError::new(
+                return Err(self.error_at(
+                    "E_LEX_FLOAT_NO_FRACTION",
                     "float literal requires digits after '.'",
                     Span {
                         start: start_pos,
@@ -281,7 +268,7 @@ impl<'a> Lexer<'a> {
         Ok(())
     }
 
-    fn lex_string(&mut self) -> Result<(), LexError> {
+    fn lex_string(&mut self) -> Result<(), Diagnostic> {
         let start_pos = self.pos;
         let start_line = self.line;
         let start_col = self.column;
@@ -306,7 +293,8 @@ impl<'a> Lexer<'a> {
                 '\\' => {
                     self.bump();
                     let escaped = self.peek().ok_or_else(|| {
-                        LexError::new(
+                        self.error_at(
+                            "E_LEX_STRING_ESCAPE_UNTERMINATED",
                             "unterminated escape in string literal",
                             Span {
                                 start: start_pos,
@@ -323,9 +311,9 @@ impl<'a> Lexer<'a> {
                         '\\' => '\\',
                         '"' => '"',
                         other => {
-                            return Err(LexError::new(
+                            return Err(self.error_here(
+                                "E_LEX_STRING_ESCAPE_UNSUPPORTED",
                                 format!("unsupported string escape '\\{other}'"),
-                                self.single_span(),
                             ));
                         }
                     });
@@ -337,7 +325,8 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        Err(LexError::new(
+        Err(self.error_at(
+            "E_LEX_STRING_UNTERMINATED",
             "unterminated string literal",
             Span {
                 start: start_pos,
@@ -348,7 +337,7 @@ impl<'a> Lexer<'a> {
         ))
     }
 
-    fn lex_char(&mut self) -> Result<(), LexError> {
+    fn lex_char(&mut self) -> Result<(), Diagnostic> {
         let start_pos = self.pos;
         let start_line = self.line;
         let start_col = self.column;
@@ -357,7 +346,8 @@ impl<'a> Lexer<'a> {
         let value = if self.peek() == Some('\\') {
             self.bump();
             let escaped = self.peek().ok_or_else(|| {
-                LexError::new(
+                self.error_at(
+                    "E_LEX_CHAR_ESCAPE_UNTERMINATED",
                     "unterminated escape in char literal",
                     Span {
                         start: start_pos,
@@ -374,15 +364,16 @@ impl<'a> Lexer<'a> {
                 '\\' => "\\\\".to_string(),
                 '\'' => "\\'".to_string(),
                 other => {
-                    return Err(LexError::new(
+                    return Err(self.error_here(
+                        "E_LEX_CHAR_ESCAPE_UNSUPPORTED",
                         format!("unsupported char escape '\\{other}'"),
-                        self.single_span(),
                     ));
                 }
             }
         } else {
             let ch = self.peek().ok_or_else(|| {
-                LexError::new(
+                self.error_at(
+                    "E_LEX_CHAR_UNTERMINATED",
                     "unterminated char literal",
                     Span {
                         start: start_pos,
@@ -397,7 +388,8 @@ impl<'a> Lexer<'a> {
         };
 
         if self.peek() != Some('\'') {
-            return Err(LexError::new(
+            return Err(self.error_at(
+                "E_LEX_CHAR_SIZE",
                 "char literal must contain exactly one character",
                 Span {
                     start: start_pos,
@@ -432,7 +424,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn consume_block_comment(&mut self) -> Result<(), LexError> {
+    fn consume_block_comment(&mut self) -> Result<(), Diagnostic> {
         let start = self.single_span();
         self.bump();
         self.bump();
@@ -444,7 +436,23 @@ impl<'a> Lexer<'a> {
             }
             self.bump();
         }
-        Err(LexError::new("unterminated block comment", start))
+        Err(self.error_at(
+            "E_LEX_BLOCK_COMMENT_UNTERMINATED",
+            "unterminated block comment",
+            start,
+        ))
+    }
+
+    fn error_here(&self, code: &'static str, message: impl Into<String>) -> Diagnostic {
+        Diagnostic::error(code, message)
+            .with_stage(Stage::Lexer)
+            .with_span(self.single_span().into())
+    }
+
+    fn error_at(&self, code: &'static str, message: impl Into<String>, span: Span) -> Diagnostic {
+        Diagnostic::error(code, message)
+            .with_stage(Stage::Lexer)
+            .with_span(span.into())
     }
 
     fn maybe_insert_implicit_semi(&mut self) {
