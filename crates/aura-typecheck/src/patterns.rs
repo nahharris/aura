@@ -1,4 +1,4 @@
-use aura_diagnostics::Diagnostic;
+use aura_diagnostics::{Diagnostic, Issue};
 use aura_frontend::ast::{Arm, Pattern};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,11 +18,8 @@ impl PatternChecker {
 
     pub fn validate_multi_arm_exhaustiveness(&self, arms: &[Arm]) -> Vec<Diagnostic> {
         if arms.is_empty() {
-            return vec![Diagnostic::error(
-                "E_PATTERN_EMPTY_ARMS",
-                "multi-arm expression must contain at least one arm",
-            )
-            .with_hint("add at least one pattern arm")];
+            return vec![Diagnostic::error(Issue::PatternEmptyArms)
+                .with_hint("add at least one pattern arm")];
         }
 
         if has_fallback_arm(arms) {
@@ -34,29 +31,20 @@ impl PatternChecker {
         match family {
             PatternFamily::Variant => {
                 diagnostics.push(
-                    Diagnostic::error(
-                        "E_PATTERN_NON_EXHAUSTIVE",
-                        "non-exhaustive variant patterns: wildcard or full variant coverage required",
-                    )
-                    .with_hint("add `_ -> ...` or include the missing variant patterns"),
+                    Diagnostic::error(Issue::PatternNonExhaustive)
+                        .with_hint("add `_ -> ...` or include the missing variant patterns"),
                 );
             }
             PatternFamily::BoolLike => {
                 diagnostics.push(
-                    Diagnostic::error(
-                        "E_PATTERN_NON_EXHAUSTIVE",
-                        "non-exhaustive boolean-like patterns",
-                    )
-                    .with_hint("cover both true and false, or add a wildcard arm"),
+                    Diagnostic::error(Issue::PatternNonExhaustive)
+                        .with_hint("cover both true and false, or add a wildcard arm"),
                 );
             }
             PatternFamily::Unknown => {
                 diagnostics.push(
-                    Diagnostic::error(
-                        "E_PATTERN_NON_EXHAUSTIVE",
-                        "cannot prove multi-arm expression is exhaustive",
-                    )
-                    .with_hint("add a wildcard fallback arm (`_ -> ...`)"),
+                    Diagnostic::error(Issue::PatternNonExhaustive)
+                        .with_hint("add a wildcard fallback arm (`_ -> ...`)"),
                 );
             }
         }
@@ -67,19 +55,16 @@ impl PatternChecker {
     pub fn validate_redundancy(&self, arms: &[Arm]) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
         let mut seen_fallback = false;
-        for (idx, arm) in arms.iter().enumerate() {
+        for (_idx, arm) in arms.iter().enumerate() {
             let Some(_) = arm.patterns.first() else {
                 continue;
             };
 
             if seen_fallback {
                 diagnostics.push(
-                    Diagnostic::error(
-                        "E_PATTERN_UNREACHABLE_ARM",
-                        format!("arm {idx} is unreachable because a previous wildcard matches all values"),
-                    )
-                    .with_related("previous wildcard arm captures all remaining inputs", None)
-                    .with_hint("remove the unreachable arm or reorder patterns"),
+                    Diagnostic::error(Issue::PatternUnreachableArm)
+                        .with_related("previous wildcard arm captures all remaining inputs", None)
+                        .with_hint("remove the unreachable arm or reorder patterns"),
                 );
                 continue;
             }
@@ -164,7 +149,7 @@ mod tests {
 
         let diagnostics = checker.validate_multi_arm_exhaustiveness(&arms);
         assert!(!diagnostics.is_empty());
-        assert_eq!(diagnostics[0].code, "E_PATTERN_NON_EXHAUSTIVE");
+        assert_eq!(diagnostics[0].code_str(), "E_PATTERN_NON_EXHAUSTIVE");
     }
 
     #[test]
@@ -207,6 +192,6 @@ mod tests {
 
         let diagnostics = checker.validate_redundancy(&arms);
         assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].code, "E_PATTERN_UNREACHABLE_ARM");
+        assert_eq!(diagnostics[0].code_str(), "E_PATTERN_UNREACHABLE_ARM");
     }
 }

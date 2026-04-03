@@ -549,13 +549,18 @@ fn prepare_diagnostics(diags: &[Diagnostic], source: &str) -> Vec<PreparedDiagno
             .collect::<Vec<_>>();
         let fingerprint = format!(
             "{:?}|{:?}|{}|{}|{:?}|{:?}",
-            d.severity, d.stage, d.code, d.message, span, d.hint
+            d.severity,
+            d.stage,
+            d.code_str(),
+            d.message,
+            span,
+            d.hint
         );
         if !seen.insert(fingerprint) {
             continue;
         }
         prepared.push(PreparedDiagnostic {
-            code: d.code,
+            code: d.code_str(),
             stage,
             severity: d.severity,
             message: d.message.clone(),
@@ -853,11 +858,13 @@ impl Palette {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aura_diagnostics::{RelatedLabel, Stage};
+    use aura_diagnostics::{Issue, RelatedLabel, Stage};
 
     #[test]
     fn prepare_diagnostics_filters_internal_related_labels() {
-        let diag = Diagnostic::error("E_TYPE_MISMATCH", "mismatch")
+        let diag = Diagnostic::error(Issue::ParseUnexpectedToken {
+            detail: "mismatch".to_string(),
+        })
             .with_stage(Stage::Typecheck)
             .with_related("source span unavailable in current typed AST", None)
             .with_related("assignment compatibility check failed", None)
@@ -870,8 +877,14 @@ mod tests {
 
     #[test]
     fn prepare_diagnostics_deduplicates_same_payload() {
-        let diag1 = Diagnostic::error("E_X", "same").with_stage(Stage::Parser);
-        let diag2 = Diagnostic::error("E_X", "same").with_stage(Stage::Parser);
+        let diag1 = Diagnostic::error(Issue::ParseUnexpectedToken {
+            detail: "same".to_string(),
+        })
+        .with_stage(Stage::Parser);
+        let diag2 = Diagnostic::error(Issue::ParseUnexpectedToken {
+            detail: "same".to_string(),
+        })
+        .with_stage(Stage::Parser);
         let prepared = prepare_diagnostics(&[diag1, diag2], "def x = 1");
         assert_eq!(prepared.len(), 1);
     }
@@ -912,7 +925,9 @@ mod tests {
     #[test]
     fn json_prepared_keeps_user_related_labels() {
         let diag = Diagnostic {
-            code: "E_CUSTOM",
+            issue: Issue::ParseUnexpectedToken {
+                detail: "problem".to_string(),
+            },
             stage: Stage::Typecheck,
             severity: Severity::Error,
             message: "problem".to_string(),

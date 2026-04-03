@@ -15,7 +15,7 @@ fn render(diag: &aura_diagnostics::Diagnostic) -> String {
     };
     format!(
         "{sev}|{stage}|{}|{}|{}",
-        diag.code, diag.message, obligations
+        diag.code_str(), diag.message, obligations
     )
 }
 
@@ -26,7 +26,7 @@ fn snapshot_unresolved_identifier_warning_shape() {
     let diag = checked
         .diagnostics
         .iter()
-        .find(|d| d.code == "W_UNRESOLVED_IDENT")
+        .find(|d| d.code_str() == "W_UNRESOLVED_IDENT")
         .expect("expected unresolved identifier warning");
 
     let got = render(diag);
@@ -43,7 +43,7 @@ fn snapshot_static_bound_kind_error_shape() {
     let diag = checked
         .diagnostics
         .iter()
-        .find(|d| d.code == "E_STATIC_ARG_KIND")
+        .find(|d| d.code_str() == "E_STATIC_ARG_KIND")
         .expect("expected static arg kind diagnostic");
 
     let got = render(diag);
@@ -60,7 +60,7 @@ fn snapshot_interface_bound_unsatisfied_shape() {
     let diag = checked
         .diagnostics
         .iter()
-        .find(|d| d.code == "E_INTERFACE_BOUND_UNSAT")
+        .find(|d| d.code_str() == "E_INTERFACE_BOUND_UNSAT")
         .expect("expected interface bound unsatisfied diagnostic");
 
     let got = render(diag);
@@ -78,7 +78,7 @@ fn snapshot_type_mismatch_return_shape() {
     let diag = checked
         .diagnostics
         .iter()
-        .find(|d| d.code == "E_TYPE_MISMATCH")
+        .find(|d| d.code_str() == "E_TYPE_MISMATCH")
         .expect("expected type mismatch diagnostic");
 
     let got = render(diag);
@@ -98,7 +98,7 @@ fn snapshot_operator_arity_error_shape() {
     let diag = checked
         .diagnostics
         .iter()
-        .find(|d| d.code == "E_OP_NON_NUMERIC")
+        .find(|d| d.code_str() == "E_OP_NON_NUMERIC")
         .expect("expected non-numeric operator diagnostic");
 
     let got = render(diag);
@@ -114,7 +114,7 @@ fn snapshot_cast_invalid_shape() {
     let diag = checked
         .diagnostics
         .iter()
-        .find(|d| d.code == "E_CAST_INVALID")
+        .find(|d| d.code_str() == "E_CAST_INVALID")
         .expect("expected cast invalid diagnostic");
 
     let got = render(diag);
@@ -136,7 +136,7 @@ fn all_typecheck_diagnostics_include_related_context_label() {
         assert!(
             !d.related.is_empty(),
             "expected related labels on diagnostic code {}",
-            d.code
+            d.code_str()
         );
     }
 }

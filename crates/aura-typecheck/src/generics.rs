@@ -1,4 +1,4 @@
-use aura_diagnostics::Diagnostic;
+use aura_diagnostics::{Diagnostic, Issue};
 use aura_frontend::ast::{StaticArg, TypeExpr};
 
 use crate::interfaces::InterfaceRegistry;
@@ -32,18 +32,17 @@ impl GenericChecker {
                 if let GenericConstraint::Interface(name) = constraint {
                     if !self.interfaces.contains(name) {
                         diagnostics.push(
-                            Diagnostic::error(
-                                "E_UNKNOWN_INTERFACE",
-                                format!("unknown interface constraint '{name}'"),
-                            )
-                            .with_related(
-                                format!(
-                                    "generic parameter '{}' references unknown interface",
-                                    param.name
+                            Diagnostic::error(Issue::UnknownInterface)
+                                .with_related(
+                                    format!(
+                                        "generic parameter '{}' references unknown interface",
+                                        param.name
+                                    ),
+                                    None,
+                                )
+                                .with_hint(
+                                    "declare the interface or use a known prelude interface",
                                 ),
-                                None,
-                            )
-                            .with_hint("declare the interface or use a known prelude interface"),
                         );
                     }
                 }
@@ -59,37 +58,33 @@ impl GenericChecker {
     ) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
         for (idx, constraint) in constraints.iter().enumerate() {
-            if let GenericConstraint::Static(expected) = constraint {
+            if let GenericConstraint::Static(_expected) = constraint {
                 let Some(arg) = args.get(idx) else {
                     diagnostics.push(
-                        Diagnostic::error(
-                            "E_STATIC_ARG_MISSING",
-                            "missing static argument for constrained generic parameter",
-                        )
-                        .with_hint("provide all constrained static arguments"),
+                        Diagnostic::error(Issue::StaticArgMissing)
+                            .with_hint("provide all constrained static arguments"),
                     );
                     continue;
                 };
 
                 match arg {
                     StaticArg::Value(_) => {}
-                    StaticArg::Type(actual_ty) => {
+                    StaticArg::Type(_actual_ty) => {
                         diagnostics.push(
-                            Diagnostic::error(
-                                "E_STATIC_ARG_KIND",
-                                format!(
+                            Diagnostic::error(Issue::StaticArgKind {
+                                detail: format!(
                                     "expected compile-time value for static constraint {:?}, got type argument {:?}",
-                                    expected, actual_ty
+                                    _expected, _actual_ty
                                 ),
-                            )
+                            })
                             .with_related(
                                 format!(
                                     "constraint index {} requires static value argument",
-                                    idx
-                                ),
-                                None,
-                            )
-                            .with_hint("replace type argument with a compile-time-known value"),
+                                        idx
+                                    ),
+                                    None,
+                                )
+                                .with_hint("replace type argument with a compile-time-known value"),
                         );
                     }
                 }
@@ -115,7 +110,7 @@ mod tests {
 
         let diagnostics = checker.validate_constraints(&params);
         assert!(!diagnostics.is_empty());
-        assert_eq!(diagnostics[0].code, "E_UNKNOWN_INTERFACE");
+        assert_eq!(diagnostics[0].code_str(), "E_UNKNOWN_INTERFACE");
     }
 
     #[test]
@@ -134,7 +129,7 @@ mod tests {
             })],
         );
         assert!(!bad.is_empty());
-        assert_eq!(bad[0].code, "E_STATIC_ARG_KIND");
+        assert_eq!(bad[0].code_str(), "E_STATIC_ARG_KIND");
 
         let ok = checker.validate_static_args(
             &constraints,

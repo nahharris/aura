@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::types::{Ty, TyId, TyInterner};
-use aura_diagnostics::Diagnostic;
+use aura_diagnostics::{Diagnostic, Issue};
 
 #[derive(Debug, Clone, Default)]
 pub struct Substitutions {
@@ -46,14 +46,11 @@ impl Unifier {
             (Some(Ty::InferVar(_)), Some(_)) => {
                 if self.occurs(interner, lhs, rhs) {
                     return Err(Box::new(
-                        Diagnostic::error(
-                            "E_UNIFY_OCCURS",
-                            format!(
-                                "occurs-check failed while binding infer variable in {context}"
+                        Diagnostic::error(Issue::UnifyOccurs)
+                            .with_related("infinite type would be created", None)
+                            .with_hint(
+                                "introduce explicit annotation to break recursive inference",
                             ),
-                        )
-                        .with_related("infinite type would be created", None)
-                        .with_hint("introduce explicit annotation to break recursive inference"),
                     ));
                 }
                 self.bind(lhs, rhs);
@@ -62,14 +59,11 @@ impl Unifier {
             (Some(_), Some(Ty::InferVar(_))) => {
                 if self.occurs(interner, rhs, lhs) {
                     return Err(Box::new(
-                        Diagnostic::error(
-                            "E_UNIFY_OCCURS",
-                            format!(
-                                "occurs-check failed while binding infer variable in {context}"
+                        Diagnostic::error(Issue::UnifyOccurs)
+                            .with_related("infinite type would be created", None)
+                            .with_hint(
+                                "introduce explicit annotation to break recursive inference",
                             ),
-                        )
-                        .with_related("infinite type would be created", None)
-                        .with_hint("introduce explicit annotation to break recursive inference"),
                     ));
                 }
                 self.bind(rhs, lhs);
@@ -78,12 +72,11 @@ impl Unifier {
             (Some(Ty::List(a)), Some(Ty::List(b))) => {
                 if self.occurs(interner, lhs, b) || self.occurs(interner, rhs, a) {
                     return Err(Box::new(
-                        Diagnostic::error(
-                            "E_UNIFY_OCCURS",
-                            format!("occurs-check failed while unifying list types in {context}"),
-                        )
-                        .with_related("infinite type would be created", None)
-                        .with_hint("introduce explicit annotation to break recursive inference"),
+                        Diagnostic::error(Issue::UnifyOccurs)
+                            .with_related("infinite type would be created", None)
+                            .with_hint(
+                                "introduce explicit annotation to break recursive inference",
+                            ),
                     ));
                 }
                 let item = self.unify(interner, a, b, context)?;
@@ -92,14 +85,11 @@ impl Unifier {
             (Some(Ty::Dict { key: ka, value: va }), Some(Ty::Dict { key: kb, value: vb })) => {
                 if self.occurs(interner, lhs, kb) || self.occurs(interner, rhs, ka) {
                     return Err(Box::new(
-                        Diagnostic::error(
-                            "E_UNIFY_OCCURS",
-                            format!(
-                                "occurs-check failed while unifying dict key types in {context}"
+                        Diagnostic::error(Issue::UnifyOccurs)
+                            .with_related("infinite type would be created", None)
+                            .with_hint(
+                                "introduce explicit annotation to break recursive inference",
                             ),
-                        )
-                        .with_related("infinite type would be created", None)
-                        .with_hint("introduce explicit annotation to break recursive inference"),
                     ));
                 }
                 let key = self.unify(interner, ka, kb, context)?;
@@ -122,14 +112,9 @@ impl Unifier {
             ) => {
                 if size_a != size_b {
                     return Err(Box::new(
-                        Diagnostic::error(
-                            "E_UNIFY_MISMATCH",
-                            format!(
-                                "cannot unify arrays with different sizes ({size_a} vs {size_b}) in {context}"
-                            ),
-                        )
-                        .with_related("array length is part of the type", None)
-                        .with_hint("use matching array sizes or an explicit conversion path"),
+                        Diagnostic::error(Issue::UnifyMismatch)
+                            .with_related("array length is part of the type", None)
+                            .with_hint("use matching array sizes or an explicit conversion path"),
                     ));
                 }
                 let item = self.unify(interner, item_a, item_b, context)?;
@@ -147,16 +132,9 @@ impl Unifier {
             ) => {
                 if params_a.len() != params_b.len() {
                     return Err(Box::new(
-                        Diagnostic::error(
-                            "E_UNIFY_MISMATCH",
-                            format!(
-                                "cannot unify function arity {} with {} in {context}",
-                                params_a.len(),
-                                params_b.len()
-                            ),
-                        )
-                        .with_related("function parameter count differs", None)
-                        .with_hint("pass a callable with matching arity"),
+                        Diagnostic::error(Issue::UnifyMismatch)
+                            .with_related("function parameter count differs", None)
+                            .with_hint("pass a callable with matching arity"),
                     ));
                 }
 
@@ -170,16 +148,9 @@ impl Unifier {
             (Some(Ty::Tuple(items_a)), Some(Ty::Tuple(items_b))) => {
                 if items_a.len() != items_b.len() {
                     return Err(Box::new(
-                        Diagnostic::error(
-                            "E_UNIFY_MISMATCH",
-                            format!(
-                                "cannot unify tuples of different lengths ({}) and ({}) in {context}",
-                                items_a.len(),
-                                items_b.len()
-                            ),
-                        )
-                        .with_related("tuple length is part of the type", None)
-                        .with_hint("use tuples with matching element counts"),
+                        Diagnostic::error(Issue::UnifyMismatch)
+                            .with_related("tuple length is part of the type", None)
+                            .with_hint("use tuples with matching element counts"),
                     ));
                 }
 
@@ -192,16 +163,9 @@ impl Unifier {
             (Some(Ty::Struct(fields_a)), Some(Ty::Struct(fields_b))) => {
                 if fields_a.len() != fields_b.len() {
                     return Err(Box::new(
-                        Diagnostic::error(
-                            "E_UNIFY_MISMATCH",
-                            format!(
-                                "cannot unify struct fields with different arity ({}) and ({}) in {context}",
-                                fields_a.len(),
-                                fields_b.len()
-                            ),
-                        )
-                        .with_related("struct field count differs", None)
-                        .with_hint("align struct field sets before unification"),
+                        Diagnostic::error(Issue::UnifyMismatch)
+                            .with_related("struct field count differs", None)
+                            .with_hint("align struct field sets before unification"),
                     ));
                 }
 
@@ -209,14 +173,11 @@ impl Unifier {
                 for ((name_a, ty_a), (name_b, ty_b)) in fields_a.iter().zip(fields_b.iter()) {
                     if name_a != name_b {
                         return Err(Box::new(
-                            Diagnostic::error(
-                                "E_UNIFY_MISMATCH",
-                                format!(
-                                    "cannot unify struct field '{name_a}' with '{name_b}' in {context}"
+                            Diagnostic::error(Issue::UnifyMismatch)
+                                .with_related("struct field names must match positionally", None)
+                                .with_hint(
+                                    "ensure both struct shapes use the same field names/order",
                                 ),
-                            )
-                            .with_related("struct field names must match positionally", None)
-                            .with_hint("ensure both struct shapes use the same field names/order"),
                         ));
                     }
                     let field_ty = self.unify(interner, *ty_a, *ty_b, context)?;
@@ -226,18 +187,12 @@ impl Unifier {
                 Ok(interner.intern(Ty::Struct(fields)))
             }
             (Some(a), Some(b)) if a == b => Ok(lhs),
-            (Some(a), Some(b)) => Err(Box::new(
-                Diagnostic::error(
-                    "E_UNIFY_MISMATCH",
-                    format!("cannot unify {a:?} with {b:?} in {context}"),
-                )
-                .with_related("type equality constraint failed", None)
-                .with_hint("add an explicit cast or adjust declaration type annotations"),
+            (Some(_a), Some(_b)) => Err(Box::new(
+                Diagnostic::error(Issue::UnifyMismatch)
+                    .with_related("type equality constraint failed", None)
+                    .with_hint("add an explicit cast or adjust declaration type annotations"),
             )),
-            _ => Err(Box::new(Diagnostic::error(
-                "E_UNIFY_UNKNOWN",
-                "internal unify failure: missing type in interner",
-            ))),
+            _ => Err(Box::new(Diagnostic::error(Issue::UnifyUnknown))),
         }
     }
 
@@ -308,7 +263,7 @@ mod tests {
         let err = unifier
             .unify(&mut interner, int, float, "call argument")
             .expect_err("unification should fail");
-        assert_eq!(err.code, "E_UNIFY_MISMATCH");
+        assert_eq!(err.code_str(), "E_UNIFY_MISMATCH");
     }
 
     #[test]
@@ -322,7 +277,7 @@ mod tests {
         let err = unifier
             .unify(&mut interner, var, list_of_var, "occurs test")
             .expect_err("occurs check must fail");
-        assert_eq!(err.code, "E_UNIFY_OCCURS");
+        assert_eq!(err.code_str(), "E_UNIFY_OCCURS");
     }
 
     #[test]
@@ -367,7 +322,7 @@ mod tests {
         let err = unifier
             .unify(&mut interner, t2, t1, "tuple mismatch")
             .expect_err("tuple lengths should mismatch");
-        assert_eq!(err.code, "E_UNIFY_MISMATCH");
+        assert_eq!(err.code_str(), "E_UNIFY_MISMATCH");
     }
 
     #[test]
@@ -382,6 +337,6 @@ mod tests {
         let err = unifier
             .unify(&mut interner, a4, a8, "array mismatch")
             .expect_err("array size mismatch should fail");
-        assert_eq!(err.code, "E_UNIFY_MISMATCH");
+        assert_eq!(err.code_str(), "E_UNIFY_MISMATCH");
     }
 }

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use aura_diagnostics::Diagnostic;
+use aura_diagnostics::{Diagnostic, Issue};
 use aura_frontend::ast::{Decl, Program};
 
 #[derive(Debug, Clone, Default)]
@@ -24,11 +24,8 @@ impl ModuleChecker {
             if let Decl::Use(use_decl) = decl {
                 if self.imports.namespaces.contains_key(&use_decl.target) {
                     self.diagnostics.push(
-                        Diagnostic::error(
-                            "E_USE_DUPLICATE",
-                            format!("duplicate use target '{}'", use_decl.target),
-                        )
-                        .with_hint("rename one import target or remove duplicate import"),
+                        Diagnostic::error(Issue::UseDuplicate)
+                            .with_hint("rename one import target or remove duplicate import"),
                     );
                     continue;
                 }
@@ -72,6 +69,6 @@ mod tests {
         checker.check_program(&program);
         let diagnostics = checker.into_diagnostics();
         assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].code, "E_USE_DUPLICATE");
+        assert_eq!(diagnostics[0].code_str(), "E_USE_DUPLICATE");
     }
 }

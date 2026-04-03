@@ -11,7 +11,7 @@ fn render(diag: &aura_diagnostics::Diagnostic) -> String {
         .span
         .map(|s| format!("{}:{}", s.line, s.column))
         .unwrap_or_else(|| "-".to_string());
-    format!("{sev}|{stage}|{}|{}|{}", diag.code, diag.message, span)
+    format!("{sev}|{stage}|{}|{}|{}", diag.code_str(), diag.message, span)
 }
 
 #[test]

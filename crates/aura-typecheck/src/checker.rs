@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use aura_diagnostics::{Diagnostic, Stage};
+use aura_diagnostics::{Diagnostic, Issue, PrimitiveType, Stage, TypeRef, TypingContext};
 use aura_frontend::ast::{
     BinaryOp as ParsedBinaryOp, Decl, Expr, LabeledClosureArg, Pattern, Program, StaticArg,
     StaticParam, StaticParamKind, StaticValueExpr, TypeExpr,
@@ -309,7 +309,7 @@ impl TypeChecker {
                 } else {
                     self.diagnostics.push(
                         self.typecheck_warning(
-                            "W_UNRESOLVED_IDENT",
+                            Issue::UnresolvedIdent { name: name.clone() },
                             format!("unresolved identifier '{name}'"),
                         )
                         .with_stage(Stage::Typecheck)
@@ -435,7 +435,10 @@ impl TypeChecker {
                     ConversionDecision::Incompatible => {
                         self.diagnostics.push(
                             self.typecheck_error(
-                                "E_CAST_INVALID",
+                                Issue::CastInvalid {
+                                    source: ty_to_ref(&source_ty, &self.interner),
+                                    target: ty_to_ref(&target_ty, &self.interner),
+                                },
                                 format!("invalid cast from {:?} to {:?}", source_ty, target_ty),
                             )
                             .with_hint("check cast matrix or change source/target types"),
@@ -469,7 +472,7 @@ impl TypeChecker {
                 } else {
                     self.diagnostics.push(
                         self.typecheck_error(
-                            "E_PATTERN_EMPTY_ARMS",
+                            Issue::PatternEmptyArms,
                             "multi-arm expression must contain at least one arm",
                         )
                         .with_stage(Stage::Typecheck)
@@ -498,7 +501,7 @@ impl TypeChecker {
                     } else {
                         self.diagnostics.push(
                             self.typecheck_error(
-                                "E_BUILTIN_UNKNOWN",
+                                Issue::BuiltinUnknown,
                                 format!("unknown builtin symbol '{name}'"),
                             )
                             .with_hint(
@@ -509,7 +512,7 @@ impl TypeChecker {
                 } else {
                     self.diagnostics.push(
                         self.typecheck_error(
-                            "E_BUILTIN_FORM",
+                            Issue::BuiltinForm,
                             "builtin expects an identifier operand",
                         )
                         .with_hint("use form: builtin io_write"),
@@ -529,7 +532,7 @@ impl TypeChecker {
                 else {
                     self.diagnostics.push(
                         self.typecheck_error(
-                            "E_CAST_TARGET",
+                            Issue::CastTarget,
                             "cast requires one target type static argument",
                         )
                         .with_hint("use form like cast[Int] value"),
@@ -558,7 +561,10 @@ impl TypeChecker {
 
                 self.diagnostics.push(
                     self.typecheck_error(
-                        "E_CAST_INVALID",
+                        Issue::CastInvalid {
+                            source: ty_to_ref(&source_ty, &self.interner),
+                            target: ty_to_ref(&target_ty, &self.interner),
+                        },
                         format!("invalid cast from {:?} to {:?}", source_ty, target_ty),
                     )
                     .with_hint("check cast matrix or change source/target types"),
@@ -572,7 +578,7 @@ impl TypeChecker {
             } if macro_name == "if" => {
                 self.diagnostics.push(
                     self.typecheck_error(
-                        "E_IF_FORM",
+                        Issue::IfForm,
                         "if is an inline function call and no longer a macro application",
                     )
                     .with_hint("use form: if (condition) then { ... } else { ... }"),
@@ -586,7 +592,7 @@ impl TypeChecker {
             } if macro_name == "cases" => {
                 self.diagnostics.push(
                     self.typecheck_error(
-                        "E_CASES_FORM",
+                        Issue::CasesForm,
                         "cases is an inline function call and no longer a macro application",
                     )
                     .with_hint("use form: cases when { ... }"),
@@ -622,7 +628,7 @@ impl TypeChecker {
             } => {
                 self.diagnostics.push(
                     self.typecheck_error(
-                        "E_MACRO_UNTYPED",
+                        Issue::MacroUntyped,
                         format!("macro '{macro_name}' has no typing rule yet"),
                     )
                     .with_hint("add a typing rule for this macro before backend lowering"),
@@ -732,7 +738,7 @@ impl TypeChecker {
             ) if macro_name == "if" => {
                 self.diagnostics.push(
                     self.typecheck_error(
-                        "E_IF_FORM",
+                        Issue::IfForm,
                         "if is an inline function call and no longer a macro application",
                     )
                     .with_hint("use form: if (condition) then { ... } else { ... }"),
@@ -761,7 +767,7 @@ impl TypeChecker {
             ) if macro_name == "cases" => {
                 self.diagnostics.push(
                     self.typecheck_error(
-                        "E_CASES_FORM",
+                        Issue::CasesForm,
                         "cases is an inline function call and no longer a macro application",
                     )
                     .with_hint("use form: cases when { ... }"),
@@ -811,7 +817,7 @@ impl TypeChecker {
                 if params.len() != expected_params.len() {
                     self.diagnostics.push(
                         self.typecheck_error(
-                            "E_CLOSURE_ARITY",
+                            Issue::ClosureArity,
                             format!(
                                 "closure parameter count {} does not match expected {}",
                                 params.len(),
@@ -973,7 +979,7 @@ impl TypeChecker {
                 }
                 self.diagnostics.push(
                     self.typecheck_error(
-                        "E_OP_NON_NUMERIC",
+                        Issue::OpNonNumeric,
                         format!(
                             "numeric operator requires numeric operands, got {:?}",
                             result_ty
@@ -1000,7 +1006,7 @@ impl TypeChecker {
                 }
                 self.diagnostics.push(
                     self.typecheck_error(
-                        "E_OP_NON_NUMERIC",
+                        Issue::OpNonNumeric,
                         format!(
                             "comparison operator requires numeric operands, got {:?}",
                             result_ty
@@ -1033,7 +1039,7 @@ impl TypeChecker {
                 let Expr::TypeExpr(ty) = rhs else {
                     self.diagnostics.push(
                         self.typecheck_error(
-                            "E_CAST_TARGET",
+                            Issue::CastTarget,
                             "cast ':' expects a type expression on RHS",
                         )
                         .with_hint("use form like value: Int"),
@@ -1063,7 +1069,10 @@ impl TypeChecker {
                     ConversionDecision::Incompatible => {
                         self.diagnostics.push(
                             self.typecheck_error(
-                                "E_CAST_INVALID",
+                                Issue::CastInvalid {
+                                    source: ty_to_ref(&source_ty, &self.interner),
+                                    target: ty_to_ref(&target_ty, &self.interner),
+                                },
                                 format!("invalid cast from {:?} to {:?}", source_ty, target_ty),
                             )
                             .with_hint("check cast matrix or change source/target types"),
@@ -1136,7 +1145,7 @@ impl TypeChecker {
     ) -> TyId {
         if arms.is_empty() {
             self.diagnostics.push(
-                self.typecheck_error("E_CASES_EMPTY", "cases requires at least one arm")
+                self.typecheck_error(Issue::CasesEmpty, "cases requires at least one arm")
                     .with_hint("add one or more guarded arms"),
             );
             return self.unknown_ty();
@@ -1291,7 +1300,7 @@ impl TypeChecker {
         if args.len() != expected {
             self.diagnostics.push(
                 self.typecheck_error(
-                    "E_TYPE_ARG_ARITY",
+                    Issue::TypeArgArity,
                     format!(
                         "{ty_name} expects exactly {expected} static argument(s), got {}",
                         args.len()
@@ -1316,7 +1325,7 @@ impl TypeChecker {
             Some(StaticArg::Value(_)) => {
                 self.diagnostics.push(
                     self.typecheck_error(
-                        "E_TYPE_ARG_KIND",
+                        Issue::TypeArgKind,
                         format!(
                             "{ty_name} type argument '{slot}' at index {index} expects a type, got a value"
                         ),
@@ -1329,7 +1338,7 @@ impl TypeChecker {
             None => {
                 self.diagnostics.push(
                     self.typecheck_error(
-                        "E_TYPE_ARG_MISSING",
+                        Issue::TypeArgMissing,
                         format!(
                             "{ty_name} is missing required type argument '{slot}' at index {index}"
                         ),
@@ -1353,7 +1362,7 @@ impl TypeChecker {
                 Err(_) => {
                     self.diagnostics.push(
                         self.typecheck_error(
-                            "E_ARRAY_SIZE_INVALID",
+                            Issue::ArraySizeInvalid,
                             format!(
                                 "{ty_name} {slot} argument must be a valid non-negative integer literal"
                             ),
@@ -1367,7 +1376,7 @@ impl TypeChecker {
             Some(StaticArg::Value(_)) => {
                 self.diagnostics.push(
                     self.typecheck_error(
-                        "E_ARRAY_SIZE_KIND",
+                        Issue::ArraySizeKind,
                         format!("{ty_name} {slot} argument must be an integer literal"),
                     )
                     .with_hint("use form like Array[Int, 4]"),
@@ -1377,7 +1386,7 @@ impl TypeChecker {
             Some(StaticArg::Type(_)) => {
                 self.diagnostics.push(
                     self.typecheck_error(
-                        "E_ARRAY_SIZE_KIND",
+                        Issue::ArraySizeKind,
                         format!("{ty_name} {slot} argument expects a value, got a type"),
                     )
                     .with_hint("use form like Array[Int, 4]"),
@@ -1387,7 +1396,7 @@ impl TypeChecker {
             None => {
                 self.diagnostics.push(
                     self.typecheck_error(
-                        "E_ARRAY_SIZE_MISSING",
+                        Issue::ArraySizeMissing,
                         format!("{ty_name} is missing required {slot} argument at index 1"),
                     )
                     .with_hint("provide an array size static value"),
@@ -1455,7 +1464,7 @@ impl TypeChecker {
     ) -> TyId {
         if args.len() != 1 {
             self.diagnostics.push(
-                self.typecheck_error("E_IF_ARITY", "if expects one runtime argument: condition")
+                self.typecheck_error(Issue::IfArity, "if expects one runtime argument: condition")
                     .with_hint("use form: if (condition) then { ... } else { ... }"),
             );
             return self.unknown_ty();
@@ -1466,7 +1475,7 @@ impl TypeChecker {
 
         let Some(then_branch) = then_branch else {
             self.diagnostics.push(
-                self.typecheck_error("E_IF_FORM", "if requires a labeled 'then' closure")
+                self.typecheck_error(Issue::IfForm, "if requires a labeled 'then' closure")
                     .with_hint("use form: if (condition) then { ... } else { ... }"),
             );
             return self.unknown_ty();
@@ -1503,7 +1512,7 @@ impl TypeChecker {
     ) -> TyId {
         if !args.is_empty() {
             self.diagnostics.push(
-                self.typecheck_error("E_CASES_FORM", "cases does not accept runtime arguments")
+                self.typecheck_error(Issue::CasesForm, "cases does not accept runtime arguments")
                     .with_hint("use form: cases when { ... }"),
             );
             return self.unknown_ty();
@@ -1511,7 +1520,7 @@ impl TypeChecker {
 
         let Some(when) = trailing.iter().find(|c| c.label == "when") else {
             self.diagnostics.push(
-                self.typecheck_error("E_CASES_FORM", "cases requires labeled 'when' closure")
+                self.typecheck_error(Issue::CasesForm, "cases requires labeled 'when' closure")
                     .with_hint("use form: cases when { ... }"),
             );
             return self.unknown_ty();
@@ -1519,7 +1528,7 @@ impl TypeChecker {
 
         let Expr::MultiArm(arms) = TypeChecker::base_expr(&when.body) else {
             self.diagnostics.push(
-                self.typecheck_error("E_CASES_FORM", "cases 'when' closure must be multi-arm")
+                self.typecheck_error(Issue::CasesForm, "cases 'when' closure must be multi-arm")
                     .with_hint("use form: cases when { ~cond -> expr, ~true -> default }"),
             );
             return self.unknown_ty();
@@ -1538,7 +1547,7 @@ impl TypeChecker {
             if !static_args.is_empty() {
                 self.diagnostics.push(
                     self.typecheck_error(
-                        "E_CALL_STATIC_UNSUPPORTED",
+                        Issue::CallStaticUnsupported,
                         "static call arguments require a directly named generic callee",
                     )
                     .with_hint("call a named generic function directly, e.g. f[Int](x)"),
@@ -1551,7 +1560,7 @@ impl TypeChecker {
             if !static_args.is_empty() {
                 self.diagnostics.push(
                     self.typecheck_error(
-                        "E_CALL_STATIC_UNEXPECTED",
+                        Issue::CallStaticUnexpected,
                         format!(
                             "call provides static arguments, but '{name}' is not a generic function"
                         ),
@@ -1565,7 +1574,7 @@ impl TypeChecker {
         if !static_args.is_empty() && static_args.len() != generic_params.len() {
             self.diagnostics.push(
                 self.typecheck_error(
-                    "E_CALL_STATIC_ARITY",
+                    Issue::CallStaticArity,
                     format!(
                         "generic call static-arg arity mismatch for '{name}': expected {} when explicit, got {}",
                         generic_params.len(),
@@ -1764,7 +1773,7 @@ impl TypeChecker {
                         self.current_expr_span = span;
                         self.diagnostics.push(
                             self.typecheck_error(
-                                "E_UNKNOWN_INTERFACE",
+                                Issue::UnknownInterface,
                                 format!(
                                     "unknown interface constraint '{}' referenced in {}",
                                     interface, context
@@ -1803,7 +1812,7 @@ impl TypeChecker {
                     if !self
                         .diagnostics
                         .iter()
-                        .any(|d| d.code == "E_TYPE_MISMATCH" && d.message.contains(&context))
+                        .any(|d| d.code_str() == "E_TYPE_MISMATCH" && d.message.contains(&context))
                     {
                         self.emit_type_mismatch(
                             expected,
@@ -1842,7 +1851,12 @@ impl TypeChecker {
                     if !self.satisfies_interface(&resolved, &interface) {
                         self.diagnostics.push(
                             self.typecheck_error(
-                                "E_INTERFACE_BOUND_UNSAT",
+                                Issue::InterfaceBoundUnsatisfied {
+                                    detail: format!(
+                                        "type {:?} does not satisfy interface bound '{}' in {}",
+                                        resolved, interface, context
+                                    ),
+                                },
                                 format!(
                                     "type {:?} does not satisfy interface bound '{}' in {}",
                                     resolved, interface, context
@@ -1871,7 +1885,7 @@ impl TypeChecker {
                         self.current_expr_span = span;
                         self.diagnostics.push(
                             self.typecheck_error(
-                                "E_STATIC_ARG_MISSING",
+                                Issue::StaticArgMissing,
                                 format!(
                                     "missing static argument for constrained generic parameter '{}' in {}",
                                     param, context
@@ -1891,7 +1905,12 @@ impl TypeChecker {
                         self.current_expr_span = span;
                         self.diagnostics.push(
                             self.typecheck_error(
-                                "E_STATIC_ARG_KIND",
+                                Issue::StaticArgKind {
+                                    detail: format!(
+                                        "expected compile-time static value for constraint {:?} in {}",
+                                        expected, context
+                                    ),
+                                },
                                 format!(
                                     "expected compile-time static value for constraint {:?} in {}",
                                     expected, context
@@ -2067,11 +2086,12 @@ impl TypeChecker {
             return;
         };
         let mut diag = self.typecheck_error(
-            "E_TYPE_MISMATCH",
-            format!(
-                "type mismatch in {context}: expected {:?}, got {:?}",
-                expected_ty, actual_ty
-            ),
+            Issue::TypeMismatch {
+                context: map_context(context),
+                expected: ty_to_ref(&expected_ty, &self.interner),
+                actual: ty_to_ref(&actual_ty, &self.interner),
+            },
+            "type mismatch",
         );
         diag = diag.with_related(related, None);
         self.diagnostics.push(
@@ -2123,15 +2143,15 @@ impl TypeChecker {
         let _ = self.obligation_stack.pop();
     }
 
-    fn typecheck_error(&self, code: &'static str, message: impl Into<String>) -> Diagnostic {
-        Diagnostic::error(code, message)
+    fn typecheck_error(&self, issue: Issue, _message: impl Into<String>) -> Diagnostic {
+        Diagnostic::error(issue)
             .with_stage(Stage::Typecheck)
             .with_span_opt(self.current_expr_span)
             .with_obligations(&self.obligation_stack)
     }
 
-    fn typecheck_warning(&self, code: &'static str, message: impl Into<String>) -> Diagnostic {
-        Diagnostic::warning(code, message)
+    fn typecheck_warning(&self, issue: Issue, _message: impl Into<String>) -> Diagnostic {
+        Diagnostic::warning(issue)
             .with_stage(Stage::Typecheck)
             .with_span_opt(self.current_expr_span)
             .with_obligations(&self.obligation_stack)
@@ -2523,6 +2543,130 @@ impl Default for TypeChecker {
     }
 }
 
+fn map_context(context: &str) -> TypingContext {
+    match context {
+        "assignment" => TypingContext::Assignment,
+        "if condition" => TypingContext::IfCondition,
+        "if branch" => TypingContext::IfBranch,
+        "cases arm" => TypingContext::CasesArm,
+        "call argument" => TypingContext::CallArgument,
+        "cast expression" => TypingContext::CastExpression,
+        "binary operation" => TypingContext::BinaryOperation,
+        "generic constraint" => TypingContext::GenericConstraint,
+        "function return type" | "function return" => TypingContext::ReturnType,
+        other => TypingContext::Custom(other.to_string()),
+    }
+}
+
+fn ty_to_ref(ty: &Ty, interner: &TyInterner) -> TypeRef {
+    match ty {
+        Ty::InferVar(v) => TypeRef::InferVar(*v),
+        Ty::GenericParam(name) => TypeRef::GenericParam(name.clone()),
+        Ty::Int8 => TypeRef::Primitive(PrimitiveType::Int8),
+        Ty::Int16 => TypeRef::Primitive(PrimitiveType::Int16),
+        Ty::Int32 => TypeRef::Primitive(PrimitiveType::Int32),
+        Ty::Int64 => TypeRef::Primitive(PrimitiveType::Int64),
+        Ty::Int128 => TypeRef::Primitive(PrimitiveType::Int128),
+        Ty::ISize => TypeRef::Primitive(PrimitiveType::ISize),
+        Ty::UInt8 => TypeRef::Primitive(PrimitiveType::UInt8),
+        Ty::UInt16 => TypeRef::Primitive(PrimitiveType::UInt16),
+        Ty::UInt32 => TypeRef::Primitive(PrimitiveType::UInt32),
+        Ty::UInt64 => TypeRef::Primitive(PrimitiveType::UInt64),
+        Ty::UInt128 => TypeRef::Primitive(PrimitiveType::UInt128),
+        Ty::USize => TypeRef::Primitive(PrimitiveType::USize),
+        Ty::Float32 => TypeRef::Primitive(PrimitiveType::Float32),
+        Ty::Float64 => TypeRef::Primitive(PrimitiveType::Float64),
+        Ty::Bool => TypeRef::Primitive(PrimitiveType::Bool),
+        Ty::Char => TypeRef::Primitive(PrimitiveType::Char),
+        Ty::Void => TypeRef::Primitive(PrimitiveType::Void),
+        Ty::Never => TypeRef::Primitive(PrimitiveType::Never),
+        Ty::Any => TypeRef::Primitive(PrimitiveType::Any),
+        Ty::Nominal(name) => TypeRef::Nominal(name.clone()),
+        Ty::List(item) => {
+            let item_ref = interner
+                .get(*item)
+                .map(|t| ty_to_ref(t, interner))
+                .unwrap_or(TypeRef::Unknown);
+            TypeRef::List(Box::new(item_ref))
+        }
+        Ty::Dict { key, value } => {
+            let key_ref = interner
+                .get(*key)
+                .map(|t| ty_to_ref(t, interner))
+                .unwrap_or(TypeRef::Unknown);
+            let value_ref = interner
+                .get(*value)
+                .map(|t| ty_to_ref(t, interner))
+                .unwrap_or(TypeRef::Unknown);
+            TypeRef::Dict {
+                key: Box::new(key_ref),
+                value: Box::new(value_ref),
+            }
+        }
+        Ty::Set(item) => {
+            let item_ref = interner
+                .get(*item)
+                .map(|t| ty_to_ref(t, interner))
+                .unwrap_or(TypeRef::Unknown);
+            TypeRef::Set(Box::new(item_ref))
+        }
+        Ty::Array { item, size } => {
+            let item_ref = interner
+                .get(*item)
+                .map(|t| ty_to_ref(t, interner))
+                .unwrap_or(TypeRef::Unknown);
+            TypeRef::Array {
+                item: Box::new(item_ref),
+                size: *size,
+            }
+        }
+        Ty::Func { params, ret } => {
+            let params_ref = params
+                .iter()
+                .map(|id| {
+                    interner
+                        .get(*id)
+                        .map(|t| ty_to_ref(t, interner))
+                        .unwrap_or(TypeRef::Unknown)
+                })
+                .collect::<Vec<_>>();
+            let ret_ref = interner
+                .get(*ret)
+                .map(|t| ty_to_ref(t, interner))
+                .unwrap_or(TypeRef::Unknown);
+            TypeRef::Func {
+                params: params_ref,
+                ret: Box::new(ret_ref),
+            }
+        }
+        Ty::Tuple(items) => {
+            let refs = items
+                .iter()
+                .map(|id| {
+                    interner
+                        .get(*id)
+                        .map(|t| ty_to_ref(t, interner))
+                        .unwrap_or(TypeRef::Unknown)
+                })
+                .collect::<Vec<_>>();
+            TypeRef::Tuple(refs)
+        }
+        Ty::Struct(fields) => {
+            let refs = fields
+                .iter()
+                .map(|(name, id)| {
+                    let ty_ref = interner
+                        .get(*id)
+                        .map(|t| ty_to_ref(t, interner))
+                        .unwrap_or(TypeRef::Unknown);
+                    (name.clone(), ty_ref)
+                })
+                .collect::<Vec<_>>();
+            TypeRef::Struct(refs)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::TypeChecker;
@@ -2592,7 +2736,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_PATTERN_NON_EXHAUSTIVE"));
+            .any(|d| d.code_str() == "E_PATTERN_NON_EXHAUSTIVE"));
     }
 
     #[test]
@@ -2630,7 +2774,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_PATTERN_UNREACHABLE_ARM"));
+            .any(|d| d.code_str() == "E_PATTERN_UNREACHABLE_ARM"));
     }
 
     #[test]
@@ -2738,7 +2882,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_MISMATCH"));
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -2776,7 +2920,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_MISMATCH"));
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -2797,7 +2941,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_USE_DUPLICATE"));
+            .any(|d| d.code_str() == "E_USE_DUPLICATE"));
     }
 
     #[test]
@@ -2818,7 +2962,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_BUILTIN_UNKNOWN"));
+            .any(|d| d.code_str() == "E_BUILTIN_UNKNOWN"));
     }
 
     #[test]
@@ -2844,7 +2988,7 @@ mod tests {
         let diag = checked
             .diagnostics
             .iter()
-            .find(|d| d.code == "E_TYPE_MISMATCH")
+            .find(|d| d.code_str() == "E_TYPE_MISMATCH")
             .expect("expected mismatch diagnostic");
         assert!(!diag.related.is_empty());
     }
@@ -2874,7 +3018,7 @@ mod tests {
         let has_unify_error = checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_UNIFY_MISMATCH");
+            .any(|d| d.code_str() == "E_UNIFY_MISMATCH");
         assert!(!has_unify_error);
     }
 
@@ -2898,7 +3042,7 @@ mod tests {
         let diag = checked
             .diagnostics
             .iter()
-            .find(|d| d.code == "E_UNIFY_MISMATCH")
+            .find(|d| d.code_str() == "E_UNIFY_MISMATCH")
             .expect("expected unify mismatch diagnostic");
         assert!(!diag.obligations.is_empty());
     }
@@ -2921,7 +3065,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_OP_NON_NUMERIC"));
+            .any(|d| d.code_str() == "E_OP_NON_NUMERIC"));
     }
 
     #[test]
@@ -3039,7 +3183,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked.diagnostics.iter().any(|d| d.code == "E_IF_FORM"));
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_IF_FORM"));
     }
 
     #[test]
@@ -3068,7 +3215,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked.diagnostics.iter().any(|d| d.code == "E_CASES_FORM"));
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_CASES_FORM"));
     }
 
     #[test]
@@ -3156,7 +3306,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "W_UNRESOLVED_IDENT"));
+            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
     }
 
     #[test]
@@ -3260,7 +3410,7 @@ mod tests {
         assert!(!checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "W_UNRESOLVED_IDENT"));
+            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
     }
 
     #[test]
@@ -3296,7 +3446,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "W_UNRESOLVED_IDENT"));
+            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
     }
 
     #[test]
@@ -3324,7 +3474,7 @@ mod tests {
         assert!(!checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "W_UNRESOLVED_IDENT"));
+            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
     }
 
     #[test]
@@ -3358,7 +3508,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "W_UNRESOLVED_IDENT"));
+            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
     }
 
     #[test]
@@ -3451,7 +3601,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_CALL_STATIC_UNEXPECTED"));
+            .any(|d| d.code_str() == "E_CALL_STATIC_UNEXPECTED"));
     }
 
     #[test]
@@ -3506,7 +3656,7 @@ mod tests {
         assert!(!checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_CALL_STATIC_ARITY"));
+            .any(|d| d.code_str() == "E_CALL_STATIC_ARITY"));
     }
 
     #[test]
@@ -3551,7 +3701,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_CALL_STATIC_ARITY"));
+            .any(|d| d.code_str() == "E_CALL_STATIC_ARITY"));
     }
 
     #[test]
@@ -3596,7 +3746,7 @@ mod tests {
         assert!(!checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_MISMATCH"));
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -3647,7 +3797,7 @@ mod tests {
         assert!(!checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_MISMATCH"));
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -3694,7 +3844,7 @@ mod tests {
         assert!(!checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_MISMATCH"));
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -3755,7 +3905,7 @@ mod tests {
         assert!(!checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_MISMATCH"));
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -3783,7 +3933,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_MISMATCH"));
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -3828,7 +3978,7 @@ mod tests {
         assert!(!checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_MISMATCH"));
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -3882,7 +4032,7 @@ mod tests {
         assert!(!checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_MISMATCH"));
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -3927,7 +4077,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_MISMATCH"));
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -3982,7 +4132,7 @@ mod tests {
         assert!(!checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_MISMATCH" || d.code == "E_UNIFY_MISMATCH"));
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH" || d.code_str() == "E_UNIFY_MISMATCH"));
     }
 
     #[test]
@@ -4009,7 +4159,7 @@ mod tests {
         assert!(!checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_MISMATCH"));
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -4036,7 +4186,7 @@ mod tests {
         assert!(!checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_MISMATCH"));
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -4057,7 +4207,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_MACRO_UNTYPED"));
+            .any(|d| d.code_str() == "E_MACRO_UNTYPED"));
     }
 
     #[test]
@@ -4075,7 +4225,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked.diagnostics.iter().any(|d| d.code == "E_IF_FORM"));
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_IF_FORM"));
     }
 
     #[test]
@@ -4093,7 +4246,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked.diagnostics.iter().any(|d| d.code == "E_CASES_FORM"));
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_CASES_FORM"));
     }
 
     #[test]
@@ -4123,7 +4279,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_ARG_MISSING"));
+            .any(|d| d.code_str() == "E_TYPE_ARG_MISSING"));
     }
 
     #[test]
@@ -4159,7 +4315,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_ARG_KIND"));
+            .any(|d| d.code_str() == "E_TYPE_ARG_KIND"));
     }
 
     #[test]
@@ -4192,7 +4348,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_ARRAY_SIZE_MISSING"));
+            .any(|d| d.code_str() == "E_ARRAY_SIZE_MISSING"));
     }
 
     #[test]
@@ -4231,7 +4387,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_ARG_ARITY"));
+            .any(|d| d.code_str() == "E_TYPE_ARG_ARITY"));
     }
 
     #[test]
@@ -4264,7 +4420,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_ARG_ARITY"));
+            .any(|d| d.code_str() == "E_TYPE_ARG_ARITY"));
     }
 
     #[test]
@@ -4450,7 +4606,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_INTERFACE_BOUND_UNSAT"));
+            .any(|d| d.code_str() == "E_INTERFACE_BOUND_UNSAT"));
         assert!(checked
             .diagnostics
             .iter()
@@ -4507,7 +4663,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_STATIC_ARG_KIND"));
+            .any(|d| d.code_str() == "E_STATIC_ARG_KIND"));
         assert!(checked
             .diagnostics
             .iter()
@@ -4561,7 +4717,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_STATIC_ARG_MISSING"));
+            .any(|d| d.code_str() == "E_STATIC_ARG_MISSING"));
     }
 
     #[test]
@@ -4612,7 +4768,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_UNKNOWN_INTERFACE"));
+            .any(|d| d.code_str() == "E_UNKNOWN_INTERFACE"));
     }
 
     #[test]
@@ -4659,7 +4815,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_MISMATCH"));
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -4700,7 +4856,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code == "E_TYPE_MISMATCH"));
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]

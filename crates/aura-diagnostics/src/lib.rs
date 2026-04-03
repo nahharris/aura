@@ -1,3 +1,13 @@
+pub mod issue;
+pub mod type_ref;
+pub mod typing_context;
+
+use miette::MietteDiagnostic;
+
+pub use issue::Issue;
+pub use type_ref::{PrimitiveType, TypeRef};
+pub use typing_context::TypingContext;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Error,
@@ -29,7 +39,7 @@ pub struct RelatedLabel {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
-    pub code: &'static str,
+    pub issue: Issue,
     pub stage: Stage,
     pub severity: Severity,
     pub message: String,
@@ -40,29 +50,49 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    pub fn error(code: &'static str, message: impl Into<String>) -> Self {
+    pub fn error(issue: Issue) -> Self {
+        let hint = issue.default_hint().map(str::to_string);
         Self {
-            code,
+            issue: issue.clone(),
             stage: Stage::Typecheck,
             severity: Severity::Error,
-            message: message.into(),
+            message: issue.message(),
             span: None,
-            hint: None,
+            hint,
             related: Vec::new(),
             obligations: Vec::new(),
         }
     }
 
-    pub fn warning(code: &'static str, message: impl Into<String>) -> Self {
+    pub fn warning(issue: Issue) -> Self {
+        let hint = issue.default_hint().map(str::to_string);
         Self {
-            code,
+            issue: issue.clone(),
             stage: Stage::Typecheck,
             severity: Severity::Warning,
-            message: message.into(),
+            message: issue.message(),
             span: None,
-            hint: None,
+            hint,
             related: Vec::new(),
             obligations: Vec::new(),
+        }
+    }
+
+    pub fn code_str(&self) -> &'static str {
+        self.issue.code()
+    }
+
+    pub fn to_miette(&self) -> MietteDiagnostic {
+        MietteDiagnostic {
+            message: self.message.clone(),
+            code: Some(self.issue.code().to_string()),
+            severity: Some(match self.severity {
+                Severity::Error => miette::Severity::Error,
+                Severity::Warning => miette::Severity::Warning,
+            }),
+            help: self.hint.clone(),
+            labels: None,
+            url: None,
         }
     }
 
@@ -100,23 +130,33 @@ impl Diagnostic {
     }
 }
 
+impl PartialEq<&str> for Issue {
+    fn eq(&self, other: &&str) -> bool {
+        self.code() == *other
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Diagnostic, Severity, Span, Stage};
+    use super::{Diagnostic, Issue, PrimitiveType, Severity, Span, Stage, TypeRef, TypingContext};
 
     #[test]
     fn shared_diagnostic_builder_supports_core_fields() {
-        let diagnostic = Diagnostic::error("E_TEST", "base")
-            .with_stage(Stage::Typecheck)
-            .with_span(Span {
-                start: 0,
-                end: 1,
-                line: 1,
-                column: 1,
-            })
-            .with_hint("hint")
-            .with_related("related context", None)
-            .with_obligations(&["while checking call argument".to_string()]);
+        let diagnostic = Diagnostic::error(Issue::TypeMismatch {
+            context: TypingContext::Assignment,
+            expected: TypeRef::Primitive(PrimitiveType::Int32),
+            actual: TypeRef::Primitive(PrimitiveType::Float64),
+        })
+        .with_stage(Stage::Typecheck)
+        .with_span(Span {
+            start: 0,
+            end: 1,
+            line: 1,
+            column: 1,
+        })
+        .with_hint("hint")
+        .with_related("related context", None)
+        .with_obligations(&["while checking call argument".to_string()]);
 
         assert_eq!(diagnostic.severity, Severity::Error);
         assert_eq!(diagnostic.related.len(), 1);

@@ -7,7 +7,7 @@ use crate::ast::{
 use crate::lexer::lex;
 use crate::static_eval::{MinimalStaticChecker, StaticSatisfies};
 use crate::token::{Token, TokenKind};
-use aura_diagnostics::{Diagnostic, Stage};
+use aura_diagnostics::{Diagnostic, Issue, Stage};
 use std::collections::HashSet;
 
 const BUILTIN_MACROS: &[&str] = &[
@@ -1194,9 +1194,8 @@ where
         expected: Vec<&'static str>,
         hint: Option<String>,
     ) -> ParseError {
-        let mut diagnostic = Diagnostic::error(
-            "E_PARSE_UNEXPECTED_TOKEN",
-            format!(
+        let mut diagnostic = Diagnostic::error(Issue::ParseUnexpectedToken {
+            detail: format!(
                 "{} (expected: {}; found: {})",
                 message.into(),
                 if expected.is_empty() {
@@ -1206,7 +1205,7 @@ where
                 },
                 token_debug_name(&self.peek_token().kind)
             ),
-        )
+        })
         .with_stage(Stage::Parser)
         .with_span(self.peek_token().span.into());
 
