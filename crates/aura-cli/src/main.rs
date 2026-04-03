@@ -6,6 +6,8 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use anstyle::{AnsiColor, Color, Effects, Style};
+use aura_codegen::project::discover::discover_layout;
+use aura_codegen::project::manifest::load_manifest;
 use aura_diagnostics::{Diagnostic, Severity, Span};
 use aura_frontend::ast::{Decl, Program};
 use aura_frontend::{FormatOptions, Parser, format_source, unified_diff};
@@ -26,8 +28,11 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    Init {
+        name: String,
+    },
     Build {
-        input: PathBuf,
+        input: Option<PathBuf>,
         #[arg(short = 'o', long = "out")]
         out: Option<PathBuf>,
         #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
@@ -206,12 +211,13 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
     match cli.command {
+        Commands::Init { name } => init_cmd(&name),
         Commands::Build {
             input,
             out,
             format,
             diagnostics,
-        } => build_cmd(&input, out.as_deref(), format, diagnostics),
+        } => build_cmd(input.as_deref(), out.as_deref(), format, diagnostics),
         Commands::Fmt {
             input,
             write,
@@ -331,6 +337,82 @@ fn collect_docs(program: &Program) -> BTreeMap<String, String> {
     out
 }
 
+fn init_cmd(name: &str) -> Result<ExitCode> {
+    let target = std::env::current_dir()
+        .context("failed to read current directory")?
+        .join(name);
+    if target.exists() {
+        anyhow::bail!("target directory '{}' already exists", target.display());
+    }
+
+    create_project_scaffold(&target, name)?;
+    println!("initialized Aura project at {}", target.display());
+    Ok(ExitCode::SUCCESS)
+}
+
+fn create_project_scaffold(project_root: &Path, project_name: &str) -> Result<()> {
+    let src_dir = project_root.join("src");
+    let vendor_dir = project_root.join("vendor");
+    let target_dir = project_root.join("target");
+    let vendor_stl_dir = vendor_dir.join("stl");
+
+    fs::create_dir_all(&src_dir)
+        .with_context(|| format!("failed to create '{}'", src_dir.display()))?;
+    fs::create_dir_all(&vendor_stl_dir)
+        .with_context(|| format!("failed to create '{}'", vendor_stl_dir.display()))?;
+    fs::create_dir_all(&target_dir)
+        .with_context(|| format!("failed to create '{}'", target_dir.display()))?;
+
+    let manifest = format!(
+        "def project = (\n    name = \"{}\",\n    version = \"0.1.0\",\n    dependencies = [],\n);\n",
+        project_name
+    );
+    let build_file = project_root.join("build.aura");
+    fs::write(&build_file, manifest)
+        .with_context(|| format!("failed to write '{}'", build_file.display()))?;
+
+    let main_file = src_dir.join("main.aura");
+    fs::write(&main_file, "def main() -> Int { 0 }\n")
+        .with_context(|| format!("failed to write '{}'", main_file.display()))?;
+
+    copy_dir_recursive(&workspace_stl_dir()?, &vendor_stl_dir)?;
+
+    Ok(())
+}
+
+fn workspace_stl_dir() -> Result<PathBuf> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..");
+    let stl = root.join("stl");
+    if !stl.is_dir() {
+        anyhow::bail!("failed to locate workspace STL directory at '{}'", stl.display());
+    }
+    Ok(stl)
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    for entry in fs::read_dir(src).with_context(|| format!("failed to read '{}'", src.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let target = dst.join(entry.file_name());
+        if path.is_dir() {
+            fs::create_dir_all(&target)
+                .with_context(|| format!("failed to create '{}'", target.display()))?;
+            copy_dir_recursive(&path, &target)?;
+        } else {
+            fs::copy(&path, &target).with_context(|| {
+                format!(
+                    "failed to copy '{}' to '{}'",
+                    path.display(),
+                    target.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
 fn fmt_cmd(
     input: &Path,
     write: bool,
@@ -368,6 +450,23 @@ fn fmt_cmd(
 }
 
 fn build_cmd(
+    input: Option<&Path>,
+    out: Option<&Path>,
+    format: OutputFormat,
+    diagnostics_format: DiagnosticsFormat,
+) -> Result<ExitCode> {
+    let start = input
+        .map(PathBuf::from)
+        .unwrap_or(std::env::current_dir().context("failed to read current directory")?);
+
+    if let Some(layout) = discover_layout(&start) {
+        return build_project_cmd(&layout.build_file, out, format, diagnostics_format);
+    }
+
+    build_single_file_cmd(&start, out, format, diagnostics_format)
+}
+
+fn build_single_file_cmd(
     input: &Path,
     out: Option<&Path>,
     format: OutputFormat,
@@ -423,6 +522,43 @@ fn build_cmd(
         .with_context(|| format!("failed to write IR output '{}'", output_path.display()))?;
     println!("IR emitted to {}", output_path.display());
     Ok(ExitCode::SUCCESS)
+}
+
+fn build_project_cmd(
+    build_file: &Path,
+    out: Option<&Path>,
+    format: OutputFormat,
+    diagnostics_format: DiagnosticsFormat,
+) -> Result<ExitCode> {
+    let manifest = match load_manifest(build_file) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("manifest error: {e}");
+            return Ok(ExitCode::from(1));
+        }
+    };
+
+    let project_root = build_file
+        .parent()
+        .context("build.aura should have a parent directory")?;
+    let src_main = project_root.join("src").join("main.aura");
+    if !src_main.is_file() {
+        eprintln!(
+            "project '{}' does not have entry file '{}'",
+            manifest.name,
+            src_main.display()
+        );
+        return Ok(ExitCode::from(1));
+    }
+
+    println!(
+        "building project '{}' ({}) from {}",
+        manifest.name,
+        manifest.version,
+        build_file.display()
+    );
+
+    build_single_file_cmd(&src_main, out, format, diagnostics_format)
 }
 
 fn default_output_path(input: &Path, format: OutputFormat) -> PathBuf {
@@ -513,6 +649,22 @@ fn to_ir_expr(expr: &CheckedExpr) -> IrExprDump {
         CheckedExpr::DotIdent { name, payload } => IrExprDump::DotIdent {
             name: name.clone(),
             payload: payload.as_ref().map(|p| Box::new(to_ir_expr(p))),
+        },
+        CheckedExpr::Tuple(items) => IrExprDump::List {
+            items: items.iter().map(to_ir_expr).collect(),
+        },
+        CheckedExpr::Struct(fields) => IrExprDump::Dict {
+            entries: fields
+                .iter()
+                .map(|(name, value)| {
+                    (
+                        IrExprDump::String {
+                            value: name.clone(),
+                        },
+                        to_ir_expr(value),
+                    )
+                })
+                .collect(),
         },
         CheckedExpr::Closure { params, return_ty } => IrExprDump::Closure {
             params: params.clone(),
@@ -1160,6 +1312,7 @@ impl Palette {
 mod tests {
     use super::*;
     use aura_diagnostics::{Issue, RelatedLabel, Stage};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn prepare_diagnostics_filters_internal_related_labels() {
@@ -1245,5 +1398,24 @@ mod tests {
         let prepared = prepare_diagnostics(&[diag], "def x = 1");
         assert_eq!(prepared[0].related.len(), 1);
         assert_eq!(prepared[0].related[0].label, "actual related");
+    }
+
+    #[test]
+    fn init_scaffold_creates_manifest_main_and_vendor_stl() {
+        let mut root = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock must be after unix epoch")
+            .as_nanos();
+        root.push(format!("aura_cli_init_test_{nanos}"));
+
+        create_project_scaffold(&root, "demo").expect("scaffold should succeed");
+
+        assert!(root.join("build.aura").is_file());
+        assert!(root.join("src").join("main.aura").is_file());
+        assert!(root.join("vendor").join("stl").join("core.aura").is_file());
+        assert!(root.join("target").is_dir());
+
+        fs::remove_dir_all(root).expect("cleanup should succeed");
     }
 }

@@ -73,6 +73,8 @@ pub struct Param {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeExpr {
     Named { name: String, args: Vec<StaticArg> },
+    Tuple(Vec<TypeExpr>),
+    Struct(Vec<(String, TypeExpr)>),
     Static(Box<TypeExpr>),
     InferHole,
 }
@@ -107,12 +109,15 @@ pub enum Expr {
         name: String,
         payload: Option<Box<Expr>>,
     },
+    Tuple(Vec<Expr>),
+    Struct(Vec<(String, Expr)>),
     List(Vec<Expr>),
     Dict(Vec<(Expr, Expr)>),
     Closure {
         params: Vec<Param>,
         return_type: Option<TypeExpr>,
     },
+    Placeholder,
     MultiArm(Vec<Arm>),
     Call {
         callee: Box<Expr>,
@@ -180,6 +185,7 @@ pub enum BinaryOp {
     Gt,
     Ge,
     Range,
+    Pipe,
     Add,
     Sub,
     Mul,

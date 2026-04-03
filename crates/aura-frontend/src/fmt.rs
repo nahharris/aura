@@ -308,6 +308,28 @@ impl<'a> Formatter<'a> {
                     self.out.push(')');
                 }
             }
+            Expr::Tuple(items) => {
+                self.out.push('(');
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        self.out.push_str(", ");
+                    }
+                    self.write_expr(item, false);
+                }
+                self.out.push(')');
+            }
+            Expr::Struct(fields) => {
+                self.out.push('(');
+                for (i, (name, value)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        self.out.push_str(", ");
+                    }
+                    self.out.push_str(name);
+                    self.out.push_str(" = ");
+                    self.write_expr(value, false);
+                }
+                self.out.push(')');
+            }
             Expr::List(items) => {
                 self.out.push('[');
                 for (i, item) in items.iter().enumerate() {
@@ -356,6 +378,7 @@ impl<'a> Formatter<'a> {
                 }
                 self.out.push('}');
             }
+            Expr::Placeholder => self.out.push('_'),
             Expr::MultiArm(arms) => self.write_multi_arm(arms),
             Expr::Call {
                 callee,
@@ -520,6 +543,28 @@ impl<'a> Formatter<'a> {
                 self.out.push_str(name);
                 self.write_static_args(args);
             }
+            TypeExpr::Tuple(items) => {
+                self.out.push('(');
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        self.out.push_str(", ");
+                    }
+                    self.write_type_expr(item);
+                }
+                self.out.push(')');
+            }
+            TypeExpr::Struct(fields) => {
+                self.out.push('(');
+                for (i, (name, ty)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        self.out.push_str(", ");
+                    }
+                    self.out.push_str(name);
+                    self.out.push_str(": ");
+                    self.write_type_expr(ty);
+                }
+                self.out.push(')');
+            }
             TypeExpr::Static(inner) => {
                 self.out.push_str("static ");
                 self.write_type_expr(inner);
@@ -596,6 +641,7 @@ fn op_text(op: BinaryOp) -> &'static str {
         BinaryOp::Gt => ">",
         BinaryOp::Ge => ">=",
         BinaryOp::Range => "..",
+        BinaryOp::Pipe => "|>",
         BinaryOp::Add => "+",
         BinaryOp::Sub => "-",
         BinaryOp::Mul => "*",
@@ -671,5 +717,19 @@ mod tests {
         let line = out.lines().next().unwrap_or_default();
         let col = line.find("// aligned").unwrap_or(0) + 1;
         assert!(col >= 17);
+    }
+
+    #[test]
+    fn formats_pipe_operator_expression() {
+        let src = "def x = a |> b\n";
+        let out = format_source(src, &FormatOptions::default());
+        assert!(out.contains("a |> b"));
+    }
+
+    #[test]
+    fn formats_placeholder_in_call_arguments() {
+        let src = "def x = f(5, _)\n";
+        let out = format_source(src, &FormatOptions::default());
+        assert!(out.contains("f(5, _)"));
     }
 }

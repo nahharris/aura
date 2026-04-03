@@ -151,14 +151,47 @@ where
         doc: Option<DocAttribute>,
     ) -> Result<Decl, ParseError> {
         self.expect_ident_exact("def")?;
+        if self.peek_is(&TokenKind::LBracket) {
+            let _ = self.parse_static_params()?;
+        }
         let name = self.expect_ident("expected declaration name after 'def'")?;
         self.ensure_not_macro_symbol(&name, "declaration name")?;
+        let declared_ty = if self.peek_is(&TokenKind::Colon) {
+            self.bump();
+            Some(self.parse_type_expr()?)
+        } else {
+            None
+        };
         self.expect_simple(
             &TokenKind::Eq,
             "expected '=' in static def declaration",
             vec!["="],
         )?;
-        let value = self.parse_expr()?;
+        let type_mark = self.mark();
+        let mut value = if self.starts_type_expr() {
+            match self.parse_type_expr() {
+                Ok(ty)
+                    if self.peek_is(&TokenKind::Semi)
+                        || self.peek_is(&TokenKind::Eof)
+                        || self.peek_is(&TokenKind::RBrace) =>
+                {
+                    Expr::TypeExpr(ty)
+                }
+                _ => {
+                    self.cursor = type_mark;
+                    self.parse_expr()?
+                }
+            }
+        } else {
+            self.parse_expr()?
+        };
+        if let Some(ty) = declared_ty {
+            value = Expr::Binary {
+                op: BinaryOp::Colon,
+                lhs: Box::new(value),
+                rhs: Box::new(Expr::TypeExpr(ty)),
+            };
+        }
         Ok(Decl::Assign { name, value, doc })
     }
 
@@ -263,6 +296,7 @@ where
         while let Some(tok) = self.peek_n(i - self.cursor) {
             match tok {
                 TokenKind::LParen => return true,
+                TokenKind::Colon => return false,
                 TokenKind::Eof | TokenKind::Semi | TokenKind::Eq => return false,
                 _ => i += 1,
             }
@@ -500,6 +534,10 @@ where
     }
 
     fn parse_type_expr(&mut self) -> Result<TypeExpr, ParseError> {
+        if self.peek_is(&TokenKind::LParen) {
+            return self.parse_paren_type_expr();
+        }
+
         if self.peek_ident_is("static") {
             self.bump();
             let inner = self.parse_type_expr().map_err(|_| {
@@ -520,11 +558,114 @@ where
         let name = self.expect_ident("expected type identifier")?;
         let args = if self.peek_is(&TokenKind::LBracket) {
             self.parse_static_args()?
+        } else if self.peek_is(&TokenKind::LParen) {
+            self.parse_paren_type_args()?
         } else {
             Vec::new()
         };
 
         Ok(TypeExpr::Named { name, args })
+    }
+
+    fn parse_paren_type_expr(&mut self) -> Result<TypeExpr, ParseError> {
+        self.expect_simple(&TokenKind::LParen, "expected '('", vec!["("])?;
+        if self.peek_is(&TokenKind::RParen) {
+            self.bump();
+            return Ok(TypeExpr::Tuple(Vec::new()));
+        }
+
+        let is_struct = matches!(self.peek(), TokenKind::Ident(_))
+            && matches!(self.peek_n(1), Some(TokenKind::Colon));
+
+        if is_struct {
+            let mut fields = Vec::new();
+            loop {
+                let field = self.expect_ident("expected struct field name")?;
+                let ty = if self.peek_is(&TokenKind::Colon) {
+                    self.bump();
+                    self.parse_type_expr()?
+                } else {
+                    TypeExpr::Named {
+                        name: "Void".to_string(),
+                        args: Vec::new(),
+                    }
+                };
+                fields.push((field, ty));
+                if self.peek_is(&TokenKind::Comma) {
+                    self.bump();
+                    if self.peek_is(&TokenKind::RParen) {
+                        break;
+                    }
+                    continue;
+                }
+                break;
+            }
+            self.expect_simple(
+                &TokenKind::RParen,
+                "expected ')' after struct type",
+                vec![")"],
+            )?;
+            return Ok(TypeExpr::Struct(fields));
+        }
+
+        let mut items = Vec::new();
+        loop {
+            items.push(self.parse_type_expr()?);
+            if self.peek_is(&TokenKind::Comma) {
+                self.bump();
+                if self.peek_is(&TokenKind::RParen) {
+                    break;
+                }
+                continue;
+            }
+            break;
+        }
+        self.expect_simple(
+            &TokenKind::RParen,
+            "expected ')' after tuple type",
+            vec![")"],
+        )?;
+        Ok(TypeExpr::Tuple(items))
+    }
+
+    fn parse_paren_type_args(&mut self) -> Result<Vec<StaticArg>, ParseError> {
+        self.expect_simple(&TokenKind::LParen, "expected '('", vec!["("])?;
+        if self.peek_is(&TokenKind::RParen) {
+            self.bump();
+            return Ok(Vec::new());
+        }
+        let mut args = Vec::new();
+        loop {
+            if matches!(self.peek(), TokenKind::Ident(_))
+                && self.peek_n(1) == Some(&TokenKind::Colon)
+            {
+                let field = self.expect_ident("expected enum field name")?;
+                self.expect_simple(
+                    &TokenKind::Colon,
+                    "expected ':' after enum field name",
+                    vec![":"],
+                )?;
+                let ty = self.parse_type_expr()?;
+                args.push(StaticArg::Type(TypeExpr::Struct(vec![(field, ty)])));
+            } else {
+                args.push(StaticArg::Type(self.parse_type_expr()?));
+            }
+            if self.peek_is(&TokenKind::Comma) {
+                self.bump();
+                if self.peek_is(&TokenKind::RParen) {
+                    self.bump();
+                    break;
+                }
+                continue;
+            }
+            self.expect_simple(
+                &TokenKind::RParen,
+                "expected ')' after type arguments",
+                vec![")"],
+            )?;
+            break;
+        }
+        Ok(args)
     }
 
     fn parse_static_args(&mut self) -> Result<Vec<StaticArg>, ParseError> {
@@ -663,6 +804,23 @@ where
         Ok(self.with_span(mark, expr))
     }
 
+    fn starts_type_expr(&self) -> bool {
+        if self.peek_is(&TokenKind::LParen) || self.peek_is(&TokenKind::Underscore) {
+            return true;
+        }
+        if let TokenKind::Ident(name) = self.peek() {
+            if name == "static" || name == "union" || name == "enum" || name == "interface" {
+                return true;
+            }
+            return name
+                .chars()
+                .next()
+                .map(|ch| ch.is_ascii_uppercase())
+                .unwrap_or(false);
+        }
+        false
+    }
+
     fn parse_elvis_expr(&mut self) -> Result<Expr, ParseError> {
         let mark = self.mark();
         let lhs = self.parse_or_expr()?;
@@ -715,7 +873,17 @@ where
     }
 
     fn parse_range_expr(&mut self) -> Result<Expr, ParseError> {
-        self.parse_left_assoc_binary(Self::parse_add_expr, &[(TokenKind::Range, BinaryOp::Range)])
+        self.parse_left_assoc_binary(
+            Self::parse_pipe_expr,
+            &[(TokenKind::Range, BinaryOp::Range)],
+        )
+    }
+
+    fn parse_pipe_expr(&mut self) -> Result<Expr, ParseError> {
+        self.parse_left_assoc_binary(
+            Self::parse_add_expr,
+            &[(TokenKind::PipeArrow, BinaryOp::Pipe)],
+        )
     }
 
     fn parse_add_expr(&mut self) -> Result<Expr, ParseError> {
@@ -914,7 +1082,12 @@ where
             return Ok(args);
         }
         loop {
-            args.push(self.parse_expr()?);
+            if self.peek_is(&TokenKind::Underscore) {
+                self.bump();
+                args.push(Expr::Placeholder);
+            } else {
+                args.push(self.parse_expr()?);
+            }
             if self.peek_is(&TokenKind::Comma) {
                 self.bump();
                 if self.peek_is(&TokenKind::RParen) {
@@ -992,6 +1165,7 @@ where
                 self.bump();
                 Ok(self.with_span(mark, Expr::Char(value)))
             }
+            TokenKind::LParen => self.parse_paren_literal_expr(),
             TokenKind::Dot => self.parse_dot_ident_expr(),
             TokenKind::LBracket => self.parse_bracket_literal_expr(),
             TokenKind::LBrace => self.parse_brace_body_expr(),
@@ -1020,6 +1194,68 @@ where
             None
         };
         Ok(self.with_span(mark, Expr::DotIdent { name, payload }))
+    }
+
+    fn parse_paren_literal_expr(&mut self) -> Result<Expr, ParseError> {
+        self.expect_simple(&TokenKind::LParen, "expected '('", vec!["("])?;
+        if self.peek_is(&TokenKind::RParen) {
+            self.bump();
+            return Ok(Expr::Tuple(Vec::new()));
+        }
+
+        if matches!(self.peek(), TokenKind::Ident(_)) && self.peek_n(1) == Some(&TokenKind::Eq) {
+            let mut fields = Vec::new();
+            loop {
+                let field = self.expect_ident("expected struct field name")?;
+                self.expect_simple(
+                    &TokenKind::Eq,
+                    "expected '=' after struct field name",
+                    vec!["="],
+                )?;
+                let value = self.parse_expr()?;
+                fields.push((field, value));
+
+                if self.peek_is(&TokenKind::Comma) {
+                    self.bump();
+                    if self.peek_is(&TokenKind::RParen) {
+                        break;
+                    }
+                    continue;
+                }
+                break;
+            }
+            self.expect_simple(
+                &TokenKind::RParen,
+                "expected ')' after struct literal",
+                vec![")"],
+            )?;
+            return Ok(Expr::Struct(fields));
+        }
+
+        let first = self.parse_expr()?;
+        if !self.peek_is(&TokenKind::Comma) {
+            self.expect_simple(
+                &TokenKind::RParen,
+                "expected ')' after parenthesized expression",
+                vec![")"],
+            )?;
+            return Ok(first);
+        }
+
+        let mut items = vec![first];
+        while self.peek_is(&TokenKind::Comma) {
+            self.bump();
+            if self.peek_is(&TokenKind::RParen) {
+                break;
+            }
+            items.push(self.parse_expr()?);
+        }
+        self.expect_simple(
+            &TokenKind::RParen,
+            "expected ')' after tuple literal",
+            vec![")"],
+        )?;
+        Ok(Expr::Tuple(items))
     }
 
     fn parse_bracket_literal_expr(&mut self) -> Result<Expr, ParseError> {
@@ -1345,6 +1581,7 @@ fn token_debug_name(kind: &TokenKind) -> String {
         TokenKind::Gt => ">".to_string(),
         TokenKind::Gte => ">=".to_string(),
         TokenKind::PipePipe => "||".to_string(),
+        TokenKind::PipeArrow => "|>".to_string(),
         TokenKind::AmpAmp => "&&".to_string(),
         TokenKind::QuestionColon => "?:".to_string(),
         TokenKind::QuestionDot => "?.".to_string(),
@@ -1389,6 +1626,7 @@ fn same_token_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (TokenKind::Gt, TokenKind::Gt)
             | (TokenKind::Gte, TokenKind::Gte)
             | (TokenKind::PipePipe, TokenKind::PipePipe)
+            | (TokenKind::PipeArrow, TokenKind::PipeArrow)
             | (TokenKind::AmpAmp, TokenKind::AmpAmp)
             | (TokenKind::QuestionColon, TokenKind::QuestionColon)
             | (TokenKind::QuestionDot, TokenKind::QuestionDot)
@@ -1622,6 +1860,72 @@ mod tests {
             static_args[0],
             StaticArg::Type(TypeExpr::InferHole)
         ));
+    }
+
+    #[test]
+    fn parse_pipe_operator_left_associative() {
+        let src = "def x = baz |> foo |> bar";
+        let parsed = Parser::parse_source(src).expect("should parse pipe chain");
+        let Decl::Assign { value, .. } = parsed.declarations.first().expect("expected decl") else {
+            panic!("expected assignment")
+        };
+
+        let Expr::Binary { op, lhs, rhs } = u(value) else {
+            panic!("expected binary pipe expression")
+        };
+        assert!(matches!(op, crate::ast::BinaryOp::Pipe));
+        assert!(matches!(u(rhs.as_ref()), Expr::Ident(name) if name == "bar"));
+
+        let Expr::Binary {
+            op: inner_op,
+            lhs: inner_lhs,
+            rhs: inner_rhs,
+        } = u(lhs.as_ref())
+        else {
+            panic!("expected left-associated inner pipe")
+        };
+        assert!(matches!(inner_op, crate::ast::BinaryOp::Pipe));
+        assert!(matches!(u(inner_lhs.as_ref()), Expr::Ident(name) if name == "baz"));
+        assert!(matches!(u(inner_rhs.as_ref()), Expr::Ident(name) if name == "foo"));
+    }
+
+    #[test]
+    fn parse_pipe_has_lower_precedence_than_addition() {
+        let src = "def x = a |> b + c";
+        let parsed = Parser::parse_source(src).expect("should parse pipe precedence");
+        let Decl::Assign { value, .. } = parsed.declarations.first().expect("expected decl") else {
+            panic!("expected assignment")
+        };
+
+        let Expr::Binary { op, lhs, rhs } = u(value) else {
+            panic!("expected outer pipe")
+        };
+        assert!(matches!(op, crate::ast::BinaryOp::Pipe));
+        assert!(matches!(u(lhs.as_ref()), Expr::Ident(name) if name == "a"));
+        assert!(matches!(
+            u(rhs.as_ref()),
+            Expr::Binary {
+                op: crate::ast::BinaryOp::Add,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parse_call_args_allow_placeholders() {
+        let src = "def x = f(5, _, _)";
+        let parsed = Parser::parse_source(src).expect("should parse placeholders in call args");
+        let Decl::Assign { value, .. } = parsed.declarations.first().expect("expected decl") else {
+            panic!("expected assignment")
+        };
+
+        let Expr::Call { args, .. } = u(value) else {
+            panic!("expected call")
+        };
+        assert_eq!(args.len(), 3);
+        assert!(matches!(u(&args[0]), Expr::Int(v) if v == "5"));
+        assert!(matches!(u(&args[1]), Expr::Placeholder));
+        assert!(matches!(u(&args[2]), Expr::Placeholder));
     }
 
     #[test]
@@ -2142,6 +2446,78 @@ mod tests {
             _ => panic!("expected assignment"),
         };
         assert!(matches!(u(dict), Expr::Dict(entries) if entries.len() == 2));
+    }
+
+    #[test]
+    fn parse_tuple_and_struct_literals() {
+        let src = "def pair = (4, .false); def person = (name = \"John Doe\", age = 30)";
+        let parsed = Parser::parse_source(src).expect("should parse tuple and struct literals");
+        assert_eq!(parsed.declarations.len(), 2);
+
+        let tuple = match &parsed.declarations[0] {
+            Decl::Assign { value, .. } => value,
+            _ => panic!("expected assignment"),
+        };
+        assert!(matches!(u(tuple), Expr::Tuple(items) if items.len() == 2));
+
+        let strukt = match &parsed.declarations[1] {
+            Decl::Assign { value, .. } => value,
+            _ => panic!("expected assignment"),
+        };
+        assert!(matches!(u(strukt), Expr::Struct(fields) if fields.len() == 2));
+    }
+
+    #[test]
+    fn parse_def_with_type_annotation_and_named_sum_type_syntax() {
+        let src =
+            "def n: union(Int, Float) = 4; def res: enum(err: String, ok: Int) = .err(\"Failed\")";
+        let parsed = Parser::parse_source(src).expect("should parse typed defs with union/enum");
+        assert_eq!(parsed.declarations.len(), 2);
+
+        let n = match &parsed.declarations[0] {
+            Decl::Assign { value, .. } => value,
+            _ => panic!("expected assignment"),
+        };
+        assert!(matches!(
+            u(n),
+            Expr::Binary {
+                op: crate::ast::BinaryOp::Colon,
+                rhs,
+                ..
+            } if matches!(u(rhs.as_ref()), Expr::TypeExpr(TypeExpr::Named { name, .. }) if name == "union")
+        ));
+
+        let res = match &parsed.declarations[1] {
+            Decl::Assign { value, .. } => value,
+            _ => panic!("expected assignment"),
+        };
+        assert!(matches!(
+            u(res),
+            Expr::Binary {
+                op: crate::ast::BinaryOp::Colon,
+                rhs,
+                ..
+            } if matches!(u(rhs.as_ref()), Expr::TypeExpr(TypeExpr::Named { name, .. }) if name == "enum")
+        ));
+    }
+
+    #[test]
+    fn parse_type_alias_defs_for_tuple_struct_union_enum() {
+        let src = "def Coords = (Int, Int); def Person = (name: String, age: Int); def Number = union(Int, Float); def[T, E] Result = enum(err: E, ok: T)";
+        let parsed = Parser::parse_source(src).expect("should parse type alias defs");
+        assert_eq!(parsed.declarations.len(), 4);
+
+        let coords = match &parsed.declarations[0] {
+            Decl::Assign { value, .. } => value,
+            _ => panic!("expected assignment"),
+        };
+        assert!(matches!(u(coords), Expr::TypeExpr(TypeExpr::Tuple(items)) if items.len() == 2));
+
+        let person = match &parsed.declarations[1] {
+            Decl::Assign { value, .. } => value,
+            _ => panic!("expected assignment"),
+        };
+        assert!(matches!(u(person), Expr::TypeExpr(TypeExpr::Struct(fields)) if fields.len() == 2));
     }
 
     #[test]

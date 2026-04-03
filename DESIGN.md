@@ -1360,3 +1360,56 @@ Import resolution rules (current runtime):
 def _io_write = builtin io_write;
 def _to_str = builtin to_str;
 ```
+
+---
+
+## Projects and `build.aura`
+
+Aura is project-oriented. A project root contains `build.aura` and standard folders:
+
+- `src/` — project source modules
+- `vendor/` — vendored dependencies (including STL)
+- `target/` — build artifacts
+
+`build.aura` is a regular Aura module that exports a manifest value:
+
+```aura
+def project = (
+    name = "hello",
+    version = "0.1.0",
+    dependencies = [
+        "@json" = "github.com/acme/aura-json@v1.2.3",
+    ],
+);
+```
+
+Manifest field contract:
+
+- `name: String`
+- `version: String`
+- `dependencies: Dict[String, String]`
+
+Dependency source forms:
+
+- `<git-url>@<tag>`
+
+> [!NOTE]
+> Dependencies placed directly in the `vendor/` do not need to be specified in the `build.aura` manifest.
+
+Dependencies are mapped by alias (`@alias`) and resolved into `vendor/<alias>/...`.
+
+Module imports using alias paths:
+
+```aura
+use io = "@stl/io";
+use parse = "@json/parser";
+```
+
+Import resolution maps `"@alias/some/module"` to:
+
+- `vendor/alias/some/module.aura`
+
+Notes:
+
+- `.test.aura` files are not part of production compilation.
+- `x.aura` and `x.test.aura` represent the same module namespace for test builds.

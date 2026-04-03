@@ -67,6 +67,7 @@ pub enum TokenKind {
     Gt,
     Gte,
     PipePipe,
+    PipeArrow,
     AmpAmp,
     QuestionColon,
     QuestionDot,

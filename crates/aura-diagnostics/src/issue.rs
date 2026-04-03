@@ -147,7 +147,7 @@ impl Issue {
                 "float literal requires digits after decimal point".to_string()
             }
             Self::LexFloatNoIntPart => "float literal requires integer part before '.'".to_string(),
-            Self::LexPipeForm => "unexpected '|': expected '||'".to_string(),
+            Self::LexPipeForm => "unexpected '|': expected '||' or '|>'".to_string(),
             Self::LexQuestionForm => "unexpected '?': expected '?:' or '?.'".to_string(),
             Self::LexStringEscapeUnsupported { ch } => {
                 format!("unsupported string escape '\\{ch}'")

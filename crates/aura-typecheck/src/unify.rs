@@ -186,6 +186,60 @@ impl Unifier {
 
                 Ok(interner.intern(Ty::Struct(fields)))
             }
+            (Some(Ty::Union(items_a)), Some(Ty::Union(items_b))) => {
+                if items_a.len() != items_b.len() {
+                    return Err(Box::new(
+                        Diagnostic::error(Issue::UnifyMismatch)
+                            .with_related("union member count differs", None)
+                            .with_hint("ensure both union types have the same members"),
+                    ));
+                }
+                let mut items = Vec::with_capacity(items_a.len());
+                for (a, b) in items_a.iter().zip(items_b.iter()) {
+                    items.push(self.unify(interner, *a, *b, context)?);
+                }
+                Ok(interner.intern(Ty::Union(items)))
+            }
+            (Some(Ty::Enum(variants_a)), Some(Ty::Enum(variants_b))) => {
+                if variants_a.len() != variants_b.len() {
+                    return Err(Box::new(
+                        Diagnostic::error(Issue::UnifyMismatch)
+                            .with_related("enum variant count differs", None)
+                            .with_hint("ensure both enum types define same variants"),
+                    ));
+                }
+
+                let mut variants = Vec::with_capacity(variants_a.len());
+                for ((name_a, payload_a), (name_b, payload_b)) in
+                    variants_a.iter().zip(variants_b.iter())
+                {
+                    if name_a != name_b {
+                        return Err(Box::new(
+                            Diagnostic::error(Issue::UnifyMismatch)
+                                .with_related("enum variant names must match positionally", None)
+                                .with_hint("ensure both enum variants match by name/order"),
+                        ));
+                    }
+
+                    let payload = match (payload_a, payload_b) {
+                        (Some(a), Some(b)) => Some(self.unify(interner, *a, *b, context)?),
+                        (None, None) => None,
+                        _ => {
+                            return Err(Box::new(
+                                Diagnostic::error(Issue::UnifyMismatch)
+                                    .with_related("enum variant payload presence differs", None)
+                                    .with_hint(
+                                        "ensure matching payload arity for each enum variant",
+                                    ),
+                            ))
+                        }
+                    };
+
+                    variants.push((name_a.clone(), payload));
+                }
+
+                Ok(interner.intern(Ty::Enum(variants)))
+            }
             (Some(a), Some(b)) if a == b => Ok(lhs),
             (Some(_a), Some(_b)) => Err(Box::new(
                 Diagnostic::error(Issue::UnifyMismatch)
@@ -227,6 +281,10 @@ impl Unifier {
             }
             Some(Ty::Tuple(items)) => items.iter().any(|t| self.occurs(interner, var, *t)),
             Some(Ty::Struct(fields)) => fields.iter().any(|(_, t)| self.occurs(interner, var, *t)),
+            Some(Ty::Union(items)) => items.iter().any(|t| self.occurs(interner, var, *t)),
+            Some(Ty::Enum(variants)) => variants
+                .iter()
+                .any(|(_, payload)| payload.is_some_and(|t| self.occurs(interner, var, t))),
             _ => false,
         }
     }

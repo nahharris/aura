@@ -34,6 +34,8 @@ pub enum Ty {
     Func { params: Vec<TyId>, ret: TyId },
     Tuple(Vec<TyId>),
     Struct(Vec<(String, TyId)>),
+    Union(Vec<TyId>),
+    Enum(Vec<(String, Option<TyId>)>),
 }
 
 #[derive(Debug, Default, Clone)]

@@ -135,6 +135,54 @@ impl TypeChecker {
         cur
     }
 
+    fn is_placeholder_expr(expr: &Expr) -> bool {
+        matches!(Self::base_expr(expr), Expr::Placeholder)
+    }
+
+    fn pipe_to_call_expr(lhs: &Expr, rhs: &Expr) -> Expr {
+        match Self::base_expr(rhs) {
+            Expr::Call {
+                callee,
+                static_args,
+                args,
+                trailing,
+            } => {
+                let mut new_args = Vec::new();
+                let mut consumed_pipe_value = false;
+                let has_placeholder = args.iter().any(Self::is_placeholder_expr);
+
+                if has_placeholder {
+                    for arg in args {
+                        if !consumed_pipe_value && Self::is_placeholder_expr(arg) {
+                            new_args.push(lhs.clone());
+                            consumed_pipe_value = true;
+                        } else {
+                            new_args.push(arg.clone());
+                        }
+                    }
+                }
+
+                if !consumed_pipe_value {
+                    new_args.push(lhs.clone());
+                    new_args.extend(args.iter().cloned());
+                }
+
+                Expr::Call {
+                    callee: callee.clone(),
+                    static_args: static_args.clone(),
+                    args: new_args,
+                    trailing: trailing.clone(),
+                }
+            }
+            _ => Expr::Call {
+                callee: Box::new(rhs.clone()),
+                static_args: Vec::new(),
+                args: vec![lhs.clone()],
+                trailing: Vec::new(),
+            },
+        }
+    }
+
     pub fn check_program(&mut self, program: &Program) -> HashMap<String, TyId> {
         let mut values = HashMap::new();
         self.module_checker.check_program(program);
@@ -347,6 +395,20 @@ impl TypeChecker {
                 })
             }
             Expr::Label { expr, .. } => self.infer_expr(expr),
+            Expr::Tuple(items) => {
+                let item_tys = items
+                    .iter()
+                    .map(|item| self.infer_expr(item))
+                    .collect::<Vec<_>>();
+                self.interner.intern(Ty::Tuple(item_tys))
+            }
+            Expr::Struct(fields) => {
+                let field_tys = fields
+                    .iter()
+                    .map(|(name, value)| (name.clone(), self.infer_expr(value)))
+                    .collect::<Vec<_>>();
+                self.interner.intern(Ty::Struct(field_tys))
+            }
             Expr::List(items) => {
                 if let Some(first) = items.first() {
                     let item_ty = self.infer_expr(first);
@@ -453,6 +515,7 @@ impl TypeChecker {
                 self.unknown_ty()
             }
             Expr::TypeExpr(_) => self.unknown_ty(),
+            Expr::Placeholder => self.unknown_ty(),
             Expr::MultiArm(arms) => {
                 if let Some(first) = arms.first() {
                     self.push_scope();
@@ -717,6 +780,71 @@ impl TypeChecker {
                 self.require_assignable(expected, actual, "bidirectional expected type");
                 actual
             }
+            (Expr::DotIdent { name, payload }, Some(Ty::Enum(variants))) => {
+                let variant = variants
+                    .iter()
+                    .find(|(variant_name, _)| variant_name == name);
+                let Some((_, variant_payload)) = variant else {
+                    let actual = self.infer_expr(expr);
+                    self.emit_type_mismatch(
+                        expected,
+                        actual,
+                        "assignment",
+                        "enum variant does not exist on expected enum type",
+                    );
+                    return self.unknown_ty();
+                };
+
+                match (payload.as_ref(), variant_payload) {
+                    (Some(inner), Some(expected_payload_ty)) => {
+                        let payload_ty = self.infer_expr_with_expected(inner, *expected_payload_ty);
+                        self.require_assignable(
+                            *expected_payload_ty,
+                            payload_ty,
+                            "enum variant payload",
+                        );
+                    }
+                    (None, None) => {}
+                    (Some(_), None) | (None, Some(_)) => {
+                        let actual = self.infer_expr(expr);
+                        self.emit_type_mismatch(
+                            expected,
+                            actual,
+                            "assignment",
+                            "enum variant payload arity does not match expected type",
+                        );
+                        return self.unknown_ty();
+                    }
+                }
+                expected
+            }
+            (Expr::DotIdent { payload, .. }, Some(Ty::Union(members))) => {
+                if let Some(inner) = payload {
+                    let payload_ty = self.infer_expr(inner);
+                    for member in members {
+                        if matches!(
+                            self.conversion_decision(
+                                member,
+                                payload_ty,
+                                ConversionMode::ImplicitOnly,
+                                "union payload"
+                            ),
+                            ConversionDecision::Identity | ConversionDecision::Coerce
+                        ) {
+                            return expected;
+                        }
+                    }
+                    self.emit_type_mismatch(
+                        expected,
+                        payload_ty,
+                        "assignment",
+                        "union payload does not match any member type",
+                    );
+                    self.unknown_ty()
+                } else {
+                    expected
+                }
+            }
             (
                 Expr::DotIdent {
                     payload: Some(inner),
@@ -786,6 +914,13 @@ impl TypeChecker {
                 }
                 self.interner.intern(Ty::List(expected_item))
             }
+            (Expr::Tuple(items), Some(Ty::Tuple(expected_items))) => {
+                for (item, expected_item) in items.iter().zip(expected_items.iter()) {
+                    let item_ty = self.infer_expr_with_expected(item, *expected_item);
+                    self.require_assignable(*expected_item, item_ty, "tuple element");
+                }
+                self.interner.intern(Ty::Tuple(expected_items))
+            }
             (
                 Expr::Dict(entries),
                 Some(Ty::Dict {
@@ -803,6 +938,15 @@ impl TypeChecker {
                     key: expected_key,
                     value: expected_value,
                 })
+            }
+            (Expr::Struct(fields), Some(Ty::Struct(expected_fields))) => {
+                for ((_, value), (_, expected_field_ty)) in
+                    fields.iter().zip(expected_fields.iter())
+                {
+                    let value_ty = self.infer_expr_with_expected(value, *expected_field_ty);
+                    self.require_assignable(*expected_field_ty, value_ty, "struct field");
+                }
+                self.interner.intern(Ty::Struct(expected_fields))
             }
             (
                 Expr::Closure {
@@ -1035,7 +1179,6 @@ impl TypeChecker {
                 bool_ty
             }
             ParsedBinaryOp::Colon => {
-                let source = self.infer_expr(lhs);
                 let Expr::TypeExpr(ty) = rhs else {
                     self.diagnostics.push(
                         self.typecheck_error(
@@ -1047,6 +1190,12 @@ impl TypeChecker {
                     return self.unknown_ty();
                 };
                 let target = self.resolve_type_expr(ty);
+                let source = match self.interner.get(target) {
+                    Some(Ty::Enum(_)) | Some(Ty::Union(_)) => {
+                        self.infer_expr_with_expected(lhs, target)
+                    }
+                    _ => self.infer_expr(lhs),
+                };
                 let source_ty = self
                     .interner
                     .get(source)
@@ -1081,7 +1230,11 @@ impl TypeChecker {
                     }
                 }
             }
-            ParsedBinaryOp::Elvis | ParsedBinaryOp::Range => {
+            ParsedBinaryOp::Elvis | ParsedBinaryOp::Range | ParsedBinaryOp::Pipe => {
+                if matches!(op, ParsedBinaryOp::Pipe) {
+                    let rewritten = Self::pipe_to_call_expr(lhs, rhs);
+                    return self.infer_expr(&rewritten);
+                }
                 let lhs_ty = self.infer_expr(lhs);
                 let rhs_ty = self.infer_expr(rhs);
                 self.join_types(lhs_ty, rhs_ty, "binary operator")
@@ -1104,7 +1257,10 @@ impl TypeChecker {
             ParsedBinaryOp::Neq => Some(BinaryOpKind::Neq),
             ParsedBinaryOp::And => Some(BinaryOpKind::And),
             ParsedBinaryOp::Or => Some(BinaryOpKind::Or),
-            ParsedBinaryOp::Elvis | ParsedBinaryOp::Range | ParsedBinaryOp::Colon => None,
+            ParsedBinaryOp::Elvis
+            | ParsedBinaryOp::Range
+            | ParsedBinaryOp::Pipe
+            | ParsedBinaryOp::Colon => None,
         }
     }
 
@@ -1120,6 +1276,20 @@ impl TypeChecker {
             TypeExpr::Named { name, args } => CheckedTypeExpr::Named {
                 name: name.clone(),
                 args: args.iter().map(|a| self.lower_static_arg(a)).collect(),
+            },
+            TypeExpr::Tuple(items) => CheckedTypeExpr::Named {
+                name: "Tuple".to_string(),
+                args: items
+                    .iter()
+                    .map(|item| CheckedStaticArg::Type(self.lower_type_expr(item)))
+                    .collect(),
+            },
+            TypeExpr::Struct(fields) => CheckedTypeExpr::Named {
+                name: "Struct".to_string(),
+                args: fields
+                    .iter()
+                    .map(|(_, ty)| CheckedStaticArg::Type(self.lower_type_expr(ty)))
+                    .collect(),
             },
             TypeExpr::Static(inner) => {
                 CheckedTypeExpr::Static(Box::new(self.lower_type_expr(inner)))
@@ -1220,9 +1390,67 @@ impl TypeChecker {
         match ty {
             TypeExpr::Static(inner) => self.resolve_type_expr(inner),
             TypeExpr::InferHole => self.unknown_ty(),
+            TypeExpr::Tuple(items) => {
+                let lowered = items
+                    .iter()
+                    .map(|item| self.resolve_type_expr(item))
+                    .collect::<Vec<_>>();
+                self.interner.intern(Ty::Tuple(lowered))
+            }
+            TypeExpr::Struct(fields) => {
+                let lowered = fields
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), self.resolve_type_expr(ty)))
+                    .collect::<Vec<_>>();
+                self.interner.intern(Ty::Struct(lowered))
+            }
             TypeExpr::Named { name, args } => {
                 if let Some(alias) = self.aliases.get(name) {
                     return alias;
+                }
+
+                if name == "union" {
+                    let members = args
+                        .iter()
+                        .filter_map(|arg| match arg {
+                            StaticArg::Type(ty) => Some(self.resolve_type_expr(ty)),
+                            StaticArg::Value(_) => None,
+                        })
+                        .collect::<Vec<_>>();
+                    if members.is_empty() {
+                        return self.unknown_ty();
+                    }
+                    return self.interner.intern(Ty::Union(members));
+                }
+
+                if name == "enum" {
+                    let mut variants = Vec::new();
+                    for arg in args {
+                        if let StaticArg::Type(TypeExpr::Struct(items)) = arg {
+                            for (field, ty) in items {
+                                variants.push((field.clone(), Some(self.resolve_type_expr(ty))));
+                            }
+                        } else if let StaticArg::Type(TypeExpr::Named {
+                            name: variant,
+                            args,
+                        }) = arg
+                        {
+                            if args.is_empty() {
+                                variants.push((variant.clone(), None));
+                            } else {
+                                variants.push((
+                                    variant.clone(),
+                                    Some(
+                                        self.resolve_required_type_arg(args, 0, "enum", "variant"),
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                    if variants.is_empty() {
+                        return self.unknown_ty();
+                    }
+                    return self.interner.intern(Ty::Enum(variants));
                 }
 
                 match name.as_str() {
@@ -1431,9 +1659,16 @@ impl TypeChecker {
 
         self.unify_with_context(callee_ty, expected_func, "callable expression");
 
+        let mut placeholder_params = Vec::new();
+
         for (idx, arg) in args.iter().enumerate() {
             self.push_obligation(format!("checking call argument #{idx}"));
             let expected = expected_params[idx];
+            if Self::is_placeholder_expr(arg) {
+                placeholder_params.push(expected);
+                self.pop_obligation();
+                continue;
+            }
             let arg_ty = self.infer_expr_with_expected(arg, expected);
             self.require_assignable(expected, arg_ty, "call argument");
             self.pop_obligation();
@@ -1453,7 +1688,18 @@ impl TypeChecker {
 
         let resolved = self.unifier.resolve(expected_ret);
         self.pop_obligation();
-        resolved
+        if placeholder_params.is_empty() {
+            resolved
+        } else {
+            let params = placeholder_params
+                .into_iter()
+                .map(|ty| self.unifier.resolve(ty))
+                .collect();
+            self.interner.intern(Ty::Func {
+                params,
+                ret: resolved,
+            })
+        }
     }
 
     fn infer_if_call_with_expected(
@@ -2067,6 +2313,24 @@ impl TypeChecker {
             return ConversionDecision::Coerce;
         }
 
+        if let Ty::Union(expected_members) = &expected_ty {
+            for member in expected_members {
+                if let Some(member_ty) = self.interner.get(*member).cloned() {
+                    if member_ty == actual_ty || can_implicitly_widen(&actual_ty, &member_ty) {
+                        return ConversionDecision::Identity;
+                    }
+                }
+            }
+            return ConversionDecision::Incompatible;
+        }
+
+        if let (Ty::Enum(expected_variants), Ty::Enum(actual_variants)) = (&expected_ty, &actual_ty)
+        {
+            if expected_variants == actual_variants {
+                return ConversionDecision::Identity;
+            }
+        }
+
         if matches!(mode, ConversionMode::ExplicitCastAllowed)
             && self.is_explicit_cast_pair(&actual_ty, &expected_ty)
         {
@@ -2255,6 +2519,15 @@ impl TypeChecker {
                 name: name.clone(),
                 payload: payload.as_ref().map(|p| Box::new(self.lower_expr(p))),
             },
+            Expr::Tuple(items) => {
+                CheckedExpr::Tuple(items.iter().map(|item| self.lower_expr(item)).collect())
+            }
+            Expr::Struct(fields) => CheckedExpr::Struct(
+                fields
+                    .iter()
+                    .map(|(name, value)| (name.clone(), self.lower_expr(value)))
+                    .collect(),
+            ),
             Expr::Closure {
                 params,
                 return_type,
@@ -2262,6 +2535,7 @@ impl TypeChecker {
                 params: params.iter().map(|p| p.name.clone()).collect(),
                 return_ty: return_type.as_ref().map(|t| self.resolve_type_expr(t)),
             },
+            Expr::Placeholder => CheckedExpr::Any,
             Expr::List(items) => {
                 CheckedExpr::List(items.iter().map(|item| self.lower_expr(item)).collect())
             }
@@ -2412,6 +2686,10 @@ impl TypeChecker {
                 payload: Some(Box::new(self.lower_expr(object))),
             },
             Expr::Binary { op, lhs, rhs } => {
+                if matches!(op, ParsedBinaryOp::Pipe) {
+                    let rewritten = Self::pipe_to_call_expr(lhs, rhs);
+                    return self.lower_expr(&rewritten);
+                }
                 if let Some(kind) = self.parsed_binary_op_kind(*op) {
                     let lhs_lowered = self.lower_expr(lhs);
                     let rhs_lowered = self.lower_expr(rhs);
@@ -2477,6 +2755,20 @@ impl TypeChecker {
                 .unwrap_or_else(|| self.interner.intern(Ty::Float32)),
             Expr::Char(_) => self.interner.intern(Ty::Char),
             Expr::String(_) => self.interner.intern(Ty::Nominal("String".to_string())),
+            Expr::Tuple(items) => {
+                let item_tys = items
+                    .iter()
+                    .map(|item| self.preview_expr_ty(item))
+                    .collect::<Vec<_>>();
+                self.interner.intern(Ty::Tuple(item_tys))
+            }
+            Expr::Struct(fields) => {
+                let field_tys = fields
+                    .iter()
+                    .map(|(name, value)| (name.clone(), self.preview_expr_ty(value)))
+                    .collect::<Vec<_>>();
+                self.interner.intern(Ty::Struct(field_tys))
+            }
             Expr::Closure {
                 params,
                 return_type,
@@ -2664,6 +2956,29 @@ fn ty_to_ref(ty: &Ty, interner: &TyInterner) -> TypeRef {
                 .collect::<Vec<_>>();
             TypeRef::Struct(refs)
         }
+        Ty::Union(items) => {
+            let refs = items
+                .iter()
+                .map(|id| {
+                    interner
+                        .get(*id)
+                        .map(|t| ty_to_ref(t, interner))
+                        .unwrap_or(TypeRef::Unknown)
+                })
+                .collect::<Vec<_>>();
+            TypeRef::Union(refs)
+        }
+        Ty::Enum(variants) => {
+            let refs = variants
+                .iter()
+                .map(|(name, payload)| {
+                    let payload_ref =
+                        payload.and_then(|id| interner.get(id).map(|t| ty_to_ref(t, interner)));
+                    (name.clone(), payload_ref)
+                })
+                .collect::<Vec<_>>();
+            TypeRef::Enum(refs)
+        }
     }
 }
 
@@ -2690,11 +3005,13 @@ mod tests {
     fn allows_implicit_numeric_widening_on_reassignment() {
         let program = Program {
             declarations: vec![
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("1".to_string()),
                 },
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("2".to_string()),
                 },
@@ -2708,7 +3025,8 @@ mod tests {
     #[test]
     fn multi_arm_without_fallback_reports_non_exhaustive() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl { doc: None,
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
                 static_params: Vec::new(),
                 receiver: Some(TypeExpr::Named {
                     name: "Result".to_string(),
@@ -2742,7 +3060,8 @@ mod tests {
     #[test]
     fn wildcard_then_extra_arm_reports_unreachable() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl { doc: None,
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
                 static_params: Vec::new(),
                 receiver: Some(TypeExpr::Named {
                     name: "Result".to_string(),
@@ -2780,7 +3099,8 @@ mod tests {
     #[test]
     fn string_is_not_primitive_and_is_nominal() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "s".to_string(),
                 value: Expr::String("ok".to_string()),
             }],
@@ -2800,7 +3120,8 @@ mod tests {
     #[test]
     fn checked_ir_is_emitted_for_assignments() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "x".to_string(),
                 value: Expr::Int("1".to_string()),
             }],
@@ -2819,7 +3140,8 @@ mod tests {
     #[test]
     fn checked_ir_preserves_call_shape() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "v".to_string(),
                 value: Expr::Call {
                     callee: Box::new(Expr::Ident("f".to_string())),
@@ -2843,11 +3165,13 @@ mod tests {
     fn checked_ir_emits_coerce_for_widening_assignment() {
         let program = Program {
             declarations: vec![
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("1".to_string()),
                 },
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "x".to_string(),
                     value: Expr::Float("2.0".to_string()),
                 },
@@ -2861,7 +3185,8 @@ mod tests {
     #[test]
     fn function_return_mismatch_produces_diagnostic() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl { doc: None,
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
                 static_params: Vec::new(),
                 receiver: Some(TypeExpr::Named {
                     name: "Example".to_string(),
@@ -2888,7 +3213,8 @@ mod tests {
     #[test]
     fn multi_arm_result_type_mismatch_produces_diagnostic() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl { doc: None,
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
                 static_params: Vec::new(),
                 receiver: Some(TypeExpr::Named {
                     name: "Example".to_string(),
@@ -2947,7 +3273,8 @@ mod tests {
     #[test]
     fn unknown_builtin_symbol_reports_diagnostic() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
                     macro_name: "builtin".to_string(),
@@ -2969,11 +3296,13 @@ mod tests {
     fn type_mismatch_diagnostic_contains_related_context() {
         let program = Program {
             declarations: vec![
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "x".to_string(),
                     value: Expr::List(vec![Expr::Int("1".to_string())]),
                 },
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "x".to_string(),
                     value: Expr::Dict(vec![(
                         Expr::Int("1".to_string()),
@@ -2997,11 +3326,13 @@ mod tests {
     fn call_inference_uses_function_signature_shape() {
         let program = Program {
             declarations: vec![
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "f".to_string(),
                     value: Expr::Ident("unknown_callable".to_string()),
                 },
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("f".to_string())),
@@ -3025,7 +3356,8 @@ mod tests {
     #[test]
     fn unify_mismatch_includes_obligation_trace() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "x".to_string(),
                 value: Expr::Call {
                     callee: Box::new(Expr::Int("1".to_string())),
@@ -3050,7 +3382,8 @@ mod tests {
     #[test]
     fn numeric_operator_requires_numeric_operands() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "x".to_string(),
                 value: Expr::Binary {
                     op: ParsedBinaryOp::Add,
@@ -3071,7 +3404,8 @@ mod tests {
     #[test]
     fn lower_macro_apply_keeps_static_args_in_ir() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "y".to_string(),
                 value: Expr::MacroApply {
                     macro_name: "builtin".to_string(),
@@ -3096,7 +3430,8 @@ mod tests {
     #[test]
     fn if_call_typechecks_with_labeled_closures() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "x".to_string(),
                 value: Expr::Call {
                     callee: Box::new(Expr::Ident("if".to_string())),
@@ -3129,7 +3464,8 @@ mod tests {
     #[test]
     fn cases_call_typechecks_with_when_closure() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "x".to_string(),
                 value: Expr::Call {
                     callee: Box::new(Expr::Ident("cases".to_string())),
@@ -3167,7 +3503,8 @@ mod tests {
     #[test]
     fn if_macro_form_is_rejected() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
                     macro_name: "if".to_string(),
@@ -3192,7 +3529,8 @@ mod tests {
     #[test]
     fn cases_macro_form_is_rejected() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
                     macro_name: "cases".to_string(),
@@ -3225,7 +3563,8 @@ mod tests {
     fn return_break_continue_lower_to_control_flow_ir() {
         let program = Program {
             declarations: vec![
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "r".to_string(),
                     value: Expr::MacroApply {
                         macro_name: "return".to_string(),
@@ -3233,7 +3572,8 @@ mod tests {
                         operand: Box::new(Expr::Int("1".to_string())),
                     },
                 },
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "b".to_string(),
                     value: Expr::MacroApply {
                         macro_name: "break".to_string(),
@@ -3241,7 +3581,8 @@ mod tests {
                         operand: Box::new(Expr::List(vec![Expr::Int("9".to_string())])),
                     },
                 },
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "c".to_string(),
                     value: Expr::MacroApply {
                         macro_name: "continue".to_string(),
@@ -3271,7 +3612,8 @@ mod tests {
     #[test]
     fn cast_macro_lowers_to_explicit_cast_ir() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
                     macro_name: "cast".to_string(),
@@ -3295,7 +3637,8 @@ mod tests {
     #[test]
     fn unresolved_identifier_reports_diagnostic() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "x".to_string(),
                 value: Expr::Ident("missing".to_string()),
             }],
@@ -3312,7 +3655,8 @@ mod tests {
     #[test]
     fn closure_lowers_to_typed_closure_ir() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "f".to_string(),
                 value: Expr::Closure {
                     params: vec![aura_frontend::ast::Param {
@@ -3341,7 +3685,8 @@ mod tests {
     #[test]
     fn builtin_macro_produces_function_type() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "w".to_string(),
                 value: Expr::MacroApply {
                     macro_name: "builtin".to_string(),
@@ -3364,7 +3709,8 @@ mod tests {
     #[test]
     fn dot_identifier_without_payload_is_void_typed() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "v".to_string(),
                 value: Expr::DotIdent {
                     name: "null".to_string(),
@@ -3386,7 +3732,8 @@ mod tests {
     #[test]
     fn function_params_are_available_in_body_scope() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl { doc: None,
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "id".to_string(),
@@ -3417,7 +3764,8 @@ mod tests {
     fn function_param_scope_does_not_leak_to_global() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "id".to_string(),
@@ -3434,7 +3782,8 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "z".to_string(),
                     value: Expr::Ident("x".to_string()),
                 },
@@ -3452,7 +3801,8 @@ mod tests {
     #[test]
     fn multi_arm_pattern_identifier_is_scoped_to_arm_body() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "m".to_string(),
                 value: Expr::MultiArm(vec![
                     aura_frontend::ast::Arm {
@@ -3481,7 +3831,8 @@ mod tests {
     fn pattern_identifier_does_not_leak_outside_multi_arm() {
         let program = Program {
             declarations: vec![
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "m".to_string(),
                     value: Expr::MultiArm(vec![
                         aura_frontend::ast::Arm {
@@ -3496,7 +3847,8 @@ mod tests {
                         },
                     ]),
                 },
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "z".to_string(),
                     value: Expr::Ident("v".to_string()),
                 },
@@ -3515,7 +3867,8 @@ mod tests {
     fn generic_function_call_static_arg_instantiates_signature() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: vec![ty_param("T")],
                     receiver: None,
                     name: "id".to_string(),
@@ -3532,7 +3885,8 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("id".to_string())),
@@ -3563,7 +3917,8 @@ mod tests {
     fn static_args_on_non_generic_call_report_diagnostic() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "f".to_string(),
@@ -3580,7 +3935,8 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("f".to_string())),
@@ -3608,7 +3964,8 @@ mod tests {
     fn generic_call_with_missing_static_arg_reports_arity_error() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: vec![ty_param("T")],
                     receiver: None,
                     name: "id".to_string(),
@@ -3625,7 +3982,8 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("id".to_string())),
@@ -3638,7 +3996,8 @@ mod tests {
                         trailing: Vec::new(),
                     },
                 },
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "z".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("id".to_string())),
@@ -3663,7 +4022,8 @@ mod tests {
     fn generic_call_partial_explicit_args_report_arity_error() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: vec![ty_param("T"), ty_param("U")],
                     receiver: None,
                     name: "pair_first".to_string(),
@@ -3680,7 +4040,8 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("pair_first".to_string())),
@@ -3708,7 +4069,8 @@ mod tests {
     fn empty_list_in_call_argument_uses_expected_element_type() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "takes_list".to_string(),
@@ -3728,7 +4090,8 @@ mod tests {
                     },
                     body: Expr::Int("0".to_string()),
                 }),
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("takes_list".to_string())),
@@ -3753,7 +4116,8 @@ mod tests {
     fn empty_dict_in_call_argument_uses_expected_key_value_types() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "takes_dict".to_string(),
@@ -3779,7 +4143,8 @@ mod tests {
                     },
                     body: Expr::Int("0".to_string()),
                 }),
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("takes_dict".to_string())),
@@ -3803,7 +4168,8 @@ mod tests {
     #[test]
     fn expected_type_guides_if_macro_branches() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl { doc: None,
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "pick".to_string(),
@@ -3850,7 +4216,8 @@ mod tests {
     #[test]
     fn expected_type_guides_cases_arm_bodies() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl { doc: None,
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "pick_case".to_string(),
@@ -3911,7 +4278,8 @@ mod tests {
     #[test]
     fn arm_guard_must_typecheck_as_bool() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "m".to_string(),
                 value: Expr::MultiArm(vec![
                     aura_frontend::ast::Arm {
@@ -3940,7 +4308,8 @@ mod tests {
     fn expected_list_type_guides_nested_elements() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "sum_list".to_string(),
@@ -3960,7 +4329,8 @@ mod tests {
                     },
                     body: Expr::Int("0".to_string()),
                 }),
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("sum_list".to_string())),
@@ -3985,7 +4355,8 @@ mod tests {
     fn expected_dict_type_guides_nested_entries() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "takes_dict".to_string(),
@@ -4011,7 +4382,8 @@ mod tests {
                     },
                     body: Expr::Int("0".to_string()),
                 }),
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("takes_dict".to_string())),
@@ -4039,7 +4411,8 @@ mod tests {
     fn expected_list_type_rejects_incompatible_element() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "sum_list".to_string(),
@@ -4059,7 +4432,8 @@ mod tests {
                     },
                     body: Expr::Int("0".to_string()),
                 }),
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("sum_list".to_string())),
@@ -4084,7 +4458,8 @@ mod tests {
     fn expected_return_type_guides_nested_call_inference() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "id_int".to_string(),
@@ -4101,7 +4476,8 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "outer".to_string(),
@@ -4138,7 +4514,8 @@ mod tests {
     #[test]
     fn label_expression_propagates_expected_type() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl { doc: None,
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "f".to_string(),
@@ -4165,7 +4542,8 @@ mod tests {
     #[test]
     fn dot_ident_payload_propagates_expected_type() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl { doc: None,
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "f".to_string(),
@@ -4192,7 +4570,8 @@ mod tests {
     #[test]
     fn untyped_macro_rule_is_error() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
                     macro_name: "unknown_macro".to_string(),
@@ -4213,7 +4592,8 @@ mod tests {
     #[test]
     fn malformed_if_lowering_uses_macro_apply_fallback_not_any() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
                     macro_name: "if".to_string(),
@@ -4234,7 +4614,8 @@ mod tests {
     #[test]
     fn malformed_cases_lowering_uses_macro_apply_fallback_not_any() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
                     macro_name: "cases".to_string(),
@@ -4255,7 +4636,8 @@ mod tests {
     #[test]
     fn list_type_expr_without_item_arg_reports_missing_type_arg() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl { doc: None,
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "f".to_string(),
@@ -4285,7 +4667,8 @@ mod tests {
     #[test]
     fn dict_type_expr_with_value_in_type_slot_reports_kind_error() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl { doc: None,
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "f".to_string(),
@@ -4321,7 +4704,8 @@ mod tests {
     #[test]
     fn array_type_expr_without_size_reports_missing_size_error() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl { doc: None,
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "f".to_string(),
@@ -4354,7 +4738,8 @@ mod tests {
     #[test]
     fn list_type_expr_with_extra_arg_reports_arity_error() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl { doc: None,
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "f".to_string(),
@@ -4393,7 +4778,8 @@ mod tests {
     #[test]
     fn bool_type_expr_with_any_arg_reports_arity_error() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl { doc: None,
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "f".to_string(),
@@ -4427,7 +4813,8 @@ mod tests {
     fn generic_param_type_resolves_inside_generic_function_signature() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: vec![ty_param("T")],
                     receiver: None,
                     name: "id".to_string(),
@@ -4444,7 +4831,8 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "f".to_string(),
                     value: Expr::Ident("id".to_string()),
                 },
@@ -4473,7 +4861,8 @@ mod tests {
     fn infer_hole_type_expr_resolves_to_infer_var() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "f".to_string(),
@@ -4490,7 +4879,8 @@ mod tests {
                     },
                     body: Expr::Int("0".to_string()),
                 }),
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "g".to_string(),
                     value: Expr::Ident("f".to_string()),
                 },
@@ -4515,7 +4905,8 @@ mod tests {
     fn explicit_generic_call_accepts_infer_hole_slots() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: vec![ty_param("T"), ty_param("U")],
                     receiver: None,
                     name: "first".to_string(),
@@ -4532,7 +4923,8 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("first".to_string())),
@@ -4562,7 +4954,8 @@ mod tests {
     fn interface_bound_failure_reports_diagnostic() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: vec![StaticParam {
                         name: "T".to_string(),
                         kind: StaticParamKind::Constraint(TypeExpr::Named {
@@ -4585,7 +4978,8 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("requires_iter".to_string())),
@@ -4617,7 +5011,8 @@ mod tests {
     fn static_bound_with_type_arg_reports_kind_error() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: vec![StaticParam {
                         name: "n".to_string(),
                         kind: StaticParamKind::Constraint(TypeExpr::Static(Box::new(
@@ -4642,7 +5037,8 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("requires_static".to_string())),
@@ -4674,7 +5070,8 @@ mod tests {
     fn static_bound_missing_arg_reports_diagnostic_on_omitted_static_args() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: vec![StaticParam {
                         name: "n".to_string(),
                         kind: StaticParamKind::Constraint(TypeExpr::Static(Box::new(
@@ -4699,7 +5096,8 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("requires_static".to_string())),
@@ -4724,7 +5122,8 @@ mod tests {
     fn unknown_interface_constraint_reports_diagnostic_in_solver_path() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl { doc: None,
+                Decl::Function(FunctionDecl {
+                    doc: None,
                     static_params: vec![StaticParam {
                         name: "T".to_string(),
                         kind: StaticParamKind::Constraint(TypeExpr::Named {
@@ -4747,7 +5146,8 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("f".to_string())),
@@ -4775,11 +5175,13 @@ mod tests {
     fn ir_wrapping_uses_central_conversion_decision_for_widening() {
         let program = Program {
             declarations: vec![
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("1".to_string()),
                 },
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("2".to_string()),
                 },
@@ -4799,11 +5201,13 @@ mod tests {
     fn implicit_assignability_rejects_explicit_only_cast_pair() {
         let program = Program {
             declarations: vec![
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "x".to_string(),
                     value: Expr::Float("1.5".to_string()),
                 },
-                Decl::Assign { doc: None,
+                Decl::Assign {
+                    doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("1".to_string()),
                 },
@@ -4821,7 +5225,8 @@ mod tests {
     #[test]
     fn comparison_operator_returns_bool() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "x".to_string(),
                 value: Expr::Binary {
                     op: ParsedBinaryOp::Gt,
@@ -4841,7 +5246,8 @@ mod tests {
     #[test]
     fn logical_operator_requires_bool_operands() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "x".to_string(),
                 value: Expr::Binary {
                     op: ParsedBinaryOp::And,
@@ -4862,7 +5268,8 @@ mod tests {
     #[test]
     fn mod_operator_is_typed_as_numeric_operator() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "x".to_string(),
                 value: Expr::Binary {
                     op: ParsedBinaryOp::Mod,
@@ -4882,7 +5289,8 @@ mod tests {
     #[test]
     fn parsed_cast_expression_typechecks_and_lowers_to_cast_ir() {
         let program = Program {
-            declarations: vec![Decl::Assign { doc: None,
+            declarations: vec![Decl::Assign {
+                doc: None,
                 name: "x".to_string(),
                 value: Expr::Cast {
                     expr: Box::new(Expr::Int("1".to_string())),
@@ -4903,5 +5311,265 @@ mod tests {
             .find(|d| d.name == "x")
             .expect("x declaration should exist");
         assert!(matches!(decl.value, CheckedExpr::Cast { .. }));
+    }
+
+    #[test]
+    fn pipe_operator_typechecks_as_function_application() {
+        let program = Program {
+            declarations: vec![
+                Decl::Function(FunctionDecl {
+                    doc: None,
+                    static_params: Vec::new(),
+                    receiver: None,
+                    name: "inc".to_string(),
+                    params: vec![aura_frontend::ast::Param {
+                        name: "x".to_string(),
+                        ty: TypeExpr::Named {
+                            name: "Int".to_string(),
+                            args: Vec::new(),
+                        },
+                    }],
+                    return_type: TypeExpr::Named {
+                        name: "Int".to_string(),
+                        args: Vec::new(),
+                    },
+                    body: Expr::Ident("x".to_string()),
+                }),
+                Decl::Assign {
+                    doc: None,
+                    name: "y".to_string(),
+                    value: Expr::Binary {
+                        op: ParsedBinaryOp::Pipe,
+                        lhs: Box::new(Expr::Int("1".to_string())),
+                        rhs: Box::new(Expr::Ident("inc".to_string())),
+                    },
+                },
+            ],
+        };
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        let y_ty = module.value_types.get("y").expect("y should exist");
+        assert!(matches!(module.types.get(*y_ty), Some(Ty::Int32)));
+    }
+
+    #[test]
+    fn call_with_placeholder_returns_function_type() {
+        let program = Program {
+            declarations: vec![
+                Decl::Function(FunctionDecl {
+                    doc: None,
+                    static_params: Vec::new(),
+                    receiver: None,
+                    name: "add".to_string(),
+                    params: vec![
+                        aura_frontend::ast::Param {
+                            name: "a".to_string(),
+                            ty: TypeExpr::Named {
+                                name: "Int".to_string(),
+                                args: Vec::new(),
+                            },
+                        },
+                        aura_frontend::ast::Param {
+                            name: "b".to_string(),
+                            ty: TypeExpr::Named {
+                                name: "Int".to_string(),
+                                args: Vec::new(),
+                            },
+                        },
+                    ],
+                    return_type: TypeExpr::Named {
+                        name: "Int".to_string(),
+                        args: Vec::new(),
+                    },
+                    body: Expr::Binary {
+                        op: ParsedBinaryOp::Add,
+                        lhs: Box::new(Expr::Ident("a".to_string())),
+                        rhs: Box::new(Expr::Ident("b".to_string())),
+                    },
+                }),
+                Decl::Assign {
+                    doc: None,
+                    name: "p".to_string(),
+                    value: Expr::Call {
+                        callee: Box::new(Expr::Ident("add".to_string())),
+                        static_args: Vec::new(),
+                        args: vec![Expr::Int("5".to_string()), Expr::Placeholder],
+                        trailing: Vec::new(),
+                    },
+                },
+            ],
+        };
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        let p_ty = module.value_types.get("p").expect("p should exist");
+        let Some(Ty::Func { params, ret }) = module.types.get(*p_ty) else {
+            panic!("p should be a function type")
+        };
+        assert_eq!(params.len(), 1);
+        assert!(matches!(module.types.get(params[0]), Some(Ty::Int32)));
+        assert!(matches!(module.types.get(*ret), Some(Ty::Int32)));
+    }
+
+    #[test]
+    fn pipe_operator_uses_placeholder_position_in_call_rhs() {
+        let program = Program {
+            declarations: vec![
+                Decl::Function(FunctionDecl {
+                    doc: None,
+                    static_params: Vec::new(),
+                    receiver: None,
+                    name: "add".to_string(),
+                    params: vec![
+                        aura_frontend::ast::Param {
+                            name: "a".to_string(),
+                            ty: TypeExpr::Named {
+                                name: "Int".to_string(),
+                                args: Vec::new(),
+                            },
+                        },
+                        aura_frontend::ast::Param {
+                            name: "b".to_string(),
+                            ty: TypeExpr::Named {
+                                name: "Int".to_string(),
+                                args: Vec::new(),
+                            },
+                        },
+                    ],
+                    return_type: TypeExpr::Named {
+                        name: "Int".to_string(),
+                        args: Vec::new(),
+                    },
+                    body: Expr::Binary {
+                        op: ParsedBinaryOp::Add,
+                        lhs: Box::new(Expr::Ident("a".to_string())),
+                        rhs: Box::new(Expr::Ident("b".to_string())),
+                    },
+                }),
+                Decl::Assign {
+                    doc: None,
+                    name: "y".to_string(),
+                    value: Expr::Binary {
+                        op: ParsedBinaryOp::Pipe,
+                        lhs: Box::new(Expr::Int("1".to_string())),
+                        rhs: Box::new(Expr::Call {
+                            callee: Box::new(Expr::Ident("add".to_string())),
+                            static_args: Vec::new(),
+                            args: vec![Expr::Placeholder, Expr::Int("2".to_string())],
+                            trailing: Vec::new(),
+                        }),
+                    },
+                },
+            ],
+        };
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        let y_ty = module.value_types.get("y").expect("y should exist");
+        assert!(matches!(module.types.get(*y_ty), Some(Ty::Int32)));
+    }
+
+    #[test]
+    fn enum_variant_assignment_typechecks_with_expected_enum() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                doc: None,
+                name: "res".to_string(),
+                value: Expr::Binary {
+                    op: ParsedBinaryOp::Colon,
+                    lhs: Box::new(Expr::DotIdent {
+                        name: "ok".to_string(),
+                        payload: Some(Box::new(Expr::Int("5".to_string()))),
+                    }),
+                    rhs: Box::new(Expr::TypeExpr(TypeExpr::Named {
+                        name: "enum".to_string(),
+                        args: vec![
+                            StaticArg::Type(TypeExpr::Struct(vec![(
+                                "err".to_string(),
+                                TypeExpr::Named {
+                                    name: "String".to_string(),
+                                    args: Vec::new(),
+                                },
+                            )])),
+                            StaticArg::Type(TypeExpr::Struct(vec![(
+                                "ok".to_string(),
+                                TypeExpr::Named {
+                                    name: "Int".to_string(),
+                                    args: Vec::new(),
+                                },
+                            )])),
+                        ],
+                    })),
+                },
+            }],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked.module.is_some());
+    }
+
+    #[test]
+    fn union_assignment_typechecks_when_value_matches_member() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                doc: None,
+                name: "n".to_string(),
+                value: Expr::Binary {
+                    op: ParsedBinaryOp::Colon,
+                    lhs: Box::new(Expr::Int("4".to_string())),
+                    rhs: Box::new(Expr::TypeExpr(TypeExpr::Named {
+                        name: "union".to_string(),
+                        args: vec![
+                            StaticArg::Type(TypeExpr::Named {
+                                name: "Int".to_string(),
+                                args: Vec::new(),
+                            }),
+                            StaticArg::Type(TypeExpr::Named {
+                                name: "Float".to_string(),
+                                args: Vec::new(),
+                            }),
+                        ],
+                    })),
+                },
+            }],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked.module.is_some());
+    }
+
+    #[test]
+    fn enum_variant_payload_mismatch_reports_type_error() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                doc: None,
+                name: "res".to_string(),
+                value: Expr::Binary {
+                    op: ParsedBinaryOp::Colon,
+                    lhs: Box::new(Expr::DotIdent {
+                        name: "ok".to_string(),
+                        payload: Some(Box::new(Expr::String("oops".to_string()))),
+                    }),
+                    rhs: Box::new(Expr::TypeExpr(TypeExpr::Named {
+                        name: "enum".to_string(),
+                        args: vec![StaticArg::Type(TypeExpr::Struct(vec![(
+                            "ok".to_string(),
+                            TypeExpr::Named {
+                                name: "Int".to_string(),
+                                args: Vec::new(),
+                            },
+                        )]))],
+                    })),
+                },
+            }],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked.module.is_none());
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 }

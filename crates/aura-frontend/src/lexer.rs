@@ -107,7 +107,9 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 '|' => {
-                    if self.peek_n(1) == Some('|') {
+                    if self.peek_n(1) == Some('>') {
+                        self.push_pair(TokenKind::PipeArrow);
+                    } else if self.peek_n(1) == Some('|') {
                         self.push_pair(TokenKind::PipePipe);
                     } else {
                         return Err(self.error_here(Issue::LexPipeForm));

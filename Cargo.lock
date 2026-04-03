@@ -79,12 +79,22 @@ version = "0.1.0"
 dependencies = [
  "anstyle",
  "anyhow",
+ "aura-codegen",
  "aura-diagnostics",
  "aura-frontend",
  "aura-typecheck",
  "clap",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "aura-codegen"
+version = "0.1.0"
+dependencies = [
+ "aura-diagnostics",
+ "aura-frontend",
+ "aura-typecheck",
 ]
 
 [[package]]

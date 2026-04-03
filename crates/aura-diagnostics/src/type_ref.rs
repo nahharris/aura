@@ -45,6 +45,8 @@ pub enum TypeRef {
     },
     Tuple(Vec<TypeRef>),
     Struct(Vec<(String, TypeRef)>),
+    Union(Vec<TypeRef>),
+    Enum(Vec<(String, Option<TypeRef>)>),
     Unknown,
 }
 
@@ -109,6 +111,25 @@ impl fmt::Display for TypeRef {
                     .collect::<Vec<_>>()
                     .join(", ");
                 write!(f, "{{{joined}}}")
+            }
+            Self::Union(items) => {
+                let joined = items
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                write!(f, "union({joined})")
+            }
+            Self::Enum(variants) => {
+                let joined = variants
+                    .iter()
+                    .map(|(name, ty)| match ty {
+                        Some(inner) => format!("{name}: {inner}"),
+                        None => name.clone(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "enum({joined})")
             }
             Self::Unknown => f.write_str("<unknown>"),
         }

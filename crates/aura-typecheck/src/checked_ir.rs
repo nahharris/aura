@@ -48,6 +48,8 @@ pub enum CheckedExpr {
         name: String,
         payload: Option<Box<CheckedExpr>>,
     },
+    Tuple(Vec<CheckedExpr>),
+    Struct(Vec<(String, CheckedExpr)>),
     Closure {
         params: Vec<String>,
         return_ty: Option<TyId>,
