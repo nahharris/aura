@@ -111,11 +111,11 @@ mod tests {
     fn resolver_reports_duplicate_symbols() {
         let program = Program {
             declarations: vec![
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("1".to_string()),
                 },
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("2".to_string()),
                 },
@@ -134,11 +134,11 @@ mod tests {
     fn resolver_collects_distinct_symbols() {
         let program = Program {
             declarations: vec![
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("1".to_string()),
                 },
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "y".to_string(),
                     value: Expr::Int("2".to_string()),
                 },

@@ -140,7 +140,7 @@ impl TypeChecker {
         self.module_checker.check_program(program);
 
         for decl in &program.declarations {
-            if let Decl::Assign { name, value } = decl {
+            if let Decl::Assign { name, value, .. } = decl {
                 let prev_span = self.current_expr_span;
                 self.current_expr_span = Expr::span(value);
                 self.push_obligation(format!("checking declaration `{name}`"));
@@ -2690,11 +2690,11 @@ mod tests {
     fn allows_implicit_numeric_widening_on_reassignment() {
         let program = Program {
             declarations: vec![
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("1".to_string()),
                 },
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("2".to_string()),
                 },
@@ -2708,7 +2708,7 @@ mod tests {
     #[test]
     fn multi_arm_without_fallback_reports_non_exhaustive() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl {
+            declarations: vec![Decl::Function(FunctionDecl { doc: None,
                 static_params: Vec::new(),
                 receiver: Some(TypeExpr::Named {
                     name: "Result".to_string(),
@@ -2742,7 +2742,7 @@ mod tests {
     #[test]
     fn wildcard_then_extra_arm_reports_unreachable() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl {
+            declarations: vec![Decl::Function(FunctionDecl { doc: None,
                 static_params: Vec::new(),
                 receiver: Some(TypeExpr::Named {
                     name: "Result".to_string(),
@@ -2780,7 +2780,7 @@ mod tests {
     #[test]
     fn string_is_not_primitive_and_is_nominal() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "s".to_string(),
                 value: Expr::String("ok".to_string()),
             }],
@@ -2800,7 +2800,7 @@ mod tests {
     #[test]
     fn checked_ir_is_emitted_for_assignments() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "x".to_string(),
                 value: Expr::Int("1".to_string()),
             }],
@@ -2819,7 +2819,7 @@ mod tests {
     #[test]
     fn checked_ir_preserves_call_shape() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "v".to_string(),
                 value: Expr::Call {
                     callee: Box::new(Expr::Ident("f".to_string())),
@@ -2843,11 +2843,11 @@ mod tests {
     fn checked_ir_emits_coerce_for_widening_assignment() {
         let program = Program {
             declarations: vec![
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("1".to_string()),
                 },
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "x".to_string(),
                     value: Expr::Float("2.0".to_string()),
                 },
@@ -2861,7 +2861,7 @@ mod tests {
     #[test]
     fn function_return_mismatch_produces_diagnostic() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl {
+            declarations: vec![Decl::Function(FunctionDecl { doc: None,
                 static_params: Vec::new(),
                 receiver: Some(TypeExpr::Named {
                     name: "Example".to_string(),
@@ -2888,7 +2888,7 @@ mod tests {
     #[test]
     fn multi_arm_result_type_mismatch_produces_diagnostic() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl {
+            declarations: vec![Decl::Function(FunctionDecl { doc: None,
                 static_params: Vec::new(),
                 receiver: Some(TypeExpr::Named {
                     name: "Example".to_string(),
@@ -2947,7 +2947,7 @@ mod tests {
     #[test]
     fn unknown_builtin_symbol_reports_diagnostic() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
                     macro_name: "builtin".to_string(),
@@ -2969,11 +2969,11 @@ mod tests {
     fn type_mismatch_diagnostic_contains_related_context() {
         let program = Program {
             declarations: vec![
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "x".to_string(),
                     value: Expr::List(vec![Expr::Int("1".to_string())]),
                 },
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "x".to_string(),
                     value: Expr::Dict(vec![(
                         Expr::Int("1".to_string()),
@@ -2997,11 +2997,11 @@ mod tests {
     fn call_inference_uses_function_signature_shape() {
         let program = Program {
             declarations: vec![
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "f".to_string(),
                     value: Expr::Ident("unknown_callable".to_string()),
                 },
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("f".to_string())),
@@ -3025,7 +3025,7 @@ mod tests {
     #[test]
     fn unify_mismatch_includes_obligation_trace() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "x".to_string(),
                 value: Expr::Call {
                     callee: Box::new(Expr::Int("1".to_string())),
@@ -3050,7 +3050,7 @@ mod tests {
     #[test]
     fn numeric_operator_requires_numeric_operands() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "x".to_string(),
                 value: Expr::Binary {
                     op: ParsedBinaryOp::Add,
@@ -3071,7 +3071,7 @@ mod tests {
     #[test]
     fn lower_macro_apply_keeps_static_args_in_ir() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "y".to_string(),
                 value: Expr::MacroApply {
                     macro_name: "builtin".to_string(),
@@ -3096,7 +3096,7 @@ mod tests {
     #[test]
     fn if_call_typechecks_with_labeled_closures() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "x".to_string(),
                 value: Expr::Call {
                     callee: Box::new(Expr::Ident("if".to_string())),
@@ -3129,7 +3129,7 @@ mod tests {
     #[test]
     fn cases_call_typechecks_with_when_closure() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "x".to_string(),
                 value: Expr::Call {
                     callee: Box::new(Expr::Ident("cases".to_string())),
@@ -3167,7 +3167,7 @@ mod tests {
     #[test]
     fn if_macro_form_is_rejected() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
                     macro_name: "if".to_string(),
@@ -3192,7 +3192,7 @@ mod tests {
     #[test]
     fn cases_macro_form_is_rejected() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
                     macro_name: "cases".to_string(),
@@ -3225,7 +3225,7 @@ mod tests {
     fn return_break_continue_lower_to_control_flow_ir() {
         let program = Program {
             declarations: vec![
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "r".to_string(),
                     value: Expr::MacroApply {
                         macro_name: "return".to_string(),
@@ -3233,7 +3233,7 @@ mod tests {
                         operand: Box::new(Expr::Int("1".to_string())),
                     },
                 },
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "b".to_string(),
                     value: Expr::MacroApply {
                         macro_name: "break".to_string(),
@@ -3241,7 +3241,7 @@ mod tests {
                         operand: Box::new(Expr::List(vec![Expr::Int("9".to_string())])),
                     },
                 },
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "c".to_string(),
                     value: Expr::MacroApply {
                         macro_name: "continue".to_string(),
@@ -3271,7 +3271,7 @@ mod tests {
     #[test]
     fn cast_macro_lowers_to_explicit_cast_ir() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
                     macro_name: "cast".to_string(),
@@ -3295,7 +3295,7 @@ mod tests {
     #[test]
     fn unresolved_identifier_reports_diagnostic() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "x".to_string(),
                 value: Expr::Ident("missing".to_string()),
             }],
@@ -3312,7 +3312,7 @@ mod tests {
     #[test]
     fn closure_lowers_to_typed_closure_ir() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "f".to_string(),
                 value: Expr::Closure {
                     params: vec![aura_frontend::ast::Param {
@@ -3341,7 +3341,7 @@ mod tests {
     #[test]
     fn builtin_macro_produces_function_type() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "w".to_string(),
                 value: Expr::MacroApply {
                     macro_name: "builtin".to_string(),
@@ -3364,7 +3364,7 @@ mod tests {
     #[test]
     fn dot_identifier_without_payload_is_void_typed() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "v".to_string(),
                 value: Expr::DotIdent {
                     name: "null".to_string(),
@@ -3386,7 +3386,7 @@ mod tests {
     #[test]
     fn function_params_are_available_in_body_scope() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl {
+            declarations: vec![Decl::Function(FunctionDecl { doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "id".to_string(),
@@ -3417,7 +3417,7 @@ mod tests {
     fn function_param_scope_does_not_leak_to_global() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "id".to_string(),
@@ -3434,7 +3434,7 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "z".to_string(),
                     value: Expr::Ident("x".to_string()),
                 },
@@ -3452,7 +3452,7 @@ mod tests {
     #[test]
     fn multi_arm_pattern_identifier_is_scoped_to_arm_body() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "m".to_string(),
                 value: Expr::MultiArm(vec![
                     aura_frontend::ast::Arm {
@@ -3481,7 +3481,7 @@ mod tests {
     fn pattern_identifier_does_not_leak_outside_multi_arm() {
         let program = Program {
             declarations: vec![
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "m".to_string(),
                     value: Expr::MultiArm(vec![
                         aura_frontend::ast::Arm {
@@ -3496,7 +3496,7 @@ mod tests {
                         },
                     ]),
                 },
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "z".to_string(),
                     value: Expr::Ident("v".to_string()),
                 },
@@ -3515,7 +3515,7 @@ mod tests {
     fn generic_function_call_static_arg_instantiates_signature() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: vec![ty_param("T")],
                     receiver: None,
                     name: "id".to_string(),
@@ -3532,7 +3532,7 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("id".to_string())),
@@ -3563,7 +3563,7 @@ mod tests {
     fn static_args_on_non_generic_call_report_diagnostic() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "f".to_string(),
@@ -3580,7 +3580,7 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("f".to_string())),
@@ -3608,7 +3608,7 @@ mod tests {
     fn generic_call_with_missing_static_arg_reports_arity_error() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: vec![ty_param("T")],
                     receiver: None,
                     name: "id".to_string(),
@@ -3625,7 +3625,7 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("id".to_string())),
@@ -3638,7 +3638,7 @@ mod tests {
                         trailing: Vec::new(),
                     },
                 },
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "z".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("id".to_string())),
@@ -3663,7 +3663,7 @@ mod tests {
     fn generic_call_partial_explicit_args_report_arity_error() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: vec![ty_param("T"), ty_param("U")],
                     receiver: None,
                     name: "pair_first".to_string(),
@@ -3680,7 +3680,7 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("pair_first".to_string())),
@@ -3708,7 +3708,7 @@ mod tests {
     fn empty_list_in_call_argument_uses_expected_element_type() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "takes_list".to_string(),
@@ -3728,7 +3728,7 @@ mod tests {
                     },
                     body: Expr::Int("0".to_string()),
                 }),
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("takes_list".to_string())),
@@ -3753,7 +3753,7 @@ mod tests {
     fn empty_dict_in_call_argument_uses_expected_key_value_types() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "takes_dict".to_string(),
@@ -3779,7 +3779,7 @@ mod tests {
                     },
                     body: Expr::Int("0".to_string()),
                 }),
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("takes_dict".to_string())),
@@ -3803,7 +3803,7 @@ mod tests {
     #[test]
     fn expected_type_guides_if_macro_branches() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl {
+            declarations: vec![Decl::Function(FunctionDecl { doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "pick".to_string(),
@@ -3850,7 +3850,7 @@ mod tests {
     #[test]
     fn expected_type_guides_cases_arm_bodies() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl {
+            declarations: vec![Decl::Function(FunctionDecl { doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "pick_case".to_string(),
@@ -3911,7 +3911,7 @@ mod tests {
     #[test]
     fn arm_guard_must_typecheck_as_bool() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "m".to_string(),
                 value: Expr::MultiArm(vec![
                     aura_frontend::ast::Arm {
@@ -3940,7 +3940,7 @@ mod tests {
     fn expected_list_type_guides_nested_elements() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "sum_list".to_string(),
@@ -3960,7 +3960,7 @@ mod tests {
                     },
                     body: Expr::Int("0".to_string()),
                 }),
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("sum_list".to_string())),
@@ -3985,7 +3985,7 @@ mod tests {
     fn expected_dict_type_guides_nested_entries() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "takes_dict".to_string(),
@@ -4011,7 +4011,7 @@ mod tests {
                     },
                     body: Expr::Int("0".to_string()),
                 }),
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("takes_dict".to_string())),
@@ -4039,7 +4039,7 @@ mod tests {
     fn expected_list_type_rejects_incompatible_element() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "sum_list".to_string(),
@@ -4059,7 +4059,7 @@ mod tests {
                     },
                     body: Expr::Int("0".to_string()),
                 }),
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("sum_list".to_string())),
@@ -4084,7 +4084,7 @@ mod tests {
     fn expected_return_type_guides_nested_call_inference() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "id_int".to_string(),
@@ -4101,7 +4101,7 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "outer".to_string(),
@@ -4138,7 +4138,7 @@ mod tests {
     #[test]
     fn label_expression_propagates_expected_type() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl {
+            declarations: vec![Decl::Function(FunctionDecl { doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "f".to_string(),
@@ -4165,7 +4165,7 @@ mod tests {
     #[test]
     fn dot_ident_payload_propagates_expected_type() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl {
+            declarations: vec![Decl::Function(FunctionDecl { doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "f".to_string(),
@@ -4192,7 +4192,7 @@ mod tests {
     #[test]
     fn untyped_macro_rule_is_error() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
                     macro_name: "unknown_macro".to_string(),
@@ -4213,7 +4213,7 @@ mod tests {
     #[test]
     fn malformed_if_lowering_uses_macro_apply_fallback_not_any() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
                     macro_name: "if".to_string(),
@@ -4234,7 +4234,7 @@ mod tests {
     #[test]
     fn malformed_cases_lowering_uses_macro_apply_fallback_not_any() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
                     macro_name: "cases".to_string(),
@@ -4255,7 +4255,7 @@ mod tests {
     #[test]
     fn list_type_expr_without_item_arg_reports_missing_type_arg() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl {
+            declarations: vec![Decl::Function(FunctionDecl { doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "f".to_string(),
@@ -4285,7 +4285,7 @@ mod tests {
     #[test]
     fn dict_type_expr_with_value_in_type_slot_reports_kind_error() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl {
+            declarations: vec![Decl::Function(FunctionDecl { doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "f".to_string(),
@@ -4321,7 +4321,7 @@ mod tests {
     #[test]
     fn array_type_expr_without_size_reports_missing_size_error() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl {
+            declarations: vec![Decl::Function(FunctionDecl { doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "f".to_string(),
@@ -4354,7 +4354,7 @@ mod tests {
     #[test]
     fn list_type_expr_with_extra_arg_reports_arity_error() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl {
+            declarations: vec![Decl::Function(FunctionDecl { doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "f".to_string(),
@@ -4393,7 +4393,7 @@ mod tests {
     #[test]
     fn bool_type_expr_with_any_arg_reports_arity_error() {
         let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl {
+            declarations: vec![Decl::Function(FunctionDecl { doc: None,
                 static_params: Vec::new(),
                 receiver: None,
                 name: "f".to_string(),
@@ -4427,7 +4427,7 @@ mod tests {
     fn generic_param_type_resolves_inside_generic_function_signature() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: vec![ty_param("T")],
                     receiver: None,
                     name: "id".to_string(),
@@ -4444,7 +4444,7 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "f".to_string(),
                     value: Expr::Ident("id".to_string()),
                 },
@@ -4473,7 +4473,7 @@ mod tests {
     fn infer_hole_type_expr_resolves_to_infer_var() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: Vec::new(),
                     receiver: None,
                     name: "f".to_string(),
@@ -4490,7 +4490,7 @@ mod tests {
                     },
                     body: Expr::Int("0".to_string()),
                 }),
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "g".to_string(),
                     value: Expr::Ident("f".to_string()),
                 },
@@ -4515,7 +4515,7 @@ mod tests {
     fn explicit_generic_call_accepts_infer_hole_slots() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: vec![ty_param("T"), ty_param("U")],
                     receiver: None,
                     name: "first".to_string(),
@@ -4532,7 +4532,7 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("first".to_string())),
@@ -4562,7 +4562,7 @@ mod tests {
     fn interface_bound_failure_reports_diagnostic() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: vec![StaticParam {
                         name: "T".to_string(),
                         kind: StaticParamKind::Constraint(TypeExpr::Named {
@@ -4585,7 +4585,7 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("requires_iter".to_string())),
@@ -4617,7 +4617,7 @@ mod tests {
     fn static_bound_with_type_arg_reports_kind_error() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: vec![StaticParam {
                         name: "n".to_string(),
                         kind: StaticParamKind::Constraint(TypeExpr::Static(Box::new(
@@ -4642,7 +4642,7 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("requires_static".to_string())),
@@ -4674,7 +4674,7 @@ mod tests {
     fn static_bound_missing_arg_reports_diagnostic_on_omitted_static_args() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: vec![StaticParam {
                         name: "n".to_string(),
                         kind: StaticParamKind::Constraint(TypeExpr::Static(Box::new(
@@ -4699,7 +4699,7 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("requires_static".to_string())),
@@ -4724,7 +4724,7 @@ mod tests {
     fn unknown_interface_constraint_reports_diagnostic_in_solver_path() {
         let program = Program {
             declarations: vec![
-                Decl::Function(FunctionDecl {
+                Decl::Function(FunctionDecl { doc: None,
                     static_params: vec![StaticParam {
                         name: "T".to_string(),
                         kind: StaticParamKind::Constraint(TypeExpr::Named {
@@ -4747,7 +4747,7 @@ mod tests {
                     },
                     body: Expr::Ident("x".to_string()),
                 }),
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
                         callee: Box::new(Expr::Ident("f".to_string())),
@@ -4775,11 +4775,11 @@ mod tests {
     fn ir_wrapping_uses_central_conversion_decision_for_widening() {
         let program = Program {
             declarations: vec![
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("1".to_string()),
                 },
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("2".to_string()),
                 },
@@ -4799,11 +4799,11 @@ mod tests {
     fn implicit_assignability_rejects_explicit_only_cast_pair() {
         let program = Program {
             declarations: vec![
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "x".to_string(),
                     value: Expr::Float("1.5".to_string()),
                 },
-                Decl::Assign {
+                Decl::Assign { doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("1".to_string()),
                 },
@@ -4821,7 +4821,7 @@ mod tests {
     #[test]
     fn comparison_operator_returns_bool() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "x".to_string(),
                 value: Expr::Binary {
                     op: ParsedBinaryOp::Gt,
@@ -4841,7 +4841,7 @@ mod tests {
     #[test]
     fn logical_operator_requires_bool_operands() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "x".to_string(),
                 value: Expr::Binary {
                     op: ParsedBinaryOp::And,
@@ -4862,7 +4862,7 @@ mod tests {
     #[test]
     fn mod_operator_is_typed_as_numeric_operator() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "x".to_string(),
                 value: Expr::Binary {
                     op: ParsedBinaryOp::Mod,
@@ -4882,7 +4882,7 @@ mod tests {
     #[test]
     fn parsed_cast_expression_typechecks_and_lowers_to_cast_ir() {
         let program = Program {
-            declarations: vec![Decl::Assign {
+            declarations: vec![Decl::Assign { doc: None,
                 name: "x".to_string(),
                 value: Expr::Cast {
                     expr: Box::new(Expr::Int("1".to_string())),

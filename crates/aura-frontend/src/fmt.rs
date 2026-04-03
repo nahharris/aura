@@ -189,8 +189,14 @@ impl<'a> Formatter<'a> {
 
     fn write_decl(&mut self, decl: &Decl) {
         match decl {
-            Decl::Assign { name, value } => {
+            Decl::Assign {
+                name, value, doc, ..
+            } => {
                 self.write_indent();
+                if let Some(doc) = doc {
+                    self.write_doc_prefix(&doc.markdown);
+                    self.out.push(' ');
+                }
                 self.out.push_str("def ");
                 self.out.push_str(name);
                 self.out.push_str(" = ");
@@ -212,6 +218,10 @@ impl<'a> Formatter<'a> {
 
     fn write_function(&mut self, fun: &FunctionDecl) {
         self.write_indent();
+        if let Some(doc) = &fun.doc {
+            self.write_doc_prefix(&doc.markdown);
+            self.out.push(' ');
+        }
         self.out.push_str("def");
         self.write_static_params(&fun.static_params);
         self.out.push(' ');
@@ -255,6 +265,14 @@ impl<'a> Formatter<'a> {
                 self.write_type_expr(ty);
             }
         }
+        self.out.push(']');
+    }
+
+    fn write_doc_prefix(&mut self, markdown: &str) {
+        self.out.push_str("doc[");
+        self.out.push('"');
+        self.out.push_str(&escape_string_literal(markdown));
+        self.out.push('"');
         self.out.push(']');
     }
 
@@ -596,6 +614,20 @@ fn expr_to_inline(expr: &Expr) -> String {
         Expr::Member { object, field } => format!("{}.{}", expr_to_inline(object), field),
         _ => "<expr>".to_string(),
     }
+}
+
+fn escape_string_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 #[cfg(test)]

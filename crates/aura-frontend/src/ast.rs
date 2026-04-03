@@ -6,9 +6,25 @@ pub struct Program {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decl {
     Macro(MacroDecl),
-    Assign { name: String, value: Expr },
+    Assign {
+        name: String,
+        value: Expr,
+        doc: Option<DocAttribute>,
+    },
     Function(FunctionDecl),
     Use(UseDecl),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocAttribute {
+    pub markdown: String,
+    pub symbol_docs: Vec<SymbolDoc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolDoc {
+    pub name: String,
+    pub doc: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +44,7 @@ pub struct FunctionDecl {
     pub params: Vec<Param>,
     pub return_type: TypeExpr,
     pub body: Expr,
+    pub doc: Option<DocAttribute>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

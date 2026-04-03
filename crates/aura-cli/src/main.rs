@@ -7,6 +7,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use anstyle::{AnsiColor, Color, Effects, Style};
 use aura_diagnostics::{Diagnostic, Severity, Span};
+use aura_frontend::ast::{Decl, Program};
 use aura_frontend::{FormatOptions, Parser, format_source, unified_diff};
 use aura_typecheck::checked_ir::{
     BinaryOpKind, CheckedExpr, CheckedStaticArg, CheckedStaticValue, CheckedTypeExpr,
@@ -44,6 +45,12 @@ enum Commands {
         indent_width: usize,
         #[arg(long, default_value_t = 100)]
         max_width: usize,
+    },
+    Doc {
+        input: PathBuf,
+        symbol: Option<String>,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
+        format: OutputFormat,
     },
 }
 
@@ -212,7 +219,116 @@ fn run() -> Result<ExitCode> {
             indent_width,
             max_width,
         } => fmt_cmd(&input, write, check, indent_width, max_width),
+        Commands::Doc {
+            input,
+            symbol,
+            format,
+        } => doc_cmd(&input, symbol.as_deref(), format),
     }
+}
+
+#[derive(Debug, Serialize)]
+struct DocRecord {
+    symbol: String,
+    doc: String,
+}
+
+fn doc_cmd(input: &Path, symbol: Option<&str>, format: OutputFormat) -> Result<ExitCode> {
+    let source = fs::read_to_string(input)
+        .with_context(|| format!("failed to read source file '{}'", input.display()))?;
+    let program = match Parser::parse_source(&source) {
+        Ok(program) => program,
+        Err(diag) => {
+            print_diagnostics(&[diag], DiagnosticsFormat::Pretty, input, &source)?;
+            return Ok(ExitCode::from(1));
+        }
+    };
+    let docs = collect_docs(&program);
+
+    if let Some(symbol) = symbol {
+        if let Some(doc) = docs.get(symbol) {
+            match format {
+                OutputFormat::Pretty => {
+                    println!("# {symbol}\n\n{doc}");
+                }
+                OutputFormat::Json => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&DocRecord {
+                            symbol: symbol.to_string(),
+                            doc: doc.clone(),
+                        })?
+                    );
+                }
+            }
+            return Ok(ExitCode::SUCCESS);
+        }
+        eprintln!("No documentation found for symbol `{symbol}`");
+        return Ok(ExitCode::from(1));
+    }
+
+    let mut records = docs
+        .into_iter()
+        .map(|(symbol, doc)| DocRecord { symbol, doc })
+        .collect::<Vec<_>>();
+    records.sort_by(|a, b| a.symbol.cmp(&b.symbol));
+
+    match format {
+        OutputFormat::Pretty => {
+            for (i, record) in records.iter().enumerate() {
+                if i > 0 {
+                    println!();
+                }
+                println!("# {}\n\n{}", record.symbol, record.doc);
+            }
+        }
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&records)?);
+        }
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+fn collect_docs(program: &Program) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for decl in &program.declarations {
+        match decl {
+            Decl::Assign { name, doc, .. } => {
+                if let Some(doc) = doc {
+                    out.insert(name.clone(), doc.markdown.clone());
+                    for symbol_doc in &doc.symbol_docs {
+                        if symbol_doc.name != *name {
+                            out.insert(symbol_doc.name.clone(), symbol_doc.doc.clone());
+                        }
+                    }
+                }
+            }
+            Decl::Function(function) => {
+                if let Some(doc) = &function.doc {
+                    out.insert(function.name.clone(), doc.markdown.clone());
+                    for symbol_doc in &doc.symbol_docs {
+                        if symbol_doc.name == "return" {
+                            out.insert(
+                                format!("{}.return", function.name),
+                                symbol_doc.doc.clone(),
+                            );
+                        } else if function.params.iter().any(|p| p.name == symbol_doc.name) {
+                            out.insert(
+                                format!("{}.{}", function.name, symbol_doc.name),
+                                symbol_doc.doc.clone(),
+                            );
+                        } else if symbol_doc.name != function.name {
+                            out.insert(symbol_doc.name.clone(), symbol_doc.doc.clone());
+                        }
+                    }
+                }
+            }
+            Decl::Macro(_) => {}
+            Decl::Use(_) => {}
+        }
+    }
+    out
 }
 
 fn fmt_cmd(

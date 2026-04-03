@@ -1,8 +1,9 @@
 #![allow(clippy::result_large_err)]
 
 use crate::ast::{
-    Arm, BinaryOp, Decl, Expr, FunctionDecl, LabeledClosureArg, MacroDecl, Param, Pattern, Program,
-    StaticArg, StaticParam, StaticParamKind, StaticValueExpr, TypeExpr, UseDecl,
+    Arm, BinaryOp, Decl, DocAttribute, Expr, FunctionDecl, LabeledClosureArg, MacroDecl, Param,
+    Pattern, Program, StaticArg, StaticParam, StaticParamKind, StaticValueExpr, SymbolDoc,
+    TypeExpr, UseDecl,
 };
 use crate::lexer::lex;
 use crate::static_eval::{MinimalStaticChecker, StaticSatisfies};
@@ -11,7 +12,7 @@ use aura_diagnostics::{Diagnostic, Issue, Stage};
 use std::collections::HashSet;
 
 const BUILTIN_MACROS: &[&str] = &[
-    "def", "let", "const", "inline", "builtin", "return", "break", "continue", "loop",
+    "def", "let", "const", "inline", "builtin", "return", "break", "continue", "loop", "doc",
 ];
 
 pub type ParseError = Diagnostic;
@@ -91,20 +92,51 @@ where
     }
 
     fn parse_decl(&mut self) -> Result<Decl, ParseError> {
+        let pending_doc = if self.peek_ident_is("doc") {
+            Some(self.parse_doc_attribute()?)
+        } else {
+            None
+        };
+
         if self.peek_is(&TokenKind::Defmacro) {
+            if pending_doc.is_some() {
+                return Err(self.error_here(
+                    "doc attribute can only annotate a `def` declaration",
+                    vec!["def"],
+                    Some("use `doc[...] def ...`".to_string()),
+                ));
+            }
             return self.parse_macro_decl();
         }
 
         if self.peek_ident_is("use") {
+            if pending_doc.is_some() {
+                return Err(self.error_here(
+                    "doc attribute can only annotate a `def` declaration",
+                    vec!["def"],
+                    Some("use `doc[...] def ...`".to_string()),
+                ));
+            }
             return self.parse_use_decl();
         }
 
         if self.peek_ident_is("def") && self.looks_like_function_decl() {
-            return self.parse_function_decl();
+            return self.parse_function_decl(pending_doc);
         }
 
         if self.peek_ident_is("def") {
-            return self.parse_static_def_assignment_decl();
+            return self.parse_static_def_assignment_decl(pending_doc);
+        }
+
+        if pending_doc.is_some() {
+            return Err(self.error_here(
+                "doc attribute must be immediately followed by `def`",
+                vec!["def"],
+                Some(
+                    "use `doc[...] def symbol = ...` or `doc[...] def name(...) -> T { ... }`"
+                        .to_string(),
+                ),
+            ));
         }
 
         Err(self.error_here(
@@ -114,7 +146,10 @@ where
         ))
     }
 
-    fn parse_static_def_assignment_decl(&mut self) -> Result<Decl, ParseError> {
+    fn parse_static_def_assignment_decl(
+        &mut self,
+        doc: Option<DocAttribute>,
+    ) -> Result<Decl, ParseError> {
         self.expect_ident_exact("def")?;
         let name = self.expect_ident("expected declaration name after 'def'")?;
         self.ensure_not_macro_symbol(&name, "declaration name")?;
@@ -124,7 +159,30 @@ where
             vec!["="],
         )?;
         let value = self.parse_expr()?;
-        Ok(Decl::Assign { name, value })
+        Ok(Decl::Assign { name, value, doc })
+    }
+
+    fn parse_doc_attribute(&mut self) -> Result<DocAttribute, ParseError> {
+        self.expect_ident_exact("doc")?;
+        let static_args = self.parse_static_args()?;
+        if static_args.len() != 1 {
+            return Err(self.error_here(
+                "doc requires exactly one static string argument",
+                vec!["string"],
+                Some("use `doc[\"...markdown...\"] def ...`".to_string()),
+            ));
+        }
+        let markdown = match &static_args[0] {
+            StaticArg::Value(StaticValueExpr::String(s)) => s.clone(),
+            _ => {
+                return Err(self.error_here(
+                    "doc static argument must be a string literal",
+                    vec!["string"],
+                    Some("use `doc[\"...markdown...\"]`".to_string()),
+                ));
+            }
+        };
+        Ok(build_doc_attribute(markdown))
     }
 
     fn ensure_not_macro_symbol(&self, name: &str, context: &str) -> Result<(), ParseError> {
@@ -146,7 +204,7 @@ where
         Ok(Decl::Use(UseDecl { target }))
     }
 
-    fn parse_function_decl(&mut self) -> Result<Decl, ParseError> {
+    fn parse_function_decl(&mut self, doc: Option<DocAttribute>) -> Result<Decl, ParseError> {
         self.expect_ident_exact("def")?;
 
         let static_params = if self.peek_is(&TokenKind::LBracket) {
@@ -186,6 +244,7 @@ where
             params,
             return_type,
             body,
+            doc,
         }))
     }
 
@@ -1344,6 +1403,67 @@ fn same_token_variant(left: &TokenKind, right: &TokenKind) -> bool {
     )
 }
 
+fn build_doc_attribute(markdown: String) -> DocAttribute {
+    let mut symbol_docs = Vec::new();
+    let mut in_args = false;
+    let mut pending_returns = false;
+
+    for raw_line in markdown.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("# ") {
+            let name = rest.trim().to_string();
+            if !name.is_empty() {
+                symbol_docs.push(SymbolDoc {
+                    name,
+                    doc: markdown.clone(),
+                });
+            }
+            in_args = false;
+            pending_returns = false;
+            continue;
+        }
+        if line.eq_ignore_ascii_case("## Arguments") {
+            in_args = true;
+            pending_returns = false;
+            continue;
+        }
+        if line.eq_ignore_ascii_case("## Returns") {
+            in_args = false;
+            pending_returns = true;
+            continue;
+        }
+
+        if in_args {
+            if let Some(rest) = line.strip_prefix("- ") {
+                let name_part = rest.split(':').next().unwrap_or(rest).trim();
+                if !name_part.is_empty() {
+                    symbol_docs.push(SymbolDoc {
+                        name: name_part.to_string(),
+                        doc: line.to_string(),
+                    });
+                }
+            }
+            continue;
+        }
+
+        if pending_returns {
+            symbol_docs.push(SymbolDoc {
+                name: "return".to_string(),
+                doc: line.to_string(),
+            });
+            pending_returns = false;
+        }
+    }
+
+    DocAttribute {
+        markdown,
+        symbol_docs,
+    }
+}
+
 fn collect_macro_symbols(tokens: &[Token]) -> HashSet<String> {
     let mut symbols = HashSet::new();
     for builtin in BUILTIN_MACROS {
@@ -2103,6 +2223,39 @@ mod tests {
         let src = "defmacro[T] m(node: Expr[T]) -> static { node }";
         let err = Parser::parse_source(src).expect_err("should reject dangling static");
         assert!(!err.message.is_empty());
+    }
+
+    #[test]
+    fn doc_attribute_attaches_to_function_and_params() {
+        let src = "doc[\"# do_thing\\n\\nDoes thing\\n\\n## Arguments\\n\\n- arg: Int - purpose\\n- arg2: String - something else\\n\\n## Returns\\n\\nA boolean\\n\"] def do_thing(arg: Int, arg2: String) -> Bool { true }";
+        let parsed = Parser::parse_source(src).expect("should parse documented function");
+        let decl = parsed.declarations.first().expect("expected declaration");
+        let Decl::Function(function) = decl else {
+            panic!("expected function declaration")
+        };
+        let doc = function.doc.as_ref().expect("expected doc attached");
+        assert!(doc.markdown.contains("# do_thing"));
+        assert!(doc.symbol_docs.iter().any(|d| d.name == "do_thing"));
+        assert!(doc.symbol_docs.iter().any(|d| d.name == "arg"));
+        assert!(doc.symbol_docs.iter().any(|d| d.name == "arg2"));
+    }
+
+    #[test]
+    fn doc_attribute_attaches_to_assignment() {
+        let src = "doc[\"# answer\\n\\nThe answer\\n\"] def answer = 42";
+        let parsed = Parser::parse_source(src).expect("should parse documented assignment");
+        let decl = parsed.declarations.first().expect("expected declaration");
+        let Decl::Assign { doc, .. } = decl else {
+            panic!("expected assignment declaration")
+        };
+        assert!(doc.is_some());
+    }
+
+    #[test]
+    fn doc_attribute_only_allows_def_target() {
+        let src = "doc[\"# io\"] use io";
+        let err = Parser::parse_source(src).expect_err("doc should only annotate def");
+        assert!(err.message.contains("doc attribute"));
     }
 
     #[test]
