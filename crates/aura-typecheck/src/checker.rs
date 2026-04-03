@@ -143,7 +143,7 @@ impl TypeChecker {
             if let Decl::Assign { name, value } = decl {
                 let prev_span = self.current_expr_span;
                 self.current_expr_span = Expr::span(value);
-                self.push_obligation(format!("checking declaration '{name}'"));
+                self.push_obligation(format!("checking declaration `{name}`"));
                 self.pending_constraints.clear();
                 let ty = self.infer_expr(value);
                 self.solve_constraints();
@@ -180,7 +180,7 @@ impl TypeChecker {
             if let Decl::Function(function) = decl {
                 let prev_span = self.current_expr_span;
                 self.current_expr_span = Expr::span(&function.body);
-                self.push_obligation(format!("checking function '{}'", function.name));
+                self.push_obligation(format!("checking function `{}`", function.name));
                 self.pending_constraints.clear();
                 self.push_generic_scope();
                 for p in &function.static_params {
@@ -245,7 +245,7 @@ impl TypeChecker {
             if let Decl::Macro(macro_decl) = decl {
                 let prev_span = self.current_expr_span;
                 self.current_expr_span = Expr::span(&macro_decl.body);
-                self.push_obligation(format!("checking macro '{}'", macro_decl.name));
+                self.push_obligation(format!("checking macro `{}`", macro_decl.name));
                 self.pending_constraints.clear();
                 self.push_scope();
                 for param in &macro_decl.params {
@@ -1599,7 +1599,7 @@ impl TypeChecker {
                         self.pending_constraints
                             .push(TypeConstraint::InterfaceExists {
                                 interface: interface.clone(),
-                                context: format!("generic call '{name}' for '{}'", param.name),
+                                context: format!("generic call `{name}` for `{}`", param.name),
                                 obligations: self.obligation_stack.clone(),
                                 span: self.current_expr_span,
                             });
@@ -1607,7 +1607,7 @@ impl TypeChecker {
                             .push(TypeConstraint::InterfaceBound {
                                 ty: mapped,
                                 interface: interface.clone(),
-                                context: format!("generic call '{name}' for '{}'", param.name),
+                                context: format!("generic call `{name}` for `{}`", param.name),
                                 obligations: self.obligation_stack.clone(),
                                 span: self.current_expr_span,
                             });
@@ -1617,7 +1617,7 @@ impl TypeChecker {
                             arg: static_args.get(idx).cloned(),
                             param: param.name.clone(),
                             expected: expected.clone(),
-                            context: format!("generic call '{name}' for '{}'", param.name),
+                            context: format!("generic call `{name}` for `{}`", param.name),
                             obligations: self.obligation_stack.clone(),
                             span: self.current_expr_span,
                         });
@@ -1853,7 +1853,7 @@ impl TypeChecker {
                             self.typecheck_error(
                                 Issue::InterfaceBoundUnsatisfied {
                                     detail: format!(
-                                        "type {:?} does not satisfy interface bound '{}' in {}",
+                                        "type `{:?}` does not satisfy interface bound `{}` in {}",
                                         resolved, interface, context
                                     ),
                                 },

@@ -15,7 +15,9 @@ fn render(diag: &aura_diagnostics::Diagnostic) -> String {
     };
     format!(
         "{sev}|{stage}|{}|{}|{}",
-        diag.code_str(), diag.message, obligations
+        diag.code_str(),
+        diag.message,
+        obligations
     )
 }
 
@@ -31,8 +33,8 @@ fn snapshot_unresolved_identifier_warning_shape() {
 
     let got = render(diag);
     assert!(got.contains("warning|typecheck|W_UNRESOLVED_IDENT|"));
-    assert!(got.contains("unresolved identifier 'y'"));
-    assert!(got.contains("checking declaration 'x'"));
+    assert!(got.contains("unresolved identifier `y`"));
+    assert!(got.contains("checking declaration `x`"));
 }
 
 #[test]
@@ -48,7 +50,7 @@ fn snapshot_static_bound_kind_error_shape() {
 
     let got = render(diag);
     let expected_prefix =
-        "error|typecheck|E_STATIC_ARG_KIND|expected compile-time static value for constraint Named { name: \"Int\", args: [] } in generic call 'f' for 'n'|checking declaration 'y' > checking call expression";
+        "error|typecheck|E_STATIC_ARG_KIND|expected compile-time static value for constraint Named { name: \"Int\", args: [] } in generic call `f` for `n`|checking declaration `y` > checking call expression";
     assert!(got.starts_with(expected_prefix));
 }
 
@@ -65,8 +67,8 @@ fn snapshot_interface_bound_unsatisfied_shape() {
 
     let got = render(diag);
     assert!(got.contains("error|typecheck|E_INTERFACE_BOUND_UNSAT|"));
-    assert!(got.contains("does not satisfy interface bound 'Iterable'"));
-    assert!(got.contains("checking declaration 'y'"));
+    assert!(got.contains("does not satisfy interface bound `Iterable`"));
+    assert!(got.contains("checking declaration `y`"));
     assert!(got.contains("checking call expression"));
 }
 
@@ -87,7 +89,7 @@ fn snapshot_type_mismatch_return_shape() {
         got.contains("type mismatch in bidirectional expected type")
             || got.contains("type mismatch in function return")
     );
-    assert!(got.contains("checking function 'f'"));
+    assert!(got.contains("checking function `f`"));
 }
 
 #[test]

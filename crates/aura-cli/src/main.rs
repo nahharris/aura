@@ -563,15 +563,52 @@ fn prepare_diagnostics(diags: &[Diagnostic], source: &str) -> Vec<PreparedDiagno
             code: d.code_str(),
             stage,
             severity: d.severity,
-            message: d.message.clone(),
+            message: normalize_for_llm(&d.message),
             span,
             span_origin,
-            hint: d.hint.clone(),
-            related,
-            obligations: d.obligations.clone(),
+            hint: d.hint.as_ref().map(|h| normalize_for_llm(h)),
+            related: related
+                .into_iter()
+                .map(|mut r| {
+                    r.label = normalize_for_llm(&r.label);
+                    r
+                })
+                .collect(),
+            obligations: d
+                .obligations
+                .iter()
+                .map(|o| normalize_for_llm(o))
+                .collect(),
         });
     }
     prepared
+}
+
+fn normalize_for_llm(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '\'' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] != '\'' {
+                j += 1;
+            }
+            if j < chars.len() {
+                let inner: String = chars[i + 1..j].iter().collect();
+                if !inner.is_empty() {
+                    out.push('`');
+                    out.push_str(&inner);
+                    out.push('`');
+                    i = j + 1;
+                    continue;
+                }
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
 }
 
 fn is_internal_related_label(label: &str) -> bool {
@@ -662,7 +699,7 @@ fn render_pretty_diagnostic(d: &PreparedDiagnostic, input: &Path, source: &str, 
         palette.dim(d.code),
         palette.dim("]"),
         stage,
-        d.message
+        style_inline_symbols(&d.message, &palette)
     );
 
     if let Some(span) = d.span {
@@ -673,7 +710,8 @@ fn render_pretty_diagnostic(d: &PreparedDiagnostic, input: &Path, source: &str, 
             span.line,
             span.column
         );
-        if let Some((line_no, line_text, pointer)) = render_span_snippet(source, span, &d.message, colors)
+        if let Some((line_no, line_text, pointer)) =
+            render_span_snippet(source, span, &style_inline_symbols(&d.message, &palette), colors)
         {
             eprintln!("  {}", palette.dim("|"));
             eprintln!(
@@ -697,7 +735,7 @@ fn render_pretty_diagnostic(d: &PreparedDiagnostic, input: &Path, source: &str, 
         eprintln!(
             "  {} {}",
             palette.dim("= context:"),
-            d.obligations.join(" > ")
+            style_inline_symbols(&d.obligations.join(" > "), &palette)
         );
     }
 
@@ -706,18 +744,49 @@ fn render_pretty_diagnostic(d: &PreparedDiagnostic, input: &Path, source: &str, 
             eprintln!(
                 "  {} {} ({}:{})",
                 palette.dim("= related:"),
-                related.label,
+                style_inline_symbols(&related.label, &palette),
                 span.line,
                 span.column
             );
         } else {
-            eprintln!("  {} {}", palette.dim("= related:"), related.label);
+            eprintln!(
+                "  {} {}",
+                palette.dim("= related:"),
+                style_inline_symbols(&related.label, &palette)
+            );
         }
     }
 
     if let Some(hint) = &d.hint {
-        eprintln!("  {} {}", palette.help("= help:"), hint);
+        eprintln!(
+            "  {} {}",
+            palette.help("= help:"),
+            style_inline_symbols(hint, &palette)
+        );
     }
+}
+
+fn style_inline_symbols(text: &str, palette: &Palette) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '`' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] != '`' {
+                j += 1;
+            }
+            if j < chars.len() {
+                let inner: String = chars[i + 1..j].iter().collect();
+                out.push_str(&palette.symbol(&inner));
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
 }
 
 fn render_span_snippet(
@@ -844,6 +913,15 @@ impl Palette {
 
     fn dim(&self, text: &str) -> String {
         self.style(text, Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightBlack))))
+    }
+
+    fn symbol(&self, text: &str) -> String {
+        self.style(
+            text,
+            Style::new()
+                .fg_color(Some(Color::Ansi(AnsiColor::Cyan)))
+                .effects(Effects::BOLD),
+        )
     }
 
     fn style(&self, text: &str, style: Style) -> String {

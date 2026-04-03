@@ -175,7 +175,7 @@ impl Issue {
             Self::CasesEmpty => "cases requires at least one arm".to_string(),
             Self::CasesForm => "invalid cases form".to_string(),
             Self::CastInvalid { source, target } => {
-                format!("invalid cast from {source} to {target}")
+                format!("invalid cast from `{source}` to `{target}`")
             }
             Self::CastTarget => "cast target type is invalid".to_string(),
             Self::ClosureArity => {
@@ -203,13 +203,13 @@ impl Issue {
                 context,
                 expected,
                 actual,
-            } => format!("type mismatch in {context}: expected {expected}, got {actual}"),
+            } => format!("type mismatch in {context}: expected `{expected}`, got `{actual}`"),
             Self::UnifyMismatch => "type unification failed".to_string(),
             Self::UnifyOccurs => "occurs check failed during unification".to_string(),
             Self::UnifyUnknown => "internal unify failure: missing type in interner".to_string(),
             Self::UnknownInterface => "unknown interface in constraint".to_string(),
             Self::UseDuplicate => "duplicate imported name in use statement".to_string(),
-            Self::UnresolvedIdent { name } => format!("unresolved identifier '{name}'"),
+            Self::UnresolvedIdent { name } => format!("unresolved identifier `{name}`"),
         }
     }
 
