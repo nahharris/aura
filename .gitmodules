@@ -7,3 +7,6 @@
 [submodule "tool/aura-vscode"]
 	path = tool/aura-vscode
 	url = https://github.com/nahharris/aura-vscode.git
+[submodule "aura-stl"]
+	path = aura-stl
+	url = https://github.com/nahharris/aura-stl.git

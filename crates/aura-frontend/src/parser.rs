@@ -15,6 +15,10 @@ const BUILTIN_MACROS: &[&str] = &[
     "def", "let", "const", "inline", "builtin", "return", "break", "continue", "loop", "doc",
 ];
 
+const KNOWN_GENERIC_RECEIVERS: &[&str] = &[
+    "List", "Dict", "Set", "Array", "Func", "Option", "Result", "Seq",
+];
+
 pub type ParseError = Diagnostic;
 
 pub struct Parser;
@@ -252,6 +256,7 @@ where
             (None, self.expect_ident("expected function name")?)
         } else {
             let head_ty = self.parse_type_expr()?;
+            self.ensure_receiver_generic_args(&head_ty)?;
             self.expect_simple(
                 &TokenKind::Dot,
                 "expected '.' before method name",
@@ -279,6 +284,28 @@ where
             body,
             doc,
         }))
+    }
+
+    fn ensure_receiver_generic_args(&self, receiver: &TypeExpr) -> Result<(), ParseError> {
+        let TypeExpr::Named { name, args } = receiver else {
+            return Ok(());
+        };
+        if !args.is_empty() {
+            return Ok(());
+        }
+        if !KNOWN_GENERIC_RECEIVERS.contains(&name.as_str()) {
+            return Ok(());
+        }
+
+        Err(self.error_here(
+            format!(
+                "receiver type '{name}' requires explicit static arguments in method declarations"
+            ),
+            vec!["type[args]"],
+            Some(format!(
+                "use `def[T] {name}[T].method(...) -> ... {{ ... }}`"
+            )),
+        ))
     }
 
     fn looks_like_function_decl(&self) -> bool {
@@ -1784,6 +1811,14 @@ mod tests {
         assert!(matches!(arms[1].patterns[0], Pattern::Ident(_)));
         assert!(arms[0].guard.is_none());
         assert!(arms[1].guard.is_none());
+    }
+
+    #[test]
+    fn reject_method_receiver_without_required_static_args() {
+        let src = "def Seq.len(self: Seq[Int]) -> Int { 0 }";
+        let err = Parser::parse_source(src).expect_err("receiver should require static args");
+        assert_eq!(err.code_str(), "E_PARSE_UNEXPECTED_TOKEN");
+        assert!(err.message.contains("requires explicit static arguments"));
     }
 
     #[test]

@@ -102,6 +102,10 @@ struct FunctionGenericInfo {
 }
 
 impl TypeChecker {
+    const KNOWN_GENERIC_RECEIVERS: [&'static str; 8] = [
+        "List", "Dict", "Set", "Array", "Func", "Option", "Result", "Seq",
+    ];
+
     pub fn new() -> Self {
         let mut interner = TyInterner::new();
         interner.prelude_primitives();
@@ -230,6 +234,9 @@ impl TypeChecker {
                 self.current_expr_span = Expr::span(&function.body);
                 self.push_obligation(format!("checking function `{}`", function.name));
                 self.pending_constraints.clear();
+                if let Some(receiver) = &function.receiver {
+                    self.validate_method_receiver(receiver);
+                }
                 self.push_generic_scope();
                 for p in &function.static_params {
                     let t = self.interner.intern(Ty::GenericParam(p.name.clone()));
@@ -1515,6 +1522,28 @@ impl TypeChecker {
                 }
             }
         }
+    }
+
+    fn validate_method_receiver(&mut self, receiver: &TypeExpr) {
+        let TypeExpr::Named { name, args } = receiver else {
+            return;
+        };
+        if !args.is_empty() {
+            return;
+        }
+        if !Self::KNOWN_GENERIC_RECEIVERS.contains(&name.as_str()) {
+            return;
+        }
+
+        self.diagnostics.push(
+            self.typecheck_error(
+                Issue::TypeArgMissing,
+                format!(
+                    "receiver type '{name}' requires explicit static arguments in method declarations"
+                ),
+            )
+            .with_hint("use form like `def[T] Seq[T].method(...) -> ... { ... }`"),
+        );
     }
 
     fn resolve_static_arg_type(&mut self, arg: &StaticArg) -> Option<TyId> {
@@ -3094,6 +3123,47 @@ mod tests {
             .diagnostics
             .iter()
             .any(|d| d.code_str() == "E_PATTERN_UNREACHABLE_ARM"));
+    }
+
+    #[test]
+    fn method_receiver_without_required_static_args_reports_type_arg_missing() {
+        let program = Program {
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
+                static_params: Vec::new(),
+                receiver: Some(TypeExpr::Named {
+                    name: "Seq".to_string(),
+                    args: Vec::new(),
+                }),
+                name: "len".to_string(),
+                params: vec![aura_frontend::ast::Param {
+                    name: "self".to_string(),
+                    ty: TypeExpr::Named {
+                        name: "Seq".to_string(),
+                        args: vec![StaticArg::Type(TypeExpr::Named {
+                            name: "Int".to_string(),
+                            args: Vec::new(),
+                        })],
+                    },
+                }],
+                return_type: TypeExpr::Named {
+                    name: "Int".to_string(),
+                    args: Vec::new(),
+                },
+                body: Expr::Int("0".to_string()),
+            })],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_ARG_MISSING"));
+        assert!(checked.diagnostics.iter().any(|d| {
+            d.hint
+                .as_deref()
+                .is_some_and(|h| h.contains("Seq[T].method"))
+        }));
     }
 
     #[test]

@@ -13,10 +13,10 @@ This plan is executed in strict order: each step is completed in full before mov
 
 ## Phase 2 - STL Strategy and Packaging
 
-- [ ] 2.1 Replace current STL surface with a minimal, coherent STL design
-- [ ] 2.2 Define minimal runtime boundary (syscalls + core memory helpers only)
-- [ ] 2.3 Vendor STL during `aura init`
-- [ ] 2.4 Compile vendored STL per project and cache build artifacts in `target/`
+- [x] 2.1 Replace current STL surface with a minimal, coherent STL design
+- [x] 2.2 Define minimal runtime boundary (syscalls + core memory helpers only)
+- [x] 2.3 Vendor STL during `aura init`
+- [x] 2.4 Compile vendored STL per project and cache build artifacts in `target/`
 
 ## Phase 3 - LLVM Backend Foundation
 

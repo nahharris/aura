@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use anstyle::{AnsiColor, Color, Effects, Style};
 use aura_codegen::project::discover::discover_layout;
-use aura_codegen::project::manifest::load_manifest;
+use aura_codegen::project::manifest::{ProjectType, load_manifest};
 use aura_diagnostics::{Diagnostic, Severity, Span};
 use aura_frontend::ast::{Decl, Program};
 use aura_frontend::{FormatOptions, Parser, format_source, unified_diff};
@@ -364,7 +364,7 @@ fn create_project_scaffold(project_root: &Path, project_name: &str) -> Result<()
         .with_context(|| format!("failed to create '{}'", target_dir.display()))?;
 
     let manifest = format!(
-        "def project = (\n    name = \"{}\",\n    version = \"0.1.0\",\n    dependencies = [],\n);\n",
+        "def project = (\n    name = \"{}\",\n    version = \"0.1.0\",\n    type = .binary,\n    dependencies = [],\n);\n",
         project_name
     );
     let build_file = project_root.join("build.aura");
@@ -375,18 +375,21 @@ fn create_project_scaffold(project_root: &Path, project_name: &str) -> Result<()
     fs::write(&main_file, "def main() -> Int { 0 }\n")
         .with_context(|| format!("failed to write '{}'", main_file.display()))?;
 
-    copy_dir_recursive(&workspace_stl_dir()?, &vendor_stl_dir)?;
+    copy_dir_recursive(&workspace_stl_src_dir()?, &vendor_stl_dir)?;
 
     Ok(())
 }
 
-fn workspace_stl_dir() -> Result<PathBuf> {
+fn workspace_stl_src_dir() -> Result<PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..");
-    let stl = root.join("stl");
+    let stl = root.join("aura-stl").join("src");
     if !stl.is_dir() {
-        anyhow::bail!("failed to locate workspace STL directory at '{}'", stl.display());
+        anyhow::bail!(
+            "failed to locate workspace STL source directory at '{}'",
+            stl.display()
+        );
     }
     Ok(stl)
 }
@@ -542,9 +545,9 @@ fn build_project_cmd(
         .parent()
         .context("build.aura should have a parent directory")?;
     let src_main = project_root.join("src").join("main.aura");
-    if !src_main.is_file() {
+    if manifest.kind == ProjectType::Binary && !src_main.is_file() {
         eprintln!(
-            "project '{}' does not have entry file '{}'",
+            "binary project '{}' does not have entry file '{}'",
             manifest.name,
             src_main.display()
         );
@@ -558,7 +561,174 @@ fn build_project_cmd(
         build_file.display()
     );
 
-    build_single_file_cmd(&src_main, out, format, diagnostics_format)
+    let compiled_stl_modules = compile_vendored_stl(project_root, format, diagnostics_format)?;
+    if compiled_stl_modules > 0 {
+        println!(
+            "cached {compiled_stl_modules} STL module(s) in {}",
+            project_root.join("target").join("stl").display()
+        );
+    }
+
+    match manifest.kind {
+        ProjectType::Binary => build_single_file_cmd(&src_main, out, format, diagnostics_format),
+        ProjectType::Library => {
+            println!("project '{}' is a library; skipping entrypoint build", manifest.name);
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+fn compile_vendored_stl(
+    project_root: &Path,
+    format: OutputFormat,
+    diagnostics_format: DiagnosticsFormat,
+) -> Result<usize> {
+    let vendor_stl_dir = project_root.join("vendor").join("stl");
+    if !vendor_stl_dir.is_dir() {
+        return Ok(0);
+    }
+
+    let cache_dir = project_root.join("target").join("stl");
+    fs::create_dir_all(&cache_dir)
+        .with_context(|| format!("failed to create '{}'", cache_dir.display()))?;
+
+    let module_files = collect_aura_source_files(&vendor_stl_dir)?;
+    let module_files = sort_stl_modules_for_compile(module_files);
+    let mut compiled = 0usize;
+
+    for module_path in module_files {
+        let file_name = module_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if file_name.ends_with(".test.aura") {
+            continue;
+        }
+
+        let source = fs::read_to_string(&module_path)
+            .with_context(|| format!("failed to read source file '{}'", module_path.display()))?;
+
+        let program = match Parser::parse_source(&source) {
+            Ok(program) => program,
+            Err(diag) => {
+                print_diagnostics(&[diag], diagnostics_format, &module_path, &source)?;
+                anyhow::bail!("failed to parse vendored STL module '{}'", module_path.display());
+            }
+        };
+
+        let checked = check_module(&program);
+        let has_errors = checked
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error);
+        if has_errors {
+            print_diagnostics(&checked.diagnostics, diagnostics_format, &module_path, &source)?;
+            anyhow::bail!(
+                "failed to typecheck vendored STL module '{}'",
+                module_path.display()
+            );
+        }
+
+        if !checked.diagnostics.is_empty() {
+            print_diagnostics(&checked.diagnostics, diagnostics_format, &module_path, &source)?;
+        }
+
+        let module = checked
+            .module
+            .as_ref()
+            .expect("module should exist when diagnostics are error-free");
+        let rendered = match format {
+            OutputFormat::Pretty => render_ir_pretty(module),
+            OutputFormat::Json => render_ir_json(module)?,
+        };
+
+        let relative_path = module_path
+            .strip_prefix(&vendor_stl_dir)
+            .with_context(|| {
+                format!(
+                    "failed to compute STL-relative path for '{}'",
+                    module_path.display()
+                )
+            })?;
+        let output_path = stl_cache_output_path(&cache_dir, relative_path, format);
+        if let Some(parent) = output_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create '{}'", parent.display()))?;
+        }
+        fs::write(&output_path, rendered)
+            .with_context(|| format!("failed to write STL cache output '{}'", output_path.display()))?;
+        compiled += 1;
+    }
+
+    Ok(compiled)
+}
+
+fn sort_stl_modules_for_compile(mut files: Vec<PathBuf>) -> Vec<PathBuf> {
+    fn rank(path: &Path) -> usize {
+        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+        match name {
+            "core" => 0,
+            "bool" => 1,
+            "option" => 2,
+            "result" => 3,
+            "ordering" => 4,
+            "seq" => 5,
+            "runtime" => 6,
+            _ => 100,
+        }
+    }
+
+    files.sort_by(|a, b| {
+        let ar = rank(a);
+        let br = rank(b);
+        ar.cmp(&br).then_with(|| a.cmp(b))
+    });
+    files
+}
+
+fn stl_cache_output_path(cache_root: &Path, relative_module: &Path, format: OutputFormat) -> PathBuf {
+    let stem = relative_module
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("module");
+    let ext = match format {
+        OutputFormat::Pretty => "ir.aura",
+        OutputFormat::Json => "ir.json",
+    };
+    let output_file_name = format!("{stem}.{ext}");
+
+    let mut output_relative = relative_module.to_path_buf();
+    output_relative.set_file_name(output_file_name);
+    cache_root.join(output_relative)
+}
+
+fn collect_aura_source_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    collect_aura_source_files_recursive(root, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_aura_source_files_recursive(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read '{}'", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_aura_source_files_recursive(&path, files)?;
+            continue;
+        }
+
+        if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext == "aura")
+        {
+            files.push(path);
+        }
+    }
+    Ok(())
 }
 
 fn default_output_path(input: &Path, format: OutputFormat) -> PathBuf {
@@ -1412,8 +1582,15 @@ mod tests {
         create_project_scaffold(&root, "demo").expect("scaffold should succeed");
 
         assert!(root.join("build.aura").is_file());
+        let manifest = fs::read_to_string(root.join("build.aura")).expect("manifest should exist");
+        assert!(manifest.contains("type = .binary"));
         assert!(root.join("src").join("main.aura").is_file());
         assert!(root.join("vendor").join("stl").join("core.aura").is_file());
+        assert!(root
+            .join("vendor")
+            .join("stl")
+            .join("option.test.aura")
+            .is_file());
         assert!(root.join("target").is_dir());
 
         fs::remove_dir_all(root).expect("cleanup should succeed");

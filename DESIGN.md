@@ -1377,6 +1377,7 @@ Aura is project-oriented. A project root contains `build.aura` and standard fold
 def project = (
     name = "hello",
     version = "0.1.0",
+    type = .binary,
     dependencies = [
         "@json" = "github.com/acme/aura-json@v1.2.3",
     ],
@@ -1387,6 +1388,7 @@ Manifest field contract:
 
 - `name: String`
 - `version: String`
+- `type: enum(binary, library)`
 - `dependencies: Dict[String, String]`
 
 Dependency source forms:

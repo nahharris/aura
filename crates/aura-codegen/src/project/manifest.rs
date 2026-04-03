@@ -10,7 +10,14 @@ use aura_frontend::Parser;
 pub struct Manifest {
     pub name: String,
     pub version: String,
+    pub kind: ProjectType,
     pub dependencies: Vec<Dependency>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectType {
+    Binary,
+    Library,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +117,7 @@ pub fn parse_manifest_source(source: &str) -> Result<Manifest, ManifestError> {
 
     let mut name: Option<String> = None;
     let mut version: Option<String> = None;
+    let mut kind: Option<ProjectType> = None;
     let mut dependencies: Option<Vec<Dependency>> = None;
 
     for (field_name, field_value) in fields {
@@ -126,6 +134,12 @@ pub fn parse_manifest_source(source: &str) -> Result<Manifest, ManifestError> {
                 }
                 version = Some(expect_string(field_value, "version")?);
             }
+            "type" => {
+                if kind.is_some() {
+                    return Err(ManifestError::DuplicateField("type"));
+                }
+                kind = Some(parse_project_type(field_value)?);
+            }
             "dependencies" => {
                 if dependencies.is_some() {
                     return Err(ManifestError::DuplicateField("dependencies"));
@@ -139,8 +153,32 @@ pub fn parse_manifest_source(source: &str) -> Result<Manifest, ManifestError> {
     Ok(Manifest {
         name: name.ok_or(ManifestError::MissingField("name"))?,
         version: version.ok_or(ManifestError::MissingField("version"))?,
+        kind: kind.ok_or(ManifestError::MissingField("type"))?,
         dependencies: dependencies.ok_or(ManifestError::MissingField("dependencies"))?,
     })
+}
+
+fn parse_project_type(value: &Expr) -> Result<ProjectType, ManifestError> {
+    let Expr::DotIdent { name, payload } = unspan_expr(value) else {
+        return Err(ManifestError::InvalidFieldType {
+            field: "type",
+            expected: "a dot variant: .binary or .library",
+        });
+    };
+    if payload.is_some() {
+        return Err(ManifestError::InvalidFieldType {
+            field: "type",
+            expected: "a unit dot variant: .binary or .library",
+        });
+    }
+    match name.as_str() {
+        "binary" => Ok(ProjectType::Binary),
+        "library" => Ok(ProjectType::Library),
+        _ => Err(ManifestError::InvalidFieldType {
+            field: "type",
+            expected: "one of: .binary, .library",
+        }),
+    }
 }
 
 fn parse_dependencies(value: &Expr) -> Result<Vec<Dependency>, ManifestError> {
@@ -208,7 +246,7 @@ fn unspan_expr(expr: &Expr) -> &Expr {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_manifest_source, DependencySource, ManifestError};
+    use super::{parse_manifest_source, DependencySource, ManifestError, ProjectType};
 
     #[test]
     fn parses_struct_manifest_shape() {
@@ -216,6 +254,7 @@ mod tests {
             def project = (
                 name = "hello",
                 version = "0.1.0",
+                type = .binary,
                 dependencies = [
                     "@json" = "https://github.com/acme/aura-json@v1.2.3",
                 ],
@@ -224,6 +263,7 @@ mod tests {
         let manifest = parse_manifest_source(src).expect("must parse");
         assert_eq!(manifest.name, "hello");
         assert_eq!(manifest.version, "0.1.0");
+        assert_eq!(manifest.kind, ProjectType::Binary);
         assert_eq!(manifest.dependencies.len(), 1);
         assert_eq!(manifest.dependencies[0].alias, "@json");
         assert!(matches!(
@@ -252,6 +292,7 @@ mod tests {
             def project = (
                 name = "hello",
                 version = "0.1.0",
+                type = .binary,
                 dependencies = "bad",
             );
         "#;
@@ -271,6 +312,7 @@ mod tests {
             def project = (
                 name = "hello",
                 version = "0.1.0",
+                type = .binary,
                 dependencies = [
                     "json" = "https://github.com/acme/aura-json@v1.2.3",
                 ],
@@ -286,6 +328,7 @@ mod tests {
             def project = (
                 name = "hello",
                 version = "0.1.0",
+                type = .binary,
                 dependencies = [
                     "@json" = "https://github.com/acme/aura-json",
                 ],
@@ -295,5 +338,35 @@ mod tests {
         assert!(
             matches!(err, ManifestError::InvalidDependencySource(v) if v == "https://github.com/acme/aura-json")
         );
+    }
+
+    #[test]
+    fn rejects_missing_type_field() {
+        let src = r#"
+            def project = (
+                name = "hello",
+                version = "0.1.0",
+                dependencies = [],
+            );
+        "#;
+        let err = parse_manifest_source(src).expect_err("must fail");
+        assert!(matches!(err, ManifestError::MissingField("type")));
+    }
+
+    #[test]
+    fn rejects_invalid_type_variant() {
+        let src = r#"
+            def project = (
+                name = "hello",
+                version = "0.1.0",
+                type = .plugin,
+                dependencies = [],
+            );
+        "#;
+        let err = parse_manifest_source(src).expect_err("must fail");
+        assert!(matches!(
+            err,
+            ManifestError::InvalidFieldType { field: "type", .. }
+        ));
     }
 }
