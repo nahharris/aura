@@ -10,3 +10,6 @@
 [submodule "aura-stl"]
 	path = aura-stl
 	url = https://github.com/nahharris/aura-stl.git
+[submodule "tool/aura-nvim"]
+	path = tool/aura-nvim
+	url = https://github.com/nahharris/aura-nvim.git
