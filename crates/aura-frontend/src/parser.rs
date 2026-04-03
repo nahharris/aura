@@ -1254,6 +1254,8 @@ fn token_debug_name(kind: &TokenKind) -> String {
         TokenKind::Float(_) => "float".to_string(),
         TokenKind::String(_) => "string".to_string(),
         TokenKind::Char(_) => "char".to_string(),
+        TokenKind::LineComment(_) => "line_comment".to_string(),
+        TokenKind::BlockComment(_) => "block_comment".to_string(),
         TokenKind::Defmacro => "defmacro".to_string(),
         TokenKind::Arrow => "->".to_string(),
         TokenKind::Ellipsis => "...".to_string(),
@@ -1312,6 +1314,8 @@ fn same_token_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (TokenKind::RBrace, TokenKind::RBrace)
             | (TokenKind::LBracket, TokenKind::LBracket)
             | (TokenKind::RBracket, TokenKind::RBracket)
+            | (TokenKind::LineComment(_), TokenKind::LineComment(_))
+            | (TokenKind::BlockComment(_), TokenKind::BlockComment(_))
             | (TokenKind::Plus, TokenKind::Plus)
             | (TokenKind::Minus, TokenKind::Minus)
             | (TokenKind::Star, TokenKind::Star)

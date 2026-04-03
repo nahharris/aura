@@ -4,7 +4,12 @@ use crate::token::{Span, Token, TokenKind};
 use aura_diagnostics::{Diagnostic, Issue, Stage};
 
 pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
-    let mut lexer = Lexer::new(source);
+    let mut lexer = Lexer::new(source, false);
+    lexer.lex_all()
+}
+
+pub fn lex_with_comments(source: &str) -> Result<Vec<Token>, Diagnostic> {
+    let mut lexer = Lexer::new(source, true);
     lexer.lex_all()
 }
 
@@ -15,11 +20,12 @@ struct Lexer<'a> {
     line: usize,
     column: usize,
     tokens: Vec<Token>,
+    include_comments: bool,
     _source: &'a str,
 }
 
 impl<'a> Lexer<'a> {
-    fn new(source: &'a str) -> Self {
+    fn new(source: &'a str, include_comments: bool) -> Self {
         let chars: Vec<char> = source.chars().collect();
         let len = chars.len();
         Self {
@@ -29,6 +35,7 @@ impl<'a> Lexer<'a> {
             line: 1,
             column: 1,
             tokens: Vec::new(),
+            include_comments,
             _source: source,
         }
     }
@@ -388,25 +395,61 @@ impl<'a> Lexer<'a> {
     }
 
     fn consume_line_comment(&mut self) {
+        let start_pos = self.pos;
+        let start_line = self.line;
+        let start_col = self.column;
         self.bump();
         self.bump();
+        let mut text = String::from("//");
         while let Some(ch) = self.peek() {
             if ch == '\n' {
                 break;
             }
+            text.push(ch);
             self.bump();
+        }
+        if self.include_comments {
+            self.tokens.push(Token::new(
+                TokenKind::LineComment(text),
+                Span {
+                    start: start_pos,
+                    end: self.pos,
+                    line: start_line,
+                    column: start_col,
+                },
+            ));
         }
     }
 
     fn consume_block_comment(&mut self) -> Result<(), Diagnostic> {
         let start = self.single_span();
+        let start_pos = self.pos;
+        let start_line = self.line;
+        let start_col = self.column;
         self.bump();
         self.bump();
+        let mut text = String::from("/*");
         while self.pos < self.len {
             if self.peek() == Some('*') && self.peek_n(1) == Some('/') {
+                text.push('*');
+                text.push('/');
                 self.bump();
                 self.bump();
+                if self.include_comments {
+                    self.tokens.push(Token::new(
+                        TokenKind::BlockComment(text),
+                        Span {
+                            start: start_pos,
+                            end: self.pos,
+                            line: start_line,
+                            column: start_col,
+                        },
+                    ));
+                }
                 return Ok(());
+            }
+            if let Some(ch) = self.peek() {
+                text.push(ch);
             }
             self.bump();
         }

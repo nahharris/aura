@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use anstyle::{AnsiColor, Color, Effects, Style};
 use aura_diagnostics::{Diagnostic, Severity, Span};
-use aura_frontend::Parser;
+use aura_frontend::{FormatOptions, Parser, format_source, unified_diff};
 use aura_typecheck::checked_ir::{
     BinaryOpKind, CheckedExpr, CheckedStaticArg, CheckedStaticValue, CheckedTypeExpr,
 };
@@ -33,6 +33,17 @@ enum Commands {
         format: OutputFormat,
         #[arg(long, value_enum, default_value_t = DiagnosticsFormat::Pretty)]
         diagnostics: DiagnosticsFormat,
+    },
+    Fmt {
+        input: PathBuf,
+        #[arg(long)]
+        write: bool,
+        #[arg(long)]
+        check: bool,
+        #[arg(long, default_value_t = 4)]
+        indent_width: usize,
+        #[arg(long, default_value_t = 100)]
+        max_width: usize,
     },
 }
 
@@ -194,6 +205,49 @@ fn run() -> Result<ExitCode> {
             format,
             diagnostics,
         } => build_cmd(&input, out.as_deref(), format, diagnostics),
+        Commands::Fmt {
+            input,
+            write,
+            check,
+            indent_width,
+            max_width,
+        } => fmt_cmd(&input, write, check, indent_width, max_width),
+    }
+}
+
+fn fmt_cmd(
+    input: &Path,
+    write: bool,
+    check: bool,
+    indent_width: usize,
+    max_width: usize,
+) -> Result<ExitCode> {
+    let source = fs::read_to_string(input)
+        .with_context(|| format!("failed to read source file '{}'", input.display()))?;
+
+    let options = FormatOptions {
+        indent_width,
+        max_width,
+    };
+    let formatted = format_source(&source, &options);
+
+    if source == formatted {
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    if write {
+        fs::write(input, formatted)
+            .with_context(|| format!("failed to write formatted source '{}'", input.display()))?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let diff = unified_diff(&source, &formatted, &input.display().to_string());
+    print!("{diff}");
+
+    if check {
+        Ok(ExitCode::from(1))
+    } else {
+        Ok(ExitCode::SUCCESS)
     }
 }
 

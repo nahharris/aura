@@ -35,6 +35,8 @@ pub enum TokenKind {
     Float(String),
     String(String),
     Char(String),
+    LineComment(String),
+    BlockComment(String),
     Defmacro,
     Arrow,
     Ellipsis,
