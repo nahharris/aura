@@ -687,6 +687,7 @@ fn span_from_line(source: &str, line_number: usize, column: usize, len: usize) -
 
 fn render_pretty_diagnostic(d: &PreparedDiagnostic, input: &Path, source: &str, colors: bool) {
     let palette = Palette::new(colors);
+    let symbol_tokens = collect_symbol_tokens(d);
     let sev_label = match d.severity {
         Severity::Error => palette.error("error"),
         Severity::Warning => palette.warning("warning"),
@@ -710,8 +711,13 @@ fn render_pretty_diagnostic(d: &PreparedDiagnostic, input: &Path, source: &str, 
             span.line,
             span.column
         );
-        if let Some((line_no, line_text, pointer)) =
-            render_span_snippet(source, span, &style_inline_symbols(&d.message, &palette), colors)
+        if let Some((line_no, line_text, pointer)) = render_span_snippet(
+            source,
+            span,
+            &style_inline_symbols(&d.message, &palette),
+            colors,
+            &symbol_tokens,
+        )
         {
             eprintln!("  {}", palette.dim("|"));
             eprintln!(
@@ -789,11 +795,49 @@ fn style_inline_symbols(text: &str, palette: &Palette) -> String {
     out
 }
 
+fn collect_symbol_tokens(d: &PreparedDiagnostic) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    extract_backtick_tokens(&d.message, &mut set);
+    if let Some(hint) = &d.hint {
+        extract_backtick_tokens(hint, &mut set);
+    }
+    for related in &d.related {
+        extract_backtick_tokens(&related.label, &mut set);
+    }
+    for obligation in &d.obligations {
+        extract_backtick_tokens(obligation, &mut set);
+    }
+    set
+}
+
+fn extract_backtick_tokens(text: &str, out: &mut std::collections::HashSet<String>) {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '`' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] != '`' {
+                j += 1;
+            }
+            if j < chars.len() {
+                let inner: String = chars[i + 1..j].iter().collect();
+                if !inner.is_empty() {
+                    out.insert(inner);
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+}
+
 fn render_span_snippet(
     source: &str,
     span: Span,
     message: &str,
     colors: bool,
+    symbol_tokens: &std::collections::HashSet<String>,
 ) -> Option<(usize, String, String)> {
     let lines = source.lines().collect::<Vec<_>>();
     if lines.is_empty() {
@@ -801,7 +845,7 @@ fn render_span_snippet(
     }
     let line_idx = span.line.saturating_sub(1).min(lines.len().saturating_sub(1));
     let line_text = lines[line_idx];
-    let highlighted = highlight_source_line(line_text, colors);
+    let highlighted = highlight_source_line(line_text, colors, symbol_tokens);
     let default_col = if line_text.is_empty() {
         1
     } else {
@@ -823,7 +867,11 @@ fn render_span_snippet(
     Some((line_idx + 1, highlighted, pointer))
 }
 
-fn highlight_source_line(line: &str, colors: bool) -> String {
+fn highlight_source_line(
+    line: &str,
+    colors: bool,
+    symbol_tokens: &std::collections::HashSet<String>,
+) -> String {
     if !colors {
         return line.to_string();
     }
@@ -831,6 +879,7 @@ fn highlight_source_line(line: &str, colors: bool) -> String {
     const KW: &str = "\x1b[35;1m";
     const STR: &str = "\x1b[36m";
     const NUM: &str = "\x1b[33m";
+    const SYM: &str = "\x1b[36;1m";
     let keywords = ["def", "defmacro", "use", "if", "cases", "when", "static"];
 
     let chars: Vec<char> = line.chars().collect();
@@ -873,6 +922,10 @@ fn highlight_source_line(line: &str, colors: bool) -> String {
             let ident = chars[start..i].iter().collect::<String>();
             if keywords.iter().any(|kw| *kw == ident) {
                 out.push_str(KW);
+                out.push_str(&ident);
+                out.push_str(RESET);
+            } else if symbol_tokens.contains(&ident) {
+                out.push_str(SYM);
                 out.push_str(&ident);
                 out.push_str(RESET);
             } else {
@@ -984,8 +1037,10 @@ mod tests {
             line: 2,
             column: 1,
         };
-        let rendered = render_span_snippet("def x = macro_name[T]", span, "problem", false)
-            .expect("snippet fallback");
+        let symbols = std::collections::HashSet::new();
+        let rendered =
+            render_span_snippet("def x = macro_name[T]", span, "problem", false, &symbols)
+                .expect("snippet fallback");
         assert_eq!(rendered.0, 1);
         assert!(rendered.2.contains('^'));
     }
