@@ -4,8 +4,8 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{Context, Result};
 use anstyle::{AnsiColor, Color, Effects, Style};
+use anyhow::{Context, Result};
 use aura_codegen::project::discover::discover_layout;
 use aura_codegen::project::manifest::{ProjectType, load_manifest};
 use aura_diagnostics::{Diagnostic, Severity, Span};
@@ -315,10 +315,7 @@ fn collect_docs(program: &Program) -> BTreeMap<String, String> {
                     out.insert(function.name.clone(), doc.markdown.clone());
                     for symbol_doc in &doc.symbol_docs {
                         if symbol_doc.name == "return" {
-                            out.insert(
-                                format!("{}.return", function.name),
-                                symbol_doc.doc.clone(),
-                            );
+                            out.insert(format!("{}.return", function.name), symbol_doc.doc.clone());
                         } else if function.params.iter().any(|p| p.name == symbol_doc.name) {
                             out.insert(
                                 format!("{}.{}", function.name, symbol_doc.name),
@@ -381,9 +378,7 @@ fn create_project_scaffold(project_root: &Path, project_name: &str) -> Result<()
 }
 
 fn workspace_stl_src_dir() -> Result<PathBuf> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
     let stl = root.join("aura-stl").join("src");
     if !stl.is_dir() {
         anyhow::bail!(
@@ -572,7 +567,10 @@ fn build_project_cmd(
     match manifest.kind {
         ProjectType::Binary => build_single_file_cmd(&src_main, out, format, diagnostics_format),
         ProjectType::Library => {
-            println!("project '{}' is a library; skipping entrypoint build", manifest.name);
+            println!(
+                "project '{}' is a library; skipping entrypoint build",
+                manifest.name
+            );
             Ok(ExitCode::SUCCESS)
         }
     }
@@ -612,7 +610,10 @@ fn compile_vendored_stl(
             Ok(program) => program,
             Err(diag) => {
                 print_diagnostics(&[diag], diagnostics_format, &module_path, &source)?;
-                anyhow::bail!("failed to parse vendored STL module '{}'", module_path.display());
+                anyhow::bail!(
+                    "failed to parse vendored STL module '{}'",
+                    module_path.display()
+                );
             }
         };
 
@@ -622,7 +623,12 @@ fn compile_vendored_stl(
             .iter()
             .any(|d| d.severity == Severity::Error);
         if has_errors {
-            print_diagnostics(&checked.diagnostics, diagnostics_format, &module_path, &source)?;
+            print_diagnostics(
+                &checked.diagnostics,
+                diagnostics_format,
+                &module_path,
+                &source,
+            )?;
             anyhow::bail!(
                 "failed to typecheck vendored STL module '{}'",
                 module_path.display()
@@ -630,7 +636,12 @@ fn compile_vendored_stl(
         }
 
         if !checked.diagnostics.is_empty() {
-            print_diagnostics(&checked.diagnostics, diagnostics_format, &module_path, &source)?;
+            print_diagnostics(
+                &checked.diagnostics,
+                diagnostics_format,
+                &module_path,
+                &source,
+            )?;
         }
 
         let module = checked
@@ -642,14 +653,12 @@ fn compile_vendored_stl(
             OutputFormat::Json => render_ir_json(module)?,
         };
 
-        let relative_path = module_path
-            .strip_prefix(&vendor_stl_dir)
-            .with_context(|| {
-                format!(
-                    "failed to compute STL-relative path for '{}'",
-                    module_path.display()
-                )
-            })?;
+        let relative_path = module_path.strip_prefix(&vendor_stl_dir).with_context(|| {
+            format!(
+                "failed to compute STL-relative path for '{}'",
+                module_path.display()
+            )
+        })?;
         let output_path = stl_cache_output_path(&cache_dir, relative_path, format);
         if let Some(parent) = output_path.parent()
             && !parent.as_os_str().is_empty()
@@ -657,8 +666,12 @@ fn compile_vendored_stl(
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create '{}'", parent.display()))?;
         }
-        fs::write(&output_path, rendered)
-            .with_context(|| format!("failed to write STL cache output '{}'", output_path.display()))?;
+        fs::write(&output_path, rendered).with_context(|| {
+            format!(
+                "failed to write STL cache output '{}'",
+                output_path.display()
+            )
+        })?;
         compiled += 1;
     }
 
@@ -667,7 +680,10 @@ fn compile_vendored_stl(
 
 fn sort_stl_modules_for_compile(mut files: Vec<PathBuf>) -> Vec<PathBuf> {
     fn rank(path: &Path) -> usize {
-        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
         match name {
             "core" => 0,
             "bool" => 1,
@@ -688,7 +704,11 @@ fn sort_stl_modules_for_compile(mut files: Vec<PathBuf>) -> Vec<PathBuf> {
     files
 }
 
-fn stl_cache_output_path(cache_root: &Path, relative_module: &Path, format: OutputFormat) -> PathBuf {
+fn stl_cache_output_path(
+    cache_root: &Path,
+    relative_module: &Path,
+    format: OutputFormat,
+) -> PathBuf {
     let stem = relative_module
         .file_stem()
         .and_then(|s| s.to_str())
@@ -1066,11 +1086,7 @@ fn prepare_diagnostics(diags: &[Diagnostic], source: &str) -> Vec<PreparedDiagno
                     r
                 })
                 .collect(),
-            obligations: d
-                .obligations
-                .iter()
-                .map(|o| normalize_for_llm(o))
-                .collect(),
+            obligations: d.obligations.iter().map(|o| normalize_for_llm(o)).collect(),
         });
     }
     prepared
@@ -1136,12 +1152,22 @@ fn find_function_name_span(source: &str, name: &str) -> Option<Span> {
         let marker = format!("def {name}");
         if let Some(start_idx) = line.find(&marker) {
             let name_start = start_idx + 4;
-            return Some(span_from_line(source, line_idx + 1, name_start + 1, name.len()));
+            return Some(span_from_line(
+                source,
+                line_idx + 1,
+                name_start + 1,
+                name.len(),
+            ));
         }
         let method_marker = format!(".{name}(");
         if let Some(start_idx) = line.find(&method_marker) {
             let name_start = start_idx + 1;
-            return Some(span_from_line(source, line_idx + 1, name_start + 1, name.len()));
+            return Some(span_from_line(
+                source,
+                line_idx + 1,
+                name_start + 1,
+                name.len(),
+            ));
         }
     }
     None
@@ -1152,7 +1178,12 @@ fn find_static_decl_name_span(source: &str, name: &str) -> Option<Span> {
         let marker = format!("def {name}");
         if let Some(start_idx) = line.find(&marker) {
             let name_start = start_idx + 4;
-            return Some(span_from_line(source, line_idx + 1, name_start + 1, name.len()));
+            return Some(span_from_line(
+                source,
+                line_idx + 1,
+                name_start + 1,
+                name.len(),
+            ));
         }
     }
     None
@@ -1209,8 +1240,7 @@ fn render_pretty_diagnostic(d: &PreparedDiagnostic, input: &Path, source: &str, 
             &style_inline_symbols(&d.message, &palette),
             colors,
             &symbol_tokens,
-        )
-        {
+        ) {
             eprintln!("  {}", palette.dim("|"));
             eprintln!(
                 "{} {} {}",
@@ -1222,9 +1252,8 @@ fn render_pretty_diagnostic(d: &PreparedDiagnostic, input: &Path, source: &str, 
         }
         if d.span_origin == Some(SpanOrigin::Inferred) {
             eprintln!(
-                "  {} {}",
-                palette.dim("= note:"),
-                "location inferred from typechecking context"
+                "  {} location inferred from typechecking context",
+                palette.dim("= note:")
             );
         }
     }
@@ -1335,7 +1364,10 @@ fn render_span_snippet(
     if lines.is_empty() {
         return None;
     }
-    let line_idx = span.line.saturating_sub(1).min(lines.len().saturating_sub(1));
+    let line_idx = span
+        .line
+        .saturating_sub(1)
+        .min(lines.len().saturating_sub(1));
     let line_text = lines[line_idx];
     let highlighted = highlight_source_line(line_text, colors, symbol_tokens);
     let default_col = if line_text.is_empty() {
@@ -1441,23 +1473,46 @@ impl Palette {
     }
 
     fn error(&self, text: &str) -> String {
-        self.style(text, Style::new().fg_color(Some(Color::Ansi(AnsiColor::Red))).effects(Effects::BOLD))
+        self.style(
+            text,
+            Style::new()
+                .fg_color(Some(Color::Ansi(AnsiColor::Red)))
+                .effects(Effects::BOLD),
+        )
     }
 
     fn warning(&self, text: &str) -> String {
-        self.style(text, Style::new().fg_color(Some(Color::Ansi(AnsiColor::Yellow))).effects(Effects::BOLD))
+        self.style(
+            text,
+            Style::new()
+                .fg_color(Some(Color::Ansi(AnsiColor::Yellow)))
+                .effects(Effects::BOLD),
+        )
     }
 
     fn help(&self, text: &str) -> String {
-        self.style(text, Style::new().fg_color(Some(Color::Ansi(AnsiColor::Cyan))).effects(Effects::BOLD))
+        self.style(
+            text,
+            Style::new()
+                .fg_color(Some(Color::Ansi(AnsiColor::Cyan)))
+                .effects(Effects::BOLD),
+        )
     }
 
     fn pointer(&self, text: &str) -> String {
-        self.style(text, Style::new().fg_color(Some(Color::Ansi(AnsiColor::Magenta))).effects(Effects::BOLD))
+        self.style(
+            text,
+            Style::new()
+                .fg_color(Some(Color::Ansi(AnsiColor::Magenta)))
+                .effects(Effects::BOLD),
+        )
     }
 
     fn dim(&self, text: &str) -> String {
-        self.style(text, Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightBlack))))
+        self.style(
+            text,
+            Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightBlack))),
+        )
     }
 
     fn symbol(&self, text: &str) -> String {
@@ -1489,10 +1544,10 @@ mod tests {
         let diag = Diagnostic::error(Issue::ParseUnexpectedToken {
             detail: "mismatch".to_string(),
         })
-            .with_stage(Stage::Typecheck)
-            .with_related("source span unavailable in current typed AST", None)
-            .with_related("assignment compatibility check failed", None)
-            .with_related("useful context", None);
+        .with_stage(Stage::Typecheck)
+        .with_related("source span unavailable in current typed AST", None)
+        .with_related("assignment compatibility check failed", None)
+        .with_related("useful context", None);
         let prepared = prepare_diagnostics(&[diag], "def f(x: Int) -> Int { x }");
         assert_eq!(prepared.len(), 1);
         assert_eq!(prepared[0].related.len(), 1);
@@ -1543,8 +1598,12 @@ mod tests {
         assert!(is_internal_related_label(
             "source span unavailable in current typed AST"
         ));
-        assert!(is_internal_related_label("assignment compatibility check failed"));
-        assert!(is_internal_related_label("IR coercion/cast decision failed"));
+        assert!(is_internal_related_label(
+            "assignment compatibility check failed"
+        ));
+        assert!(is_internal_related_label(
+            "IR coercion/cast decision failed"
+        ));
         assert!(!is_internal_related_label("real related note"));
     }
 
@@ -1586,11 +1645,12 @@ mod tests {
         assert!(manifest.contains("type = .binary"));
         assert!(root.join("src").join("main.aura").is_file());
         assert!(root.join("vendor").join("stl").join("core.aura").is_file());
-        assert!(root
-            .join("vendor")
-            .join("stl")
-            .join("option.test.aura")
-            .is_file());
+        assert!(
+            root.join("vendor")
+                .join("stl")
+                .join("option.test.aura")
+                .is_file()
+        );
         assert!(root.join("target").is_dir());
 
         fs::remove_dir_all(root).expect("cleanup should succeed");

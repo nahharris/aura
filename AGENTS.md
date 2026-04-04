@@ -20,20 +20,62 @@ Key frontend files:
 
 ## Build, Lint, and Test Commands
 
+Use `cargo xtask dev ...` as the default command runner for routine development tasks.
+
 From workspace root:
 
 ```bash
-cargo check
-cargo build
-cargo test
-cargo clippy -- -D warnings
-cargo fmt --check
+cargo xtask dev check
+cargo xtask dev build
+cargo xtask dev test
+cargo xtask dev lint
+cargo xtask dev fmt
+cargo xtask dev qa
 ```
+
+Preferred command runner aliases (defined in `.cargo/config.toml`):
+
+```bash
+cargo qa
+cargo lint
+cargo test-all
+cargo check-all
+cargo build-all
+cargo fmt-all
+```
+
+## Xtask Usage
+
+Use `cargo xtask` for project automation and environment-sensitive routines.
+
+- Prefer `cargo xtask ...` over ad-hoc shell steps when an xtask command exists.
+- LLVM setup and LLVM-featured checks/tests should run through xtask so environment variables are injected by xtask at execution time.
+- Do not use or reintroduce `llvmenv`; LLVM provisioning is managed in-house via xtask.
+
+Common commands:
+
+```bash
+cargo xtask llvm setup
+cargo xtask llvm doctor
+cargo xtask llvm check
+cargo xtask llvm build
+cargo xtask llvm test
+cargo xtask llvm clippy
+cargo xtask llvm run -- -p aura-cli -- build path/to/main.aura
+cargo xtask llvm cargo -- test -p aura-codegen --features llvm-backend
+```
+
+On Windows, xtask also applies an LLVM compatibility workaround when needed by creating
+`libxml2s.lib` as an empty static stub under the managed LLVM toolchain if the upstream
+`llvm-config --system-libs --link-static` reports it but the archive is missing.
+
+Do not rely on globally exported LLVM env vars for regular workflows when xtask provides the command path.
+Do not run direct `cargo` commands for LLVM-featured tasks; always use `cargo xtask llvm ...` so `LLVM_SYS_180_PREFIX` is injected consistently.
 
 Frontend crate only:
 
 ```bash
-cargo test -p aura-frontend
+cargo xtask dev test
 ```
 
 ## Design Alignment Rules

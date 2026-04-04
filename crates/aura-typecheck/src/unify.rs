@@ -27,7 +27,7 @@ impl Unifier {
         interner: &mut TyInterner,
         lhs: TyId,
         rhs: TyId,
-        context: &str,
+        _context: &str,
     ) -> Result<TyId, Box<Diagnostic>> {
         let lhs = self.resolve(lhs);
         let rhs = self.resolve(rhs);
@@ -79,7 +79,7 @@ impl Unifier {
                             ),
                     ));
                 }
-                let item = self.unify(interner, a, b, context)?;
+                let item = self.unify(interner, a, b, _context)?;
                 Ok(interner.intern(Ty::List(item)))
             }
             (Some(Ty::Dict { key: ka, value: va }), Some(Ty::Dict { key: kb, value: vb })) => {
@@ -92,12 +92,12 @@ impl Unifier {
                             ),
                     ));
                 }
-                let key = self.unify(interner, ka, kb, context)?;
-                let value = self.unify(interner, va, vb, context)?;
+                let key = self.unify(interner, ka, kb, _context)?;
+                let value = self.unify(interner, va, vb, _context)?;
                 Ok(interner.intern(Ty::Dict { key, value }))
             }
             (Some(Ty::Set(a)), Some(Ty::Set(b))) => {
-                let item = self.unify(interner, a, b, context)?;
+                let item = self.unify(interner, a, b, _context)?;
                 Ok(interner.intern(Ty::Set(item)))
             }
             (
@@ -117,7 +117,7 @@ impl Unifier {
                             .with_hint("use matching array sizes or an explicit conversion path"),
                     ));
                 }
-                let item = self.unify(interner, item_a, item_b, context)?;
+                let item = self.unify(interner, item_a, item_b, _context)?;
                 Ok(interner.intern(Ty::Array { item, size: size_a }))
             }
             (
@@ -140,9 +140,9 @@ impl Unifier {
 
                 let mut params = Vec::with_capacity(params_a.len());
                 for (a, b) in params_a.iter().zip(params_b.iter()) {
-                    params.push(self.unify(interner, *a, *b, context)?);
+                    params.push(self.unify(interner, *a, *b, _context)?);
                 }
-                let ret = self.unify(interner, ret_a, ret_b, context)?;
+                let ret = self.unify(interner, ret_a, ret_b, _context)?;
                 Ok(interner.intern(Ty::Func { params, ret }))
             }
             (Some(Ty::Tuple(items_a)), Some(Ty::Tuple(items_b))) => {
@@ -156,7 +156,7 @@ impl Unifier {
 
                 let mut items = Vec::with_capacity(items_a.len());
                 for (a, b) in items_a.iter().zip(items_b.iter()) {
-                    items.push(self.unify(interner, *a, *b, context)?);
+                    items.push(self.unify(interner, *a, *b, _context)?);
                 }
                 Ok(interner.intern(Ty::Tuple(items)))
             }
@@ -180,7 +180,7 @@ impl Unifier {
                                 ),
                         ));
                     }
-                    let field_ty = self.unify(interner, *ty_a, *ty_b, context)?;
+                    let field_ty = self.unify(interner, *ty_a, *ty_b, _context)?;
                     fields.push((name_a.clone(), field_ty));
                 }
 
@@ -196,7 +196,7 @@ impl Unifier {
                 }
                 let mut items = Vec::with_capacity(items_a.len());
                 for (a, b) in items_a.iter().zip(items_b.iter()) {
-                    items.push(self.unify(interner, *a, *b, context)?);
+                    items.push(self.unify(interner, *a, *b, _context)?);
                 }
                 Ok(interner.intern(Ty::Union(items)))
             }
@@ -222,7 +222,7 @@ impl Unifier {
                     }
 
                     let payload = match (payload_a, payload_b) {
-                        (Some(a), Some(b)) => Some(self.unify(interner, *a, *b, context)?),
+                        (Some(a), Some(b)) => Some(self.unify(interner, *a, *b, _context)?),
                         (None, None) => None,
                         _ => {
                             return Err(Box::new(

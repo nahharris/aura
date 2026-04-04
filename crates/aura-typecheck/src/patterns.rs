@@ -55,7 +55,7 @@ impl PatternChecker {
     pub fn validate_redundancy(&self, arms: &[Arm]) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
         let mut seen_fallback = false;
-        for (_idx, arm) in arms.iter().enumerate() {
+        for arm in arms {
             let Some(_) = arm.patterns.first() else {
                 continue;
             };

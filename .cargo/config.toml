@@ -1,0 +1,12 @@
+[alias]
+xtask = "run -p xtask --"
+qa = "xtask dev qa"
+lint = "xtask dev lint"
+test-all = "xtask dev test"
+check-all = "xtask dev check"
+build-all = "xtask dev build"
+fmt-all = "xtask dev fmt"
+check-llvm = "xtask llvm check"
+build-llvm = "xtask llvm build"
+test-llvm = "xtask llvm test"
+clippy-llvm = "xtask llvm clippy"
