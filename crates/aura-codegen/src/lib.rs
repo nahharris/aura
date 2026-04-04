@@ -1,3 +1,4 @@
+pub mod llvm;
 pub mod project;
 
 pub fn backend_name() -> &'static str {

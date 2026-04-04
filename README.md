@@ -1,6 +1,6 @@
 # Aura
 
-Aura is currently a frontend-focused language project. `DESIGN.md` is the authoritative language specification.
+Aura is a language project with frontend, typecheck, CLI, and LLVM backend-infrastructure crates. `DESIGN.md` is the authoritative language specification.
 
 ## Workspace Layout
 
@@ -10,19 +10,14 @@ This repository is a Cargo workspace.
 .
 ├── Cargo.toml                  # workspace manifest
 ├── DESIGN.md                   # authoritative language spec
+├── xtask/                      # automation + LLVM toolchain management
 └── crates/
+    ├── aura-cli/
+    ├── aura-codegen/
+    ├── aura-diagnostics/
     └── aura-frontend/
-        ├── Cargo.toml
-        └── src/
-            ├── ast.rs
-            ├── lexer.rs
-            ├── parser.rs
-            ├── static_eval.rs
-            ├── token.rs
-            └── lib.rs
+    └── aura-typecheck/
 ```
-
-The active workspace target is frontend-only (`aura-frontend`). Backend/runtime/compiler VM paths are not part of the active build graph.
 
 ## Canonical Macro Forms
 
@@ -70,19 +65,67 @@ The same appearance-sugar rule applies to `defmacro` declarations.
 
 ## Development
 
-From repository root:
+Use `cargo xtask dev ...` as the default workflow from repository root:
 
 ```bash
-cargo fmt --check
-cargo clippy -- -D warnings
-cargo test
+cargo xtask dev check
+cargo xtask dev build
+cargo xtask dev test
+cargo xtask dev lint
+cargo xtask dev fmt
+cargo xtask dev qa
+```
+
+Cargo aliases are configured in `.cargo/config.toml`:
+
+```bash
+cargo qa
+cargo lint
+cargo test-all
+cargo check-all
+cargo build-all
+cargo fmt-all
 ```
 
 Run frontend-only tests directly:
 
 ```bash
-cargo test -p aura-frontend
+cargo xtask dev test
 ```
+
+## LLVM Backend Setup
+
+LLVM-backed codegen in `aura-codegen` uses `inkwell` with LLVM 18 (`llvm18-0`).
+
+Use `cargo xtask` for LLVM installation and environment injection:
+
+```bash
+cargo xtask llvm setup
+cargo xtask llvm doctor
+```
+
+The setup is idempotent and self-healing. It downloads the pinned prebuilt LLVM release archive, extracts it under workspace-local `toolchains/`, and keeps a stable major alias at `toolchains/llvm/18`.
+
+Run backend checks/tests through xtask (or cargo aliases that call xtask), so `LLVM_SYS_180_PREFIX` is injected at runtime:
+
+```bash
+cargo xtask llvm check
+cargo xtask llvm build
+cargo xtask llvm test
+cargo xtask llvm clippy
+cargo xtask llvm run -- -p aura-cli -- build path/to/main.aura
+cargo xtask llvm cargo -- test -p aura-codegen --features llvm-backend
+
+# equivalent aliases
+cargo check-llvm
+cargo build-llvm
+cargo test-llvm
+cargo clippy-llvm
+```
+
+On Windows, xtask automatically applies an LLVM compatibility workaround when needed by creating
+`libxml2s.lib` as an empty static stub in the managed LLVM toolchain if upstream `llvm-config`
+reports it but the archive is missing.
 
 ## CLI (`aura`)
 

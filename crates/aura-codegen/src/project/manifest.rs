@@ -3,8 +3,8 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
-use aura_frontend::ast::{Decl, Expr};
 use aura_frontend::Parser;
+use aura_frontend::ast::{Decl, Expr};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
@@ -189,7 +189,7 @@ fn parse_dependencies(value: &Expr) -> Result<Vec<Dependency>, ManifestError> {
             return Err(ManifestError::InvalidFieldType {
                 field: "dependencies",
                 expected: "a dictionary literal like [\"@a\" = \"url@tag\"]",
-            })
+            });
         }
     };
 
@@ -246,7 +246,7 @@ fn unspan_expr(expr: &Expr) -> &Expr {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_manifest_source, DependencySource, ManifestError, ProjectType};
+    use super::{DependencySource, ManifestError, ProjectType, parse_manifest_source};
 
     #[test]
     fn parses_struct_manifest_shape() {

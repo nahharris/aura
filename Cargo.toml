@@ -2,5 +2,6 @@
 members = ["crates/aura-cli", "crates/aura-codegen","crates/aura-diagnostics",
     "crates/aura-frontend",
     "crates/aura-typecheck",
+    "xtask",
 ]
 resolver = "2"
