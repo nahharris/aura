@@ -20,17 +20,18 @@ This plan is executed in strict order: each step is completed in full before mov
 
 ## Phase 3 - LLVM Backend Foundation
 
-- [ ] 3.1 Initialize LLVM backend infrastructure with `inkwell` (latest stable LLVM)
-- [ ] 3.2 Implement type lowering from Aura checked types to LLVM types
-- [ ] 3.3 Implement declaration and function lowering skeleton
-- [ ] 3.4 Implement expression lowering for core literals, identifiers, calls, binary ops
+- [x] 3.1 Initialize LLVM backend infrastructure with `inkwell` (latest stable LLVM)
+- [x] 3.2 Implement type lowering from Aura checked types to LLVM types
+- [x] 3.3 Implement declaration and function lowering skeleton
+- [x] 3.4 Implement expression lowering for core literals, identifiers, calls, binary ops
+- [x] 3.5 Standardize in-house `cargo xtask` LLVM 18 provisioning and runtime env injection
 
 ## Phase 4 - Runtime and Builtins
 
-- [ ] 4.1 Implement minimal syscall wrapper layer in Rust (host target first)
-- [ ] 4.2 Expose only minimal builtins needed for STL implementation
-- [ ] 4.3 Implement UTF-8 `String` representation from day one
-- [ ] 4.4 Move `io_write` and similar high-level behavior into Aura STL on top of minimal builtins
+- [x] 4.1 Implement minimal syscall wrapper layer in Rust (host target first)
+- [x] 4.2 Expose only minimal builtins needed for STL implementation
+- [x] 4.3 Implement UTF-8 `String` representation from day one
+- [x] 4.4 Move `io_write` and similar high-level behavior into Aura STL on top of minimal builtins
 
 ## Phase 5 - Emission Pipeline
 

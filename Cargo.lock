@@ -119,6 +119,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "aura-runtime-host"
+version = "0.1.0"
+
+[[package]]
 name = "aura-typecheck"
 version = "0.1.0"
 dependencies = [

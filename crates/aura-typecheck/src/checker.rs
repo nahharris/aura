@@ -7,7 +7,7 @@ use aura_frontend::ast::{
 };
 
 use crate::aliases::TypeAliases;
-use crate::builtins::BuiltinRegistry;
+use crate::builtins::{BuiltinRegistry, BuiltinTypeRef};
 use crate::checked_ir::{
     BinaryOpKind, CheckedDecl, CheckedExpr, CheckedIr, CheckedStaticArg, CheckedStaticValue,
     CheckedTypeExpr,
@@ -561,9 +561,9 @@ impl TypeChecker {
                         let param_tys = sig
                             .params
                             .iter()
-                            .map(|ty| self.intern_ty(ty))
+                            .map(|ty| self.intern_builtin_type(ty))
                             .collect::<Vec<_>>();
-                        let ret = self.intern_ty(&sig.ret);
+                        let ret = self.intern_builtin_type(&sig.ret);
                         return self.interner.intern(Ty::Func {
                             params: param_tys,
                             ret,
@@ -585,7 +585,7 @@ impl TypeChecker {
                             Issue::BuiltinForm,
                             "builtin expects an identifier operand",
                         )
-                        .with_hint("use form: builtin io_write"),
+                        .with_hint("use form: builtin rt_fd_write"),
                     );
                 }
                 self.unknown_ty()
@@ -1005,109 +1005,24 @@ impl TypeChecker {
         }
     }
 
-    fn intern_ty(&mut self, ty: &Ty) -> TyId {
+    fn intern_builtin_type(&mut self, ty: &BuiltinTypeRef) -> TyId {
         match ty {
-            Ty::Nominal(name) => self.interner.intern(Ty::Nominal(name.clone())),
-            Ty::List(item) => {
-                let item_ty = self
-                    .interner
-                    .get(*item)
-                    .cloned()
-                    .unwrap_or_else(|| self.missing_ty_fallback());
-                let lowered_item = self.intern_ty(&item_ty);
-                self.interner.intern(Ty::List(lowered_item))
+            BuiltinTypeRef::Int32 => self.interner.intern(Ty::Int32),
+            BuiltinTypeRef::Int64 => self.interner.intern(Ty::Int64),
+            BuiltinTypeRef::ISize => self.interner.intern(Ty::ISize),
+            BuiltinTypeRef::UInt8 => self.interner.intern(Ty::UInt8),
+            BuiltinTypeRef::UInt32 => self.interner.intern(Ty::UInt32),
+            BuiltinTypeRef::UInt64 => self.interner.intern(Ty::UInt64),
+            BuiltinTypeRef::USize => self.interner.intern(Ty::USize),
+            BuiltinTypeRef::Never => self.interner.intern(Ty::Never),
+            BuiltinTypeRef::Ptr(inner) => {
+                let item = self.intern_builtin_type(inner);
+                self.interner.intern(Ty::Ptr(item))
             }
-            Ty::Dict { key, value } => {
-                let k = self
-                    .interner
-                    .get(*key)
-                    .cloned()
-                    .unwrap_or_else(|| self.missing_ty_fallback());
-                let v = self
-                    .interner
-                    .get(*value)
-                    .cloned()
-                    .unwrap_or_else(|| self.missing_ty_fallback());
-                let lowered_k = self.intern_ty(&k);
-                let lowered_v = self.intern_ty(&v);
-                self.interner.intern(Ty::Dict {
-                    key: lowered_k,
-                    value: lowered_v,
-                })
+            BuiltinTypeRef::Slice(inner) => {
+                let item = self.intern_builtin_type(inner);
+                self.interner.intern(Ty::Slice(item))
             }
-            Ty::Set(item) => {
-                let item_ty = self
-                    .interner
-                    .get(*item)
-                    .cloned()
-                    .unwrap_or_else(|| self.missing_ty_fallback());
-                let lowered_item = self.intern_ty(&item_ty);
-                self.interner.intern(Ty::Set(lowered_item))
-            }
-            Ty::Array { item, size } => {
-                let item_ty = self
-                    .interner
-                    .get(*item)
-                    .cloned()
-                    .unwrap_or_else(|| self.missing_ty_fallback());
-                let lowered_item = self.intern_ty(&item_ty);
-                self.interner.intern(Ty::Array {
-                    item: lowered_item,
-                    size: *size,
-                })
-            }
-            Ty::Func { params, ret } => {
-                let lowered_params = params
-                    .iter()
-                    .map(|p| {
-                        let t = self
-                            .interner
-                            .get(*p)
-                            .cloned()
-                            .unwrap_or_else(|| self.missing_ty_fallback());
-                        self.intern_ty(&t)
-                    })
-                    .collect();
-                let ret_ty = self
-                    .interner
-                    .get(*ret)
-                    .cloned()
-                    .unwrap_or_else(|| self.missing_ty_fallback());
-                let lowered_ret = self.intern_ty(&ret_ty);
-                self.interner.intern(Ty::Func {
-                    params: lowered_params,
-                    ret: lowered_ret,
-                })
-            }
-            Ty::Tuple(items) => {
-                let lowered = items
-                    .iter()
-                    .map(|i| {
-                        let t = self
-                            .interner
-                            .get(*i)
-                            .cloned()
-                            .unwrap_or_else(|| self.missing_ty_fallback());
-                        self.intern_ty(&t)
-                    })
-                    .collect();
-                self.interner.intern(Ty::Tuple(lowered))
-            }
-            Ty::Struct(fields) => {
-                let lowered = fields
-                    .iter()
-                    .map(|(n, t)| {
-                        let ty = self
-                            .interner
-                            .get(*t)
-                            .cloned()
-                            .unwrap_or_else(|| self.missing_ty_fallback());
-                        (n.clone(), self.intern_ty(&ty))
-                    })
-                    .collect();
-                self.interner.intern(Ty::Struct(lowered))
-            }
-            other => self.interner.intern(other.clone()),
         }
     }
 
@@ -1480,6 +1395,16 @@ impl TypeChecker {
                     "Any" => {
                         self.enforce_exact_type_arity("Any", args, 0);
                         self.interner.intern(Ty::Any)
+                    }
+                    "Ptr" => {
+                        self.enforce_exact_type_arity("Ptr", args, 1);
+                        let item = self.resolve_required_type_arg(args, 0, "Ptr", "item");
+                        self.interner.intern(Ty::Ptr(item))
+                    }
+                    "Slice" => {
+                        self.enforce_exact_type_arity("Slice", args, 1);
+                        let item = self.resolve_required_type_arg(args, 0, "Slice", "item");
+                        self.interner.intern(Ty::Slice(item))
                     }
                     "String" => {
                         self.enforce_exact_type_arity("String", args, 0);
@@ -1917,6 +1842,14 @@ impl TypeChecker {
                 .get(&name)
                 .copied()
                 .unwrap_or_else(|| self.interner.intern(Ty::GenericParam(name))),
+            Ty::Ptr(item) => {
+                let i = self.substitute_ty_id(item, subst);
+                self.interner.intern(Ty::Ptr(i))
+            }
+            Ty::Slice(item) => {
+                let i = self.substitute_ty_id(item, subst);
+                self.interner.intern(Ty::Slice(i))
+            }
             Ty::Nominal(name) => subst
                 .get(&name)
                 .copied()
@@ -2257,7 +2190,10 @@ impl TypeChecker {
                     | Ty::Nominal(_)
             ),
             "Iterable" => matches!(ty, Ty::List(_) | Ty::Array { .. } | Ty::Set(_)),
-            "From" => matches!(ty, Ty::Func { .. } | Ty::Nominal(_)),
+            "From" => matches!(
+                ty,
+                Ty::Func { .. } | Ty::Nominal(_) | Ty::Ptr(_) | Ty::Slice(_)
+            ),
             _ => false,
         }
     }
@@ -2902,6 +2838,20 @@ fn ty_to_ref(ty: &Ty, interner: &TyInterner) -> TypeRef {
         Ty::Void => TypeRef::Primitive(PrimitiveType::Void),
         Ty::Never => TypeRef::Primitive(PrimitiveType::Never),
         Ty::Any => TypeRef::Primitive(PrimitiveType::Any),
+        Ty::Ptr(item) => {
+            let item_ref = interner
+                .get(*item)
+                .map(|t| ty_to_ref(t, interner))
+                .unwrap_or(TypeRef::Unknown);
+            TypeRef::Ptr(Box::new(item_ref))
+        }
+        Ty::Slice(item) => {
+            let item_ref = interner
+                .get(*item)
+                .map(|t| ty_to_ref(t, interner))
+                .unwrap_or(TypeRef::Unknown);
+            TypeRef::Slice(Box::new(item_ref))
+        }
         Ty::Nominal(name) => TypeRef::Nominal(name.clone()),
         Ty::List(item) => {
             let item_ref = interner
@@ -3480,7 +3430,7 @@ mod tests {
                 value: Expr::MacroApply {
                     macro_name: "builtin".to_string(),
                     static_args: vec![StaticArg::Value(StaticValueExpr::Int("4".to_string()))],
-                    operand: Box::new(Expr::Ident("io_write".to_string())),
+                    operand: Box::new(Expr::Ident("rt_fd_write".to_string())),
                 },
             }],
         };
@@ -3761,7 +3711,7 @@ mod tests {
                 value: Expr::MacroApply {
                     macro_name: "builtin".to_string(),
                     static_args: Vec::new(),
-                    operand: Box::new(Expr::Ident("io_write".to_string())),
+                    operand: Box::new(Expr::Ident("rt_fd_write".to_string())),
                 },
             }],
         };
@@ -3774,6 +3724,55 @@ mod tests {
             .expect("value type should exist");
         let ty = module.types.get(*ty_id).expect("type should exist");
         assert!(matches!(ty, Ty::Func { .. }));
+    }
+
+    #[test]
+    fn ptr_and_slice_type_constructors_typecheck() {
+        let program = Program {
+            declarations: vec![
+                Decl::Assign {
+                    doc: None,
+                    name: "s".to_string(),
+                    value: Expr::MacroApply {
+                        macro_name: "builtin".to_string(),
+                        static_args: Vec::new(),
+                        operand: Box::new(Expr::Ident("rt_fd_write".to_string())),
+                    },
+                },
+                Decl::Assign {
+                    doc: None,
+                    name: "m".to_string(),
+                    value: Expr::MacroApply {
+                        macro_name: "builtin".to_string(),
+                        static_args: Vec::new(),
+                        operand: Box::new(Expr::Ident("rt_mem_map".to_string())),
+                    },
+                },
+            ],
+        };
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+
+        let s_ty = module
+            .value_types
+            .get("s")
+            .copied()
+            .expect("s type should exist");
+        let Some(Ty::Func { params, .. }) = module.types.get(s_ty) else {
+            panic!("builtin should be function typed")
+        };
+        assert!(matches!(module.types.get(params[1]), Some(Ty::Slice(_))));
+
+        let m_ty = module
+            .value_types
+            .get("m")
+            .copied()
+            .expect("m type should exist");
+        let Some(Ty::Func { ret, .. }) = module.types.get(m_ty) else {
+            panic!("builtin should be function typed")
+        };
+        assert!(matches!(module.types.get(*ret), Some(Ty::Ptr(_))));
     }
 
     #[test]

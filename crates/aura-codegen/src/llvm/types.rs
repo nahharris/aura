@@ -39,6 +39,8 @@ pub fn classify_type(types: &TyInterner, ty_id: TyId) -> Result<AuraValueType, C
         Ty::Void => Ok(AuraValueType::Void),
         Ty::Never
         | Ty::Any
+        | Ty::Ptr(_)
+        | Ty::Slice(_)
         | Ty::Nominal(_)
         | Ty::List(_)
         | Ty::Dict { .. }

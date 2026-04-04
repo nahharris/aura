@@ -1,0 +1,8 @@
+[package]
+name = "aura-runtime-host"
+version = "0.1.0"
+edition = "2021"
+description = "Host runtime syscall boundary for Aura"
+
+[lib]
+crate-type = ["rlib"]

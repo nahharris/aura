@@ -1357,9 +1357,27 @@ Import resolution rules (current runtime):
 `builtin` is a contextual macro-like form that binds a kernel native symbol by identifier.
 
 ```aura
-def _io_write = builtin io_write;
-def _to_str = builtin to_str;
+def _rt_fd_write = builtin rt_fd_write;
+def _rt_random_fill = builtin rt_random_fill;
 ```
+
+Runtime boundary integer and pointer conventions:
+
+- file-descriptor style handles: `Int32`
+- lengths/counts: `USize`
+- read/write byte count returns: `ISize`
+- file offsets: `Int64`
+- raw pointers: `Ptr[T]`
+- raw spans: `Slice[T]`
+
+`Slice[T]` is the canonical pair shape:
+
+```aura
+def[T] Slice = (ptr: Ptr[T], len: USize);
+```
+
+Kernel builtins remain low-level (`Ptr`/`Slice` + fixed-width ints); STL layers provide
+typed ergonomic wrappers (`String`, `List[UInt8]`, `Array[UInt8, N]`) on top.
 
 ---
 

@@ -15,6 +15,7 @@ This repository is a Cargo workspace.
     ├── aura-cli/
     ├── aura-codegen/
     ├── aura-diagnostics/
+    ├── aura-runtime-host/
     └── aura-frontend/
     └── aura-typecheck/
 ```
@@ -126,6 +127,34 @@ cargo clippy-llvm
 On Windows, xtask automatically applies an LLVM compatibility workaround when needed by creating
 `libxml2s.lib` as an empty static stub in the managed LLVM toolchain if upstream `llvm-config`
 reports it but the archive is missing.
+
+## Runtime Boundary
+
+Phase 4 introduces a minimal runtime syscall boundary oriented around host portability. The STL
+builds higher-level behavior on these primitives.
+
+- process: `rt_exit`
+- fd I/O: `rt_fd_read`, `rt_fd_write`, `rt_fd_open`, `rt_fd_close`, `rt_fd_seek`
+- memory: `rt_mem_map`, `rt_mem_unmap`, `rt_mem_protect`
+- time: `rt_time_now_ns`
+- entropy: `rt_random_fill`
+
+Runtime ABI conventions:
+
+- file-descriptor style handles use `Int32`
+- lengths/counts use `USize`
+- read/write byte counts use `ISize`
+- seek offsets use `Int64`
+- raw memory and byte spans use `Ptr[T]` and `Slice[T]`
+
+Conceptually:
+
+```aura
+def[T] Slice = (ptr: Ptr[T], len: USize);
+```
+
+Kernel builtins are intentionally low-level (`Ptr`/`Slice` + fixed-width ints); formatting and
+high-level I/O remain in Aura STL wrappers.
 
 ## CLI (`aura`)
 

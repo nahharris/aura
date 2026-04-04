@@ -82,6 +82,14 @@ impl Unifier {
                 let item = self.unify(interner, a, b, _context)?;
                 Ok(interner.intern(Ty::List(item)))
             }
+            (Some(Ty::Ptr(a)), Some(Ty::Ptr(b))) => {
+                let item = self.unify(interner, a, b, _context)?;
+                Ok(interner.intern(Ty::Ptr(item)))
+            }
+            (Some(Ty::Slice(a)), Some(Ty::Slice(b))) => {
+                let item = self.unify(interner, a, b, _context)?;
+                Ok(interner.intern(Ty::Slice(item)))
+            }
             (Some(Ty::Dict { key: ka, value: va }), Some(Ty::Dict { key: kb, value: vb })) => {
                 if self.occurs(interner, lhs, kb) || self.occurs(interner, rhs, ka) {
                     return Err(Box::new(
@@ -272,6 +280,8 @@ impl Unifier {
         }
         match interner.get(within) {
             Some(Ty::List(item)) => self.occurs(interner, var, *item),
+            Some(Ty::Ptr(item)) => self.occurs(interner, var, *item),
+            Some(Ty::Slice(item)) => self.occurs(interner, var, *item),
             Some(Ty::Dict { key, value }) => {
                 self.occurs(interner, var, *key) || self.occurs(interner, var, *value)
             }
