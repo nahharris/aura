@@ -1,0 +1,3 @@
+def option_some_value = Option.some(10)
+
+def option_none_value = Option[Int].null

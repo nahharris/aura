@@ -249,6 +249,7 @@ impl Unifier {
                 Ok(interner.intern(Ty::Enum(variants)))
             }
             (Some(a), Some(b)) if a == b => Ok(lhs),
+            (Some(Ty::Nominal(_)), Some(_)) | (Some(_), Some(Ty::Nominal(_))) => Ok(lhs),
             (Some(_a), Some(_b)) => Err(Box::new(
                 Diagnostic::error(Issue::UnifyMismatch)
                     .with_related("type equality constraint failed", None)

@@ -85,13 +85,13 @@ impl fmt::Display for TypeRef {
             Self::Primitive(p) => write!(f, "{p}"),
             Self::InferVar(v) => write!(f, "_t{v}"),
             Self::GenericParam(name) => f.write_str(name),
-            Self::Ptr(inner) => write!(f, "Ptr<{inner}>"),
-            Self::Slice(inner) => write!(f, "Slice<{inner}>"),
+            Self::Ptr(inner) => write!(f, "Ptr[{inner}]"),
+            Self::Slice(inner) => write!(f, "Slice[{inner}]"),
             Self::Nominal(name) => f.write_str(name),
-            Self::List(item) => write!(f, "List<{item}>"),
-            Self::Dict { key, value } => write!(f, "Dict<{key}, {value}>"),
-            Self::Set(item) => write!(f, "Set<{item}>"),
-            Self::Array { item, size } => write!(f, "Array<{item}, {size}>"),
+            Self::List(item) => write!(f, "List[{item}]"),
+            Self::Dict { key, value } => write!(f, "Dict[{key}, {value}]"),
+            Self::Set(item) => write!(f, "Set[{item}]"),
+            Self::Array { item, size } => write!(f, "Array[{item}, {size}]"),
             Self::Func { params, ret } => {
                 let joined = params
                     .iter()

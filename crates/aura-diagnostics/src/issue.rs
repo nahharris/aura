@@ -49,6 +49,7 @@ pub enum Issue {
         detail: String,
     },
     MacroUntyped,
+    MainSignature,
     OpNonNumeric,
     PatternEmptyArms,
     PatternNonExhaustive,
@@ -112,6 +113,7 @@ impl Issue {
             Self::IfForm => "E_IF_FORM",
             Self::InterfaceBoundUnsatisfied { .. } => "E_INTERFACE_BOUND_UNSAT",
             Self::MacroUntyped => "E_MACRO_UNTYPED",
+            Self::MainSignature => "E_MAIN_SIGNATURE",
             Self::OpNonNumeric => "E_OP_NON_NUMERIC",
             Self::PatternEmptyArms => "E_PATTERN_EMPTY_ARMS",
             Self::PatternNonExhaustive => "E_PATTERN_NON_EXHAUSTIVE",
@@ -185,6 +187,7 @@ impl Issue {
             Self::IfForm => "invalid if form".to_string(),
             Self::InterfaceBoundUnsatisfied { detail } => detail.clone(),
             Self::MacroUntyped => "macro value used where typed value is required".to_string(),
+            Self::MainSignature => "invalid main signature".to_string(),
             Self::OpNonNumeric => "numeric operator requires numeric operands".to_string(),
             Self::PatternEmptyArms => {
                 "multi-arm expression must contain at least one arm".to_string()

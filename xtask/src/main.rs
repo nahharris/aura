@@ -191,13 +191,41 @@ fn llvm_clippy(sh: &Shell) -> Result<()> {
 fn llvm_run(args: &[String]) -> Result<()> {
     let prefix = llvm_env_prefix()?;
     ensure_windows_libxml2_stub(&prefix)?;
-    run_cargo_with_llvm_env("run", args, &prefix)
+    llvm_build_runtime_host(&prefix)?;
+    run_cargo_with_llvm_env("run", &inject_llvm_backend_for_aura_cli(args), &prefix)
 }
 
 fn llvm_cargo(args: &[String]) -> Result<()> {
     let prefix = llvm_env_prefix()?;
     ensure_windows_libxml2_stub(&prefix)?;
+    llvm_build_runtime_host(&prefix)?;
     run_cargo_with_llvm_env("", args, &prefix)
+}
+
+fn llvm_build_runtime_host(prefix: &str) -> Result<()> {
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build").arg("-p").arg("aura-runtime-host");
+    cmd.env("LLVM_SYS_180_PREFIX", prefix);
+    let status = cmd
+        .status()
+        .context("failed to build aura-runtime-host for LLVM flow")?;
+    if !status.success() {
+        bail!("failed to build aura-runtime-host (cargo status {status})");
+    }
+    Ok(())
+}
+
+fn inject_llvm_backend_for_aura_cli(args: &[String]) -> Vec<String> {
+    let mut out = args.to_vec();
+    let is_aura_cli_run = out.windows(2).any(|w| w[0] == "-p" && w[1] == "aura-cli")
+        || out.iter().any(|a| a == "aura-cli");
+    let already_has_features = out.iter().any(|a| a == "--features");
+    if is_aura_cli_run && !already_has_features {
+        let insert_at = out.iter().position(|a| a == "--").unwrap_or(out.len());
+        out.insert(insert_at, "llvm-backend".to_string());
+        out.insert(insert_at, "--features".to_string());
+    }
+    out
 }
 
 fn run_cargo_with_llvm_env(mode: &str, args: &[String], prefix: &str) -> Result<()> {
@@ -265,7 +293,7 @@ fn ensure_windows_libxml2_stub(prefix: &str) -> Result<()> {
 
     let mut temp_dir = PathBuf::from(prefix);
     temp_dir.push("lib");
-    temp_dir.push(".aura-libxml2-stub");
+    temp_dir.push(format!(".aura-libxml2-stub-{}", std::process::id()));
     fs::create_dir_all(&temp_dir)
         .with_context(|| format!("failed to create '{}'", temp_dir.display()))?;
 

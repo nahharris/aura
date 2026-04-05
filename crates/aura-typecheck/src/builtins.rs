@@ -10,6 +10,7 @@ pub enum BuiltinTypeRef {
     UInt64,
     USize,
     Never,
+    Nominal(String),
     Ptr(Box<BuiltinTypeRef>),
     Slice(Box<BuiltinTypeRef>),
 }
@@ -30,8 +31,7 @@ impl BuiltinRegistry {
     pub fn with_prelude() -> Self {
         let mut entries = HashMap::new();
         let ptr_u8 = BuiltinTypeRef::Ptr(Box::new(BuiltinTypeRef::UInt8));
-        let slice_u8 = BuiltinTypeRef::Slice(Box::new(BuiltinTypeRef::UInt8));
-        let path_bytes = BuiltinTypeRef::Slice(Box::new(BuiltinTypeRef::UInt8));
+        let path_bytes = BuiltinTypeRef::Ptr(Box::new(BuiltinTypeRef::UInt8));
 
         entries.insert(
             "rt_exit".to_string(),
@@ -45,7 +45,7 @@ impl BuiltinRegistry {
             "rt_fd_read".to_string(),
             BuiltinSignature {
                 name: "rt_fd_read".to_string(),
-                params: vec![BuiltinTypeRef::Int32, slice_u8.clone()],
+                params: vec![BuiltinTypeRef::Int32, ptr_u8.clone()],
                 ret: BuiltinTypeRef::ISize,
             },
         );
@@ -53,7 +53,10 @@ impl BuiltinRegistry {
             "rt_fd_write".to_string(),
             BuiltinSignature {
                 name: "rt_fd_write".to_string(),
-                params: vec![BuiltinTypeRef::Int32, slice_u8.clone()],
+                params: vec![
+                    BuiltinTypeRef::Int32,
+                    BuiltinTypeRef::Nominal("String".to_string()),
+                ],
                 ret: BuiltinTypeRef::ISize,
             },
         );
@@ -109,7 +112,11 @@ impl BuiltinRegistry {
             "rt_mem_protect".to_string(),
             BuiltinSignature {
                 name: "rt_mem_protect".to_string(),
-                params: vec![ptr_u8, BuiltinTypeRef::USize, BuiltinTypeRef::UInt32],
+                params: vec![
+                    ptr_u8.clone(),
+                    BuiltinTypeRef::USize,
+                    BuiltinTypeRef::UInt32,
+                ],
                 ret: BuiltinTypeRef::Int32,
             },
         );
@@ -125,7 +132,7 @@ impl BuiltinRegistry {
             "rt_random_fill".to_string(),
             BuiltinSignature {
                 name: "rt_random_fill".to_string(),
-                params: vec![slice_u8],
+                params: vec![ptr_u8],
                 ret: BuiltinTypeRef::Int32,
             },
         );

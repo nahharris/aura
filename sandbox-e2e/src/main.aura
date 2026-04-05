@@ -1,0 +1,4 @@
+def main() -> Result[Void, UInt8] {
+    runtime.fd_write(1, "hello world\n")
+    .ok(())
+}

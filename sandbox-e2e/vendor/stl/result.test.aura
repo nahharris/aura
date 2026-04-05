@@ -1,0 +1,3 @@
+def result_ok_value = Result[Int, String].ok(10)
+
+def result_err_value = Result[Int, String].err("boom")

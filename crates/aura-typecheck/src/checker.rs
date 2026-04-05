@@ -254,7 +254,13 @@ impl TypeChecker {
                         .extend(self.pattern_checker.validate_redundancy(arms));
                 }
 
+                let param_tys: Vec<TyId> = function
+                    .params
+                    .iter()
+                    .map(|p| self.resolve_type_expr(&p.ty))
+                    .collect();
                 let expected_ret = self.resolve_type_expr(&function.return_type);
+                self.validate_main_signature(function);
                 let actual_ret = self.infer_expr_with_expected(&function.body, expected_ret);
                 self.require_assignable(expected_ret, actual_ret, "function return");
                 self.solve_constraints();
@@ -266,19 +272,18 @@ impl TypeChecker {
                     "function return",
                     ConversionMode::ImplicitOnly,
                 );
-                self.ir.declarations.push(CheckedDecl {
-                    name: function.name.clone(),
-                    ty: expected_ret,
-                    value: lowered_body,
-                });
-                let param_tys: Vec<TyId> = function
-                    .params
-                    .iter()
-                    .map(|p| self.resolve_type_expr(&p.ty))
-                    .collect();
                 let func_ty = self.interner.intern(Ty::Func {
                     params: param_tys,
                     ret: expected_ret,
+                });
+                self.ir.declarations.push(CheckedDecl {
+                    name: if function.name == "main" {
+                        "aura_user_main".to_string()
+                    } else {
+                        function.name.clone()
+                    },
+                    ty: func_ty,
+                    value: lowered_body,
                 });
                 self.pop_scope();
                 self.pop_generic_scope();
@@ -459,7 +464,7 @@ impl TypeChecker {
                 trailing,
                 ..
             } => {
-                let callee_name = match TypeChecker::base_expr(callee.as_ref()) {
+                let mut callee_name = match TypeChecker::base_expr(callee.as_ref()) {
                     Expr::Ident(name) => Some(name.clone()),
                     _ => None,
                 };
@@ -469,7 +474,37 @@ impl TypeChecker {
                 if matches!(callee_name.as_deref(), Some("cases")) {
                     return self.infer_cases_call_with_expected(args, trailing, None);
                 }
-                let callee_ty = self.infer_expr(callee);
+
+                let callee_ty = if let Expr::Member { object, field } =
+                    TypeChecker::base_expr(callee.as_ref())
+                {
+                    if matches!(TypeChecker::base_expr(object.as_ref()), Expr::Ident(module_name) if module_name == "runtime")
+                    {
+                        if let Some(rt_name) = Self::runtime_member_builtin_name(field) {
+                            callee_name = Some(rt_name.to_string());
+                            if let Some(sig) = self.builtins.get(rt_name).cloned() {
+                                let param_tys = sig
+                                    .params
+                                    .iter()
+                                    .map(|ty| self.intern_builtin_type(ty))
+                                    .collect::<Vec<_>>();
+                                let ret = self.intern_builtin_type(&sig.ret);
+                                self.interner.intern(Ty::Func {
+                                    params: param_tys,
+                                    ret,
+                                })
+                            } else {
+                                self.infer_expr(callee)
+                            }
+                        } else {
+                            self.infer_expr(callee)
+                        }
+                    } else {
+                        self.infer_expr(callee)
+                    }
+                } else {
+                    self.infer_expr(callee)
+                };
                 self.infer_call_expr(
                     callee_ty,
                     callee_name.as_deref(),
@@ -787,6 +822,24 @@ impl TypeChecker {
                 self.require_assignable(expected, actual, "bidirectional expected type");
                 actual
             }
+            (Expr::Int(value), Some(Ty::UInt8)) => {
+                if value.parse::<u8>().is_ok() {
+                    expected
+                } else {
+                    self.diagnostics.push(
+                        self.typecheck_error(
+                            Issue::TypeMismatch {
+                                context: TypingContext::Custom("integer literal".to_string()),
+                                expected: TypeRef::Primitive(PrimitiveType::UInt8),
+                                actual: TypeRef::Primitive(PrimitiveType::Int32),
+                            },
+                            "integer literal is out of range for UInt8",
+                        )
+                        .with_hint("use a value between 0 and 255 for UInt8"),
+                    );
+                    self.unknown_ty()
+                }
+            }
             (Expr::DotIdent { name, payload }, Some(Ty::Enum(variants))) => {
                 let variant = variants
                     .iter()
@@ -824,6 +877,45 @@ impl TypeChecker {
                     }
                 }
                 expected
+            }
+            (Expr::DotIdent { name, payload }, Some(Ty::Nominal(result_name)))
+                if result_name == "Result" =>
+            {
+                match name.as_str() {
+                    "ok" => {
+                        if let Some(inner) = payload.as_ref() {
+                            let _ = self.infer_expr(inner);
+                        }
+                        expected
+                    }
+                    "err" => {
+                        let err_expected = self.interner.intern(Ty::UInt8);
+                        if let Some(inner) = payload.as_ref() {
+                            let err_actual = self.infer_expr_with_expected(inner, err_expected);
+                            self.require_assignable(err_expected, err_actual, "result err payload");
+                            expected
+                        } else {
+                            let void_ty = self.interner.intern(Ty::Void);
+                            self.emit_type_mismatch(
+                                err_expected,
+                                void_ty,
+                                "result err payload",
+                                "Result.err requires an error payload",
+                            );
+                            self.unknown_ty()
+                        }
+                    }
+                    _ => {
+                        let actual = self.infer_expr(expr);
+                        self.emit_type_mismatch(
+                            expected,
+                            actual,
+                            "assignment",
+                            "unknown Result variant",
+                        );
+                        self.unknown_ty()
+                    }
+                }
             }
             (Expr::DotIdent { payload, .. }, Some(Ty::Union(members))) => {
                 if let Some(inner) = payload {
@@ -1015,6 +1107,7 @@ impl TypeChecker {
             BuiltinTypeRef::UInt64 => self.interner.intern(Ty::UInt64),
             BuiltinTypeRef::USize => self.interner.intern(Ty::USize),
             BuiltinTypeRef::Never => self.interner.intern(Ty::Never),
+            BuiltinTypeRef::Nominal(name) => self.interner.intern(Ty::Nominal(name.clone())),
             BuiltinTypeRef::Ptr(inner) => {
                 let item = self.intern_builtin_type(inner);
                 self.interner.intern(Ty::Ptr(item))
@@ -1375,6 +1468,20 @@ impl TypeChecker {
                     return self.interner.intern(Ty::Enum(variants));
                 }
 
+                if name == "Result" {
+                    self.enforce_exact_type_arity("Result", args, 2);
+                    let ok_ty = self.resolve_required_type_arg(args, 0, "Result", "ok");
+                    let err_ty = self.resolve_required_type_arg(args, 1, "Result", "err");
+                    let ok_payload = match self.interner.get(ok_ty) {
+                        Some(Ty::Void) => None,
+                        _ => Some(ok_ty),
+                    };
+                    return self.interner.intern(Ty::Enum(vec![
+                        ("ok".to_string(), ok_payload),
+                        ("err".to_string(), Some(err_ty)),
+                    ]));
+                }
+
                 match name.as_str() {
                     "Bool" => {
                         self.enforce_exact_type_arity("Bool", args, 0);
@@ -1610,6 +1717,19 @@ impl TypeChecker {
             params: expected_params.clone(),
             ret: expected_ret,
         });
+
+        if let Some(Ty::Func {
+            params: cparams,
+            ret: cret,
+        }) = self.interner.get(callee_ty).cloned()
+        {
+            if cparams.len() == expected_params.len() {
+                for (target, source) in expected_params.iter().zip(cparams.iter()) {
+                    let _ = self.unify_with_context(*target, *source, "callable parameter");
+                }
+                let _ = self.unify_with_context(expected_ret, cret, "callable return");
+            }
+        }
 
         self.unify_with_context(callee_ty, expected_func, "callable expression");
 
@@ -1968,6 +2088,42 @@ impl TypeChecker {
                     self.obligation_stack = prev_obligations;
                     self.current_expr_span = prev_span;
                 }
+                TypeConstraint::Assignable {
+                    expected,
+                    actual,
+                    context,
+                    obligations,
+                    span,
+                } if context == "call argument" => {
+                    let prev_obligations = self.obligation_stack.clone();
+                    let prev_span = self.current_expr_span;
+                    self.obligation_stack = obligations;
+                    self.current_expr_span = span;
+
+                    let _ = self.unify_with_context(expected, actual, "call argument unify");
+                    if matches!(
+                        self.conversion_decision(
+                            expected,
+                            actual,
+                            ConversionMode::ImplicitOnly,
+                            &context,
+                        ),
+                        ConversionDecision::Identity | ConversionDecision::Coerce
+                    ) {
+                        self.obligation_stack = prev_obligations;
+                        self.current_expr_span = prev_span;
+                        continue;
+                    }
+
+                    self.emit_type_mismatch(
+                        expected,
+                        actual,
+                        &context,
+                        "assignability constraint failed in solver",
+                    );
+                    self.obligation_stack = prev_obligations;
+                    self.current_expr_span = prev_span;
+                }
                 TypeConstraint::InterfaceExists {
                     interface,
                     context,
@@ -2278,6 +2434,10 @@ impl TypeChecker {
             return ConversionDecision::Coerce;
         }
 
+        if self.structurally_equivalent(expected, actual) {
+            return ConversionDecision::Identity;
+        }
+
         if let Ty::Union(expected_members) = &expected_ty {
             for member in expected_members {
                 if let Some(member_ty) = self.interner.get(*member).cloned() {
@@ -2303,6 +2463,70 @@ impl TypeChecker {
         }
 
         ConversionDecision::Incompatible
+    }
+
+    fn structurally_equivalent(&self, expected: TyId, actual: TyId) -> bool {
+        let expected = self.unifier.resolve(expected);
+        let actual = self.unifier.resolve(actual);
+        if expected == actual {
+            return true;
+        }
+        let Some(expected_ty) = self.interner.get(expected) else {
+            return false;
+        };
+        let Some(actual_ty) = self.interner.get(actual) else {
+            return false;
+        };
+
+        match (expected_ty, actual_ty) {
+            (Ty::Ptr(a), Ty::Ptr(b))
+            | (Ty::Slice(a), Ty::Slice(b))
+            | (Ty::List(a), Ty::List(b)) => self.structurally_equivalent(*a, *b),
+            (Ty::Dict { key: ak, value: av }, Ty::Dict { key: bk, value: bv }) => {
+                self.structurally_equivalent(*ak, *bk) && self.structurally_equivalent(*av, *bv)
+            }
+            (Ty::Set(a), Ty::Set(b)) => self.structurally_equivalent(*a, *b),
+            (
+                Ty::Array {
+                    item: ai,
+                    size: asz,
+                },
+                Ty::Array {
+                    item: bi,
+                    size: bsz,
+                },
+            ) => asz == bsz && self.structurally_equivalent(*ai, *bi),
+            (Ty::Tuple(a), Ty::Tuple(b)) => {
+                a.len() == b.len()
+                    && a.iter()
+                        .zip(b.iter())
+                        .all(|(x, y)| self.structurally_equivalent(*x, *y))
+            }
+            (Ty::Struct(a), Ty::Struct(b)) => {
+                a.len() == b.len()
+                    && a.iter().zip(b.iter()).all(|((an, at), (bn, bt))| {
+                        an == bn && self.structurally_equivalent(*at, *bt)
+                    })
+            }
+            (
+                Ty::Func {
+                    params: ap,
+                    ret: ar,
+                },
+                Ty::Func {
+                    params: bp,
+                    ret: br,
+                },
+            ) => {
+                ap.len() == bp.len()
+                    && ap
+                        .iter()
+                        .zip(bp.iter())
+                        .all(|(x, y)| self.structurally_equivalent(*x, *y))
+                    && self.structurally_equivalent(*ar, *br)
+            }
+            _ => false,
+        }
     }
 
     fn emit_type_mismatch(&mut self, expected: TyId, actual: TyId, context: &str, related: &str) {
@@ -2472,6 +2696,73 @@ impl TypeChecker {
             .find_map(|scope| scope.get(name).copied())
     }
 
+    fn validate_main_signature(&mut self, function: &aura_frontend::ast::FunctionDecl) {
+        if function.name != "main" {
+            return;
+        }
+
+        let no_params = function.params.is_empty();
+        let no_static_params = function.static_params.is_empty();
+        let no_receiver = function.receiver.is_none();
+        let valid_ret = Self::main_return_type_expr_ok(&function.return_type);
+
+        if no_params && no_static_params && no_receiver && valid_ret {
+            return;
+        }
+
+        self.diagnostics.push(
+            self.typecheck_error(
+                Issue::MainSignature,
+                "`main` must have no params/static params/receiver and return `Void` or `Result[Void, UInt8]`",
+            )
+            .with_hint(
+                "use one of: `def main() -> Void { ... }` or `def main() -> Result[Void, UInt8] { ... }`",
+            ),
+        );
+    }
+
+    fn main_return_type_expr_ok(ty: &TypeExpr) -> bool {
+        match ty {
+            TypeExpr::Static(inner) => Self::main_return_type_expr_ok(inner),
+            TypeExpr::Named { name, args } if name == "Void" && args.is_empty() => true,
+            TypeExpr::Named { name, args } if name == "Result" && args.len() == 2 => {
+                let Some(StaticArg::Type(ok_ty)) = args.first() else {
+                    return false;
+                };
+                let Some(StaticArg::Type(err_ty)) = args.get(1) else {
+                    return false;
+                };
+
+                Self::is_named_no_args(ok_ty, "Void") && Self::is_named_no_args(err_ty, "UInt8")
+            }
+            _ => false,
+        }
+    }
+
+    fn is_named_no_args(ty: &TypeExpr, expected_name: &str) -> bool {
+        let TypeExpr::Named { name, args } = ty else {
+            return false;
+        };
+        name == expected_name && args.is_empty()
+    }
+
+    fn runtime_member_builtin_name(field: &str) -> Option<&'static str> {
+        match field {
+            "fd_read" => Some("rt_fd_read"),
+            "fd_write" => Some("rt_fd_write"),
+            "fd_open" => Some("rt_fd_open"),
+            "fd_close" => Some("rt_fd_close"),
+            "fd_seek" => Some("rt_fd_seek"),
+            "mem_map" => Some("rt_mem_map"),
+            "mem_unmap" => Some("rt_mem_unmap"),
+            "mem_protect" => Some("rt_mem_protect"),
+            "time_now_ns" => Some("rt_time_now_ns"),
+            "random_fill" => Some("rt_random_fill"),
+            "exit" => Some("rt_exit"),
+            _ => None,
+        }
+    }
+
     fn lower_expr(&mut self, expr: &Expr) -> CheckedExpr {
         match expr {
             Expr::Spanned { expr, .. } => self.lower_expr(expr),
@@ -2510,10 +2801,48 @@ impl TypeChecker {
                     .map(|(k, v)| (self.lower_expr(k), self.lower_expr(v)))
                     .collect(),
             ),
-            Expr::Call { callee, args, .. } => CheckedExpr::Call {
-                callee: Box::new(self.lower_expr(callee)),
-                args: args.iter().map(|a| self.lower_expr(a)).collect(),
-            },
+            Expr::Call { callee, args, .. } => {
+                let lowered_callee = if let Expr::Member { object, field } =
+                    TypeChecker::base_expr(callee.as_ref())
+                {
+                    if matches!(TypeChecker::base_expr(object.as_ref()), Expr::Ident(module_name) if module_name == "runtime")
+                    {
+                        if let Some(rt_name) = Self::runtime_member_builtin_name(field) {
+                            CheckedExpr::Ident(rt_name.to_string())
+                        } else {
+                            self.lower_expr(callee)
+                        }
+                    } else {
+                        self.lower_expr(callee)
+                    }
+                } else {
+                    self.lower_expr(callee)
+                };
+                CheckedExpr::Call {
+                    callee: Box::new(lowered_callee),
+                    args: args
+                        .iter()
+                        .map(|a| {
+                            if let Expr::MacroApply {
+                                macro_name,
+                                operand,
+                                ..
+                            } = a
+                            {
+                                if macro_name == "builtin" {
+                                    return self.lower_expr(operand);
+                                }
+                            }
+                            self.lower_expr(a)
+                        })
+                        .collect(),
+                }
+            }
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                ..
+            } if macro_name == "builtin" => self.lower_expr(operand),
             Expr::Cast { expr, ty } => {
                 let source_ty = self.preview_expr_ty(expr);
                 let target_ty = self.resolve_type_expr(ty);
@@ -3773,6 +4102,105 @@ mod tests {
             panic!("builtin should be function typed")
         };
         assert!(matches!(module.types.get(*ret), Some(Ty::Ptr(_))));
+    }
+
+    #[test]
+    fn main_signature_accepts_void() {
+        let program = Program {
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
+                static_params: Vec::new(),
+                receiver: None,
+                name: "main".to_string(),
+                params: Vec::new(),
+                return_type: TypeExpr::Named {
+                    name: "Void".to_string(),
+                    args: Vec::new(),
+                },
+                body: Expr::DotIdent {
+                    name: "unit".to_string(),
+                    payload: None,
+                },
+            })],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked
+            .diagnostics
+            .iter()
+            .all(|d| d.code_str() != "E_MAIN_SIGNATURE"));
+    }
+
+    #[test]
+    fn main_signature_accepts_result_void_u8() {
+        let program = Program {
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
+                static_params: Vec::new(),
+                receiver: None,
+                name: "main".to_string(),
+                params: Vec::new(),
+                return_type: TypeExpr::Named {
+                    name: "Result".to_string(),
+                    args: vec![
+                        StaticArg::Type(TypeExpr::Named {
+                            name: "Void".to_string(),
+                            args: Vec::new(),
+                        }),
+                        StaticArg::Type(TypeExpr::Named {
+                            name: "UInt8".to_string(),
+                            args: Vec::new(),
+                        }),
+                    ],
+                },
+                body: Expr::DotIdent {
+                    name: "ok".to_string(),
+                    payload: None,
+                },
+            })],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked
+            .diagnostics
+            .iter()
+            .all(|d| d.code_str() != "E_MAIN_SIGNATURE"));
+    }
+
+    #[test]
+    fn main_signature_rejects_result_void_int32() {
+        let program = Program {
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
+                static_params: Vec::new(),
+                receiver: None,
+                name: "main".to_string(),
+                params: Vec::new(),
+                return_type: TypeExpr::Named {
+                    name: "Result".to_string(),
+                    args: vec![
+                        StaticArg::Type(TypeExpr::Named {
+                            name: "Void".to_string(),
+                            args: Vec::new(),
+                        }),
+                        StaticArg::Type(TypeExpr::Named {
+                            name: "Int".to_string(),
+                            args: Vec::new(),
+                        }),
+                    ],
+                },
+                body: Expr::DotIdent {
+                    name: "ok".to_string(),
+                    payload: None,
+                },
+            })],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_MAIN_SIGNATURE"));
     }
 
     #[test]

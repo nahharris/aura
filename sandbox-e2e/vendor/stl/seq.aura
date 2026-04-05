@@ -1,0 +1,1 @@
+def[T] Seq = enum(nil: (), cons: (head: T, tail: Seq[T]));

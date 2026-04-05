@@ -7,4 +7,4 @@ pub mod types;
 
 pub use context::CodegenContext;
 pub use error::CodegenError;
-pub use module::emit_module_stub;
+pub use module::{emit_module_stub, emit_object_file};

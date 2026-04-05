@@ -1,0 +1,7 @@
+def print(text: String) -> Void {
+    .unit
+}
+
+def println(text: String) -> Void {
+    .unit
+}

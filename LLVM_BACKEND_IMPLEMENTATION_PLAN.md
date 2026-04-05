@@ -35,10 +35,10 @@ This plan is executed in strict order: each step is completed in full before mov
 
 ## Phase 5 - Emission Pipeline
 
-- [ ] 5.1 Emit LLVM textual IR (`.ll`)
-- [ ] 5.2 Emit object files (`.o`)
-- [ ] 5.3 Link native executable
-- [ ] 5.4 Wire full CLI pipeline: `.ll` -> `.o` -> native
+- [x] 5.1 Emit LLVM textual IR (`.ll`)
+- [x] 5.2 Emit object files (`.o`)
+- [x] 5.3 Link native executable
+- [x] 5.4 Wire full CLI pipeline: `.ll` -> `.o` -> native
 
 ## Phase 6 - Test System
 

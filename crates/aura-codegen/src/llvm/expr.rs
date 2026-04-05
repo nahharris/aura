@@ -7,8 +7,10 @@ use super::error::CodegenError;
 
 #[cfg(feature = "llvm-backend")]
 use inkwell::{
-    AddressSpace,
+    module::Linkage,
+    types::BasicTypeEnum,
     values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum},
+    AddressSpace,
 };
 
 #[cfg(feature = "llvm-backend")]
@@ -80,12 +82,36 @@ pub fn lower_expr<'ctx, 'm>(
                 .const_int(ch as u64, false)
                 .as_basic_value_enum())
         }
-        CheckedExpr::String(_) => Ok(cg
-            .context
-            .ptr_type(AddressSpace::default())
-            .const_null()
-            .as_basic_value_enum()),
+        CheckedExpr::String(value) => {
+            let ptr = cg
+                .builder
+                .build_global_string_ptr(value, "str")
+                .map_err(|_| CodegenError::UnsupportedExpression("string"))?;
+            Ok(ptr.as_pointer_value().as_basic_value_enum())
+        }
+        CheckedExpr::DotIdent { name, payload } => match (name.as_str(), payload.as_deref()) {
+            ("ok", _) => Ok(cg.context.i32_type().const_zero().as_basic_value_enum()),
+            ("err", Some(CheckedExpr::Int(v))) => {
+                let parsed = v
+                    .parse::<u8>()
+                    .map_err(|_| CodegenError::UnsupportedExpression("result_err_u8"))?;
+                Ok(cg
+                    .context
+                    .i32_type()
+                    .const_int(parsed as u64, false)
+                    .as_basic_value_enum())
+            }
+            _ => Err(CodegenError::UnsupportedExpression("dot_ident")),
+        },
         CheckedExpr::Ident(name) => {
+            if name == "main" {
+                if let Some(function) = cg.module.get_function("aura_user_main") {
+                    return Ok(function
+                        .as_global_value()
+                        .as_pointer_value()
+                        .as_basic_value_enum());
+                }
+            }
             if let Some(global) = cg.module.get_global(name) {
                 let value_ty: inkwell::types::BasicTypeEnum<'ctx> = global
                     .get_value_type()
@@ -113,26 +139,143 @@ fn lower_call<'ctx, 'm>(
     callee: &CheckedExpr,
     args: &[CheckedExpr],
 ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    if let CheckedExpr::DotIdent { name, payload } = callee {
+        if let Some(payload_expr) = payload {
+            let _ = lower_expr(cg, payload_expr)?;
+        }
+
+        return match name.as_str() {
+            "ok" => Ok(cg.context.i32_type().const_zero().as_basic_value_enum()),
+            "err" => {
+                let err_u8 = match args.first() {
+                    Some(CheckedExpr::Int(v)) => v
+                        .parse::<u8>()
+                        .map_err(|_| CodegenError::UnsupportedExpression("result_err_u8"))?,
+                    _ => 1u8,
+                };
+                Ok(cg
+                    .context
+                    .i32_type()
+                    .const_int(err_u8 as u64, false)
+                    .as_basic_value_enum())
+            }
+            _ => Err(CodegenError::UnsupportedExpression("call")),
+        };
+    }
+
     let CheckedExpr::Ident(name) = callee else {
         return Err(CodegenError::UnsupportedExpression("call"));
     };
-    let function = cg
-        .module
-        .get_function(name)
-        .ok_or(CodegenError::UnsupportedExpression("call"))?;
+    let resolved_name = if name == "main" {
+        "aura_user_main"
+    } else {
+        name.as_str()
+    };
 
-    let lowered_args = args
-        .iter()
-        .map(|arg| lower_expr(cg, arg).map(BasicMetadataValueEnum::from))
-        .collect::<Result<Vec<_>, _>>()?;
+    if resolved_name == "rt_fd_write" && args.len() == 2 {
+        let puts = if let Some(existing) = cg.module.get_function("puts") {
+            existing
+        } else {
+            let i32_ty = cg.context.i32_type();
+            let ptr_ty = cg.context.ptr_type(AddressSpace::default());
+            let puts_ty = i32_ty.fn_type(&[ptr_ty.into()], false);
+            cg.module
+                .add_function("puts", puts_ty, Some(Linkage::External))
+        };
+
+        let text = lower_expr(cg, &args[1])?;
+        let text_ptr = if let BasicValueEnum::PointerValue(p) = text {
+            p
+        } else {
+            return Err(CodegenError::UnsupportedExpression("call"));
+        };
+
+        let call_args = vec![BasicMetadataValueEnum::from(text_ptr)];
+        let _ = cg
+            .builder
+            .build_call(puts, &call_args, "call_puts")
+            .map_err(|_| CodegenError::UnsupportedExpression("call"))?;
+
+        return Ok(cg
+            .context
+            .i64_type()
+            .const_zero()
+            .as_basic_value_enum());
+    }
+    let function = if let Some(function) = cg.module.get_function(resolved_name) {
+        function
+    } else if let Some(fn_ty) = runtime_builtin_function_type(cg, resolved_name) {
+        cg.module
+            .add_function(resolved_name, fn_ty, Some(Linkage::External))
+    } else {
+        return Err(CodegenError::UnsupportedExpression("call"));
+    };
+
+    let param_tys = function.get_type().get_param_types();
+    let mut lowered_args = Vec::with_capacity(args.len());
+    for (idx, arg) in args.iter().enumerate() {
+        let mut lowered = lower_expr(cg, arg)?;
+        if let Some(param_ty) = param_tys.get(idx)
+            && let (BasicValueEnum::IntValue(int_val), BasicTypeEnum::IntType(target_int_ty)) =
+                (lowered, *param_ty)
+        {
+            let from_w = int_val.get_type().get_bit_width();
+            let to_w = target_int_ty.get_bit_width();
+            if from_w != to_w {
+                lowered = if from_w > to_w {
+                    cg.builder
+                        .build_int_truncate(int_val, target_int_ty, "arg_trunc")
+                        .map_err(|_| CodegenError::UnsupportedExpression("call"))?
+                        .as_basic_value_enum()
+                } else {
+                    cg.builder
+                        .build_int_z_extend(int_val, target_int_ty, "arg_zext")
+                        .map_err(|_| CodegenError::UnsupportedExpression("call"))?
+                        .as_basic_value_enum()
+                };
+            }
+        }
+        lowered_args.push(BasicMetadataValueEnum::from(lowered));
+    }
 
     let call = cg
         .builder
-        .build_call(function, &lowered_args, &format!("call_{name}"))
+        .build_call(function, &lowered_args, &format!("call_{resolved_name}"))
         .map_err(|_| CodegenError::UnsupportedExpression("call"))?;
-    call.try_as_basic_value()
-        .left()
-        .ok_or(CodegenError::UnsupportedExpression("call_void"))
+    if let Some(value) = call.try_as_basic_value().left() {
+        return Ok(value);
+    }
+    Ok(cg
+        .context
+        .ptr_type(AddressSpace::default())
+        .const_null()
+        .as_basic_value_enum())
+}
+
+#[cfg(feature = "llvm-backend")]
+fn runtime_builtin_function_type<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    name: &str,
+) -> Option<inkwell::types::FunctionType<'ctx>> {
+    let i32_ty = cg.context.i32_type();
+    let i64_ty = cg.context.i64_type();
+    let void_ty = cg.context.void_type();
+    let ptr_ty = cg.context.ptr_type(AddressSpace::default());
+
+    let ty = match name {
+        "rt_exit" => void_ty.fn_type(&[i32_ty.into()], false),
+        "rt_fd_read" | "rt_fd_write" => i64_ty.fn_type(&[i32_ty.into(), ptr_ty.into()], false),
+        "rt_fd_open" => i32_ty.fn_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false),
+        "rt_fd_close" => i32_ty.fn_type(&[i32_ty.into()], false),
+        "rt_fd_seek" => i64_ty.fn_type(&[i32_ty.into(), i64_ty.into(), i32_ty.into()], false),
+        "rt_mem_map" => ptr_ty.fn_type(&[i64_ty.into(), i32_ty.into(), i32_ty.into()], false),
+        "rt_mem_unmap" => i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        "rt_mem_protect" => i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i32_ty.into()], false),
+        "rt_time_now_ns" => i64_ty.fn_type(&[], false),
+        "rt_random_fill" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        _ => return None,
+    };
+    Some(ty)
 }
 
 #[cfg(feature = "llvm-backend")]

@@ -34,7 +34,7 @@ impl<'ctx, 'm> CodegenContext<'ctx, 'm> {
 
     pub fn initialize_native_target() -> Result<(), CodegenError> {
         Target::initialize_native(&InitializationConfig::default())
-            .map_err(|_| CodegenError::BackendDisabled)?;
+            .map_err(|_| CodegenError::NativeTargetInit)?;
         Ok(())
     }
 

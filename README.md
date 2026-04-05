@@ -158,25 +158,37 @@ high-level I/O remain in Aura STL wrappers.
 
 ## CLI (`aura`)
 
-Build and emit checked IR from a source file:
+Build from a source file (default format is native executable):
 
 ```bash
-cargo run -p aura-cli -- build examples/basic_ops.aura
+cargo xtask llvm run -- -p aura-cli -- build examples/basic_ops.aura
 ```
 
-By default this writes pretty IR to `*.ir.aura` next to the input file.
+Supported build formats:
 
-Emit JSON instead:
+- `native` (default): emits executable and keeps `.ll` + `.obj` intermediates
+- `auir`: emits checked IR text as `*.auir`
+- `ll`: emits LLVM textual IR as `*.ll`
+- `obj`: emits object file as `*.obj`
+
+Examples:
 
 ```bash
-cargo run -p aura-cli -- build examples/basic_ops.aura --format json
+cargo xtask llvm run -- -p aura-cli -- build examples/basic_ops.aura --format auir
+cargo xtask llvm run -- -p aura-cli -- build examples/basic_ops.aura --format ll
+cargo xtask llvm run -- -p aura-cli -- build examples/basic_ops.aura --format obj
+cargo xtask llvm run -- -p aura-cli -- build examples/basic_ops.aura --format native
 ```
 
 Choose output path explicitly:
 
 ```bash
-cargo run -p aura-cli -- build examples/basic_ops.aura --out examples/basic_ops.out.ir.aura
+cargo xtask llvm run -- -p aura-cli -- build examples/basic_ops.aura --format ll --out examples/basic_ops.custom.ll
 ```
+
+LLVM-backed builds (`--format ll`, `--format obj`, `--format native`) depend on the managed LLVM/Clang toolchain exposed via
+`LLVM_SYS_180_PREFIX`. Always run LLVM-sensitive commands via `cargo xtask llvm ...` so
+the correct LLVM/Clang installation is provisioned and injected.
 
 Try broken examples to inspect diagnostics:
 

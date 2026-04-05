@@ -3,6 +3,10 @@ name = "aura-cli"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+llvm-backend = ["aura-codegen/llvm-backend"]
+
 [dependencies]
 aura-codegen = { path = "../aura-codegen" }
 aura-diagnostics = { path = "../aura-diagnostics" }

@@ -7,6 +7,11 @@ pub enum CodegenError {
     UnsupportedType(String),
     UnsupportedExpression(&'static str),
     InvalidFunctionType(String),
+    NativeTargetInit,
+    NativeTargetMachineUnavailable,
+    ModuleVerification(String),
+    ObjectEmit(String),
+    MainLowering(String),
 }
 
 impl fmt::Display for CodegenError {
@@ -22,6 +27,21 @@ impl fmt::Display for CodegenError {
             }
             CodegenError::InvalidFunctionType(name) => {
                 write!(f, "declaration `{name}` does not lower to a function type")
+            }
+            CodegenError::NativeTargetInit => {
+                write!(f, "failed to initialize native LLVM target")
+            }
+            CodegenError::NativeTargetMachineUnavailable => {
+                write!(f, "failed to create native LLVM target machine")
+            }
+            CodegenError::ModuleVerification(detail) => {
+                write!(f, "LLVM module verification failed: {detail}")
+            }
+            CodegenError::ObjectEmit(detail) => {
+                write!(f, "failed to emit object file: {detail}")
+            }
+            CodegenError::MainLowering(detail) => {
+                write!(f, "failed to lower main entrypoint: {detail}")
             }
         }
     }

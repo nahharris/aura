@@ -1,0 +1,4 @@
+def s0 = Seq.empty()
+def s1 = Seq.cons((head = 1, tail = Seq.cons((head = 2, tail = Seq.cons((head = 3, tail = Seq.nil))))))
+
+def seq_has_first = s1

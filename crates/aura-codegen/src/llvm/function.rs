@@ -22,13 +22,22 @@ pub fn declare_function<'ctx, 'm>(
     cg: &CodegenContext<'ctx, 'm>,
     decl: &CheckedDecl,
 ) -> Result<inkwell::values::FunctionValue<'ctx>, CodegenError> {
+    declare_function_with_name(cg, decl, &decl.name)
+}
+
+#[cfg(feature = "llvm-backend")]
+pub fn declare_function_with_name<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    decl: &CheckedDecl,
+    llvm_name: &str,
+) -> Result<inkwell::values::FunctionValue<'ctx>, CodegenError> {
     let lowered = classify_function_type(&cg.checked.types, decl.ty)
         .map_err(|_| CodegenError::InvalidFunctionType(decl.name.clone()))?;
     let fn_type = lowered.to_llvm_fn_type(cg.context, false)?;
 
     let function = cg
         .module
-        .add_function(&decl.name, fn_type, Some(Linkage::External));
+        .add_function(llvm_name, fn_type, Some(Linkage::External));
     Ok(function)
 }
 

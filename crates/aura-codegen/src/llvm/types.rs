@@ -37,6 +37,20 @@ pub fn classify_type(types: &TyInterner, ty_id: TyId) -> Result<AuraValueType, C
         Ty::Float32 => Ok(AuraValueType::Float32),
         Ty::Float64 => Ok(AuraValueType::Float64),
         Ty::Void => Ok(AuraValueType::Void),
+        Ty::Enum(variants)
+            if variants.len() == 2
+                && variants[0].0 == "ok"
+                && variants[0].1.is_none()
+                && matches!(
+                    variants[1],
+                    (ref name, Some(err_ty))
+                        if name == "err"
+                            && (matches!(types.get(err_ty), Some(Ty::UInt8))
+                                || matches!(types.get(err_ty), Some(Ty::Nominal(n)) if n == "UInt8"))
+                ) =>
+        {
+            Ok(AuraValueType::Int32)
+        }
         Ty::Never
         | Ty::Any
         | Ty::Ptr(_)
@@ -80,9 +94,9 @@ pub fn classify_function_type(
 #[cfg(feature = "llvm-backend")]
 mod llvm_lowering {
     use inkwell::{
-        AddressSpace,
         context::Context,
         types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType},
+        AddressSpace,
     };
 
     use super::{AuraFunctionType, AuraValueType, CodegenError};
@@ -149,7 +163,7 @@ mod llvm_lowering {
 mod tests {
     use aura_typecheck::{Ty, TyInterner};
 
-    use super::{AuraValueType, classify_function_type, classify_type};
+    use super::{classify_function_type, classify_type, AuraValueType};
 
     #[test]
     fn classify_primitives_into_llvm_scalars() {
@@ -180,6 +194,21 @@ mod tests {
         assert_eq!(
             classify_type(&types, list_ty).expect("list type"),
             AuraValueType::Pointer
+        );
+    }
+
+    #[test]
+    fn classify_result_void_u8_as_int32_exit_code_abi() {
+        let mut types = TyInterner::new();
+        let uint8 = types.intern(Ty::UInt8);
+        let result_ty = types.intern(Ty::Enum(vec![
+            ("ok".to_string(), None),
+            ("err".to_string(), Some(uint8)),
+        ]));
+
+        assert_eq!(
+            classify_type(&types, result_ty).expect("result type"),
+            AuraValueType::Int32
         );
     }
 

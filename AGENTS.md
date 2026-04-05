@@ -71,6 +71,8 @@ On Windows, xtask also applies an LLVM compatibility workaround when needed by c
 
 Do not rely on globally exported LLVM env vars for regular workflows when xtask provides the command path.
 Do not run direct `cargo` commands for LLVM-featured tasks; always use `cargo xtask llvm ...` so `LLVM_SYS_180_PREFIX` is injected consistently.
+LLVM-sensitive CLI builds (`--format ll`, `--format obj`, `--format native`) also depend on
+the managed Clang/LLVM toolchain; run them only via `cargo xtask llvm run -- ...`.
 
 Frontend crate only:
 

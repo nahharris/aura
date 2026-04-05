@@ -1,19 +1,19 @@
 use std::collections::BTreeMap;
+use std::env;
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::process::ExitCode;
 
 use anstyle::{AnsiColor, Color, Effects, Style};
 use anyhow::{Context, Result};
 use aura_codegen::project::discover::discover_layout;
 use aura_codegen::project::manifest::{ProjectType, load_manifest};
+use aura_codegen::{emit_llvm_ir, emit_object_file};
 use aura_diagnostics::{Diagnostic, Severity, Span};
 use aura_frontend::ast::{Decl, Program};
 use aura_frontend::{FormatOptions, Parser, format_source, unified_diff};
-use aura_typecheck::checked_ir::{
-    BinaryOpKind, CheckedExpr, CheckedStaticArg, CheckedStaticValue, CheckedTypeExpr,
-};
 use aura_typecheck::{CheckedModule, check_module};
 use clap::{Parser as ClapParser, Subcommand, ValueEnum};
 use serde::Serialize;
@@ -35,7 +35,7 @@ enum Commands {
         input: Option<PathBuf>,
         #[arg(short = 'o', long = "out")]
         out: Option<PathBuf>,
-        #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
+        #[arg(long, value_enum, default_value_t = OutputFormat::Native)]
         format: OutputFormat,
         #[arg(long, value_enum, default_value_t = DiagnosticsFormat::Pretty)]
         diagnostics: DiagnosticsFormat,
@@ -54,13 +54,21 @@ enum Commands {
     Doc {
         input: PathBuf,
         symbol: Option<String>,
-        #[arg(long, value_enum, default_value_t = OutputFormat::Pretty)]
-        format: OutputFormat,
+        #[arg(long, value_enum, default_value_t = DocOutputFormat::Pretty)]
+        format: DocOutputFormat,
     },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 enum OutputFormat {
+    Auir,
+    Ll,
+    Obj,
+    Native,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum DocOutputFormat {
     Pretty,
     Json,
 }
@@ -69,133 +77,6 @@ enum OutputFormat {
 enum DiagnosticsFormat {
     Pretty,
     Json,
-}
-
-#[derive(Debug, Serialize)]
-struct IrDump {
-    contract_version: &'static str,
-    declarations: Vec<IrDeclDump>,
-    value_types: BTreeMap<String, usize>,
-    types: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct IrDeclDump {
-    name: String,
-    ty: usize,
-    value: IrExprDump,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind")]
-enum IrExprDump {
-    Ident {
-        value: String,
-    },
-    Int {
-        value: String,
-    },
-    Float {
-        value: String,
-    },
-    Char {
-        value: String,
-    },
-    String {
-        value: String,
-    },
-    DotIdent {
-        name: String,
-        payload: Option<Box<IrExprDump>>,
-    },
-    Closure {
-        params: Vec<String>,
-        return_ty: Option<usize>,
-    },
-    Any,
-    List {
-        items: Vec<IrExprDump>,
-    },
-    Dict {
-        entries: Vec<(IrExprDump, IrExprDump)>,
-    },
-    Call {
-        callee: Box<IrExprDump>,
-        args: Vec<IrExprDump>,
-    },
-    BinaryOp {
-        op: String,
-        lhs: Box<IrExprDump>,
-        rhs: Box<IrExprDump>,
-        ty: usize,
-    },
-    MacroApply {
-        macro_name: String,
-        static_args: Vec<IrStaticArgDump>,
-        operand: Box<IrExprDump>,
-    },
-    Label {
-        label: String,
-        expr: Box<IrExprDump>,
-    },
-    MultiArm {
-        arms: Vec<IrExprDump>,
-    },
-    If {
-        condition: Box<IrExprDump>,
-        then_branch: Box<IrExprDump>,
-        else_branch: Option<Box<IrExprDump>>,
-    },
-    Cases {
-        arms: Vec<IrExprDump>,
-    },
-    Return {
-        value: Box<IrExprDump>,
-    },
-    Break {
-        value: Option<Box<IrExprDump>>,
-    },
-    Continue,
-    Coerce {
-        from: usize,
-        to: usize,
-        expr: Box<IrExprDump>,
-    },
-    Cast {
-        from: usize,
-        to: usize,
-        expr: Box<IrExprDump>,
-    },
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind")]
-enum IrStaticArgDump {
-    Type { ty: IrTypeExprDump },
-    Value { value: IrStaticValueDump },
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind")]
-enum IrTypeExprDump {
-    Named {
-        name: String,
-        args: Vec<IrStaticArgDump>,
-    },
-    Static {
-        inner: Box<IrTypeExprDump>,
-    },
-    InferHole,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind")]
-enum IrStaticValueDump {
-    Int { value: String },
-    Float { value: String },
-    Ident { value: String },
-    String { value: String },
-    Char { value: String },
 }
 
 fn main() -> ExitCode {
@@ -239,7 +120,7 @@ struct DocRecord {
     doc: String,
 }
 
-fn doc_cmd(input: &Path, symbol: Option<&str>, format: OutputFormat) -> Result<ExitCode> {
+fn doc_cmd(input: &Path, symbol: Option<&str>, format: DocOutputFormat) -> Result<ExitCode> {
     let source = fs::read_to_string(input)
         .with_context(|| format!("failed to read source file '{}'", input.display()))?;
     let program = match Parser::parse_source(&source) {
@@ -254,10 +135,10 @@ fn doc_cmd(input: &Path, symbol: Option<&str>, format: OutputFormat) -> Result<E
     if let Some(symbol) = symbol {
         if let Some(doc) = docs.get(symbol) {
             match format {
-                OutputFormat::Pretty => {
+                DocOutputFormat::Pretty => {
                     println!("# {symbol}\n\n{doc}");
                 }
-                OutputFormat::Json => {
+                DocOutputFormat::Json => {
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&DocRecord {
@@ -280,7 +161,7 @@ fn doc_cmd(input: &Path, symbol: Option<&str>, format: OutputFormat) -> Result<E
     records.sort_by(|a, b| a.symbol.cmp(&b.symbol));
 
     match format {
-        OutputFormat::Pretty => {
+        DocOutputFormat::Pretty => {
             for (i, record) in records.iter().enumerate() {
                 if i > 0 {
                     println!();
@@ -288,7 +169,7 @@ fn doc_cmd(input: &Path, symbol: Option<&str>, format: OutputFormat) -> Result<E
                 println!("# {}\n\n{}", record.symbol, record.doc);
             }
         }
-        OutputFormat::Json => {
+        DocOutputFormat::Json => {
             println!("{}", serde_json::to_string_pretty(&records)?);
         }
     }
@@ -500,25 +381,77 @@ fn build_single_file_cmd(
         .module
         .as_ref()
         .expect("module should exist when diagnostics are error-free");
-    let output_path = out
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_output_path(input, format));
 
-    let rendered = match format {
-        OutputFormat::Pretty => render_ir_pretty(module),
-        OutputFormat::Json => render_ir_json(module)?,
-    };
+    match format {
+        OutputFormat::Auir => {
+            let output_path = out
+                .map(PathBuf::from)
+                .unwrap_or_else(|| default_output_path(input, format));
+            ensure_parent_dir(&output_path)?;
+            let rendered = render_ir_pretty(module);
+            fs::write(&output_path, rendered).with_context(|| {
+                format!(
+                    "failed to write checked IR output '{}'",
+                    output_path.display()
+                )
+            })?;
+            println!("checked IR emitted to {}", output_path.display());
+        }
+        OutputFormat::Ll => {
+            let output_path = out
+                .map(PathBuf::from)
+                .unwrap_or_else(|| default_output_path(input, format));
+            ensure_parent_dir(&output_path)?;
+            let module_name = module_name_from_path(input);
+            let llvm_ir = emit_llvm_ir(&module_name, module)
+                .map_err(|e| anyhow::anyhow!("LLVM IR emission failed: {e}"))?;
+            fs::write(&output_path, llvm_ir)
+                .with_context(|| format!("failed to write LLVM IR '{}'", output_path.display()))?;
+            println!("LLVM IR emitted to {}", output_path.display());
+        }
+        OutputFormat::Obj => {
+            let output_path = out
+                .map(PathBuf::from)
+                .unwrap_or_else(|| default_output_path(input, format));
+            ensure_parent_dir(&output_path)?;
+            let module_name = module_name_from_path(input);
+            emit_object_file(&module_name, module, &output_path)
+                .map_err(|e| anyhow::anyhow!("object emission failed: {e}"))?;
+            println!("object emitted to {}", output_path.display());
+        }
+        OutputFormat::Native => {
+            let executable_path = out
+                .map(PathBuf::from)
+                .unwrap_or_else(|| default_output_path(input, format));
+            ensure_parent_dir(&executable_path)?;
+            ensure_runtime_host_built()?;
+            let module_name = module_name_from_path(input);
+            let stem = executable_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("aura_main");
+            let intermediates_dir = executable_path
+                .parent()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."));
+            let ll_path = intermediates_dir.join(format!("{stem}.ll"));
+            let obj_path = intermediates_dir.join(format!("{stem}.obj"));
 
-    if let Some(parent) = output_path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create output directory '{}'", parent.display()))?;
+            let llvm_ir = emit_llvm_ir(&module_name, module)
+                .map_err(|e| anyhow::anyhow!("LLVM IR emission failed: {e}"))?;
+            fs::write(&ll_path, llvm_ir)
+                .with_context(|| format!("failed to write LLVM IR '{}'", ll_path.display()))?;
+
+            emit_object_file(&module_name, module, &obj_path)
+                .map_err(|e| anyhow::anyhow!("object emission failed: {e}"))?;
+
+            link_native_binary(&obj_path, &executable_path)?;
+            println!("native executable emitted to {}", executable_path.display());
+            println!("kept intermediate LLVM IR at {}", ll_path.display());
+            println!("kept intermediate object file at {}", obj_path.display());
+        }
     }
 
-    fs::write(&output_path, rendered)
-        .with_context(|| format!("failed to write IR output '{}'", output_path.display()))?;
-    println!("IR emitted to {}", output_path.display());
     Ok(ExitCode::SUCCESS)
 }
 
@@ -648,17 +581,24 @@ fn compile_vendored_stl(
             .module
             .as_ref()
             .expect("module should exist when diagnostics are error-free");
-        let rendered = match format {
-            OutputFormat::Pretty => render_ir_pretty(module),
-            OutputFormat::Json => render_ir_json(module)?,
-        };
-
         let relative_path = module_path.strip_prefix(&vendor_stl_dir).with_context(|| {
             format!(
                 "failed to compute STL-relative path for '{}'",
                 module_path.display()
             )
         })?;
+        let rendered = match format {
+            OutputFormat::Auir | OutputFormat::Ll | OutputFormat::Native => render_ir_pretty(module),
+            OutputFormat::Obj => {
+                let module_name = module_name_from_path(&module_path);
+                let obj_path = stl_cache_output_path(&cache_dir, relative_path, OutputFormat::Obj);
+                ensure_parent_dir(&obj_path)?;
+                emit_object_file(&module_name, module, &obj_path)
+                    .map_err(|e| anyhow::anyhow!("object emission failed: {e}"))?;
+                compiled += 1;
+                continue;
+            }
+        };
         let output_path = stl_cache_output_path(&cache_dir, relative_path, format);
         if let Some(parent) = output_path.parent()
             && !parent.as_os_str().is_empty()
@@ -714,8 +654,10 @@ fn stl_cache_output_path(
         .and_then(|s| s.to_str())
         .unwrap_or("module");
     let ext = match format {
-        OutputFormat::Pretty => "ir.aura",
-        OutputFormat::Json => "ir.json",
+        OutputFormat::Auir => "auir",
+        OutputFormat::Ll => "ll",
+        OutputFormat::Obj => "obj",
+        OutputFormat::Native => "ll",
     };
     let output_file_name = format!("{stem}.{ext}");
 
@@ -756,15 +698,123 @@ fn default_output_path(input: &Path, format: OutputFormat) -> PathBuf {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("output");
-    let ext = match format {
-        OutputFormat::Pretty => "ir.aura",
-        OutputFormat::Json => "ir.json",
+    let file_name = match format {
+        OutputFormat::Auir => format!("{stem}.auir"),
+        OutputFormat::Ll => format!("{stem}.ll"),
+        OutputFormat::Obj => format!("{stem}.obj"),
+        OutputFormat::Native => {
+            if cfg!(windows) {
+                format!("{stem}.exe")
+            } else {
+                stem.to_string()
+            }
+        }
     };
-    let file_name = format!("{stem}.{ext}");
     match input.parent() {
         Some(parent) => parent.join(file_name),
         None => PathBuf::from(file_name),
     }
+}
+
+fn module_name_from_path(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("module")
+        .to_string()
+}
+
+fn ensure_parent_dir(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create output directory '{}'", parent.display()))?;
+    }
+    Ok(())
+}
+
+fn llvm_prefix_from_env() -> Result<PathBuf> {
+    let prefix = env::var("LLVM_SYS_180_PREFIX").context(
+        "LLVM_SYS_180_PREFIX is not set. Use `cargo xtask llvm run -- ...` for LLVM-native builds",
+    )?;
+    Ok(PathBuf::from(prefix))
+}
+
+fn clang_path_from_prefix(prefix: &Path) -> PathBuf {
+    if cfg!(windows) {
+        prefix.join("bin").join("clang.exe")
+    } else {
+        prefix.join("bin").join("clang")
+    }
+}
+
+fn runtime_host_staticlib_path() -> Result<PathBuf> {
+    let profile_dir = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let file_name = if cfg!(windows) {
+        "aura_runtime_host.lib"
+    } else {
+        "libaura_runtime_host.a"
+    };
+    let path = PathBuf::from("target").join(profile_dir).join(file_name);
+    if !path.is_file() {
+        anyhow::bail!(
+            "runtime host staticlib not found at '{}'; build `aura-runtime-host` first",
+            path.display()
+        );
+    }
+    Ok(path)
+}
+
+fn link_native_binary(obj_path: &Path, output_path: &Path) -> Result<()> {
+    let llvm_prefix = llvm_prefix_from_env()?;
+    let clang = clang_path_from_prefix(&llvm_prefix);
+    if !clang.is_file() {
+        anyhow::bail!("failed to locate clang at '{}'", clang.display());
+    }
+
+    let runtime_staticlib = runtime_host_staticlib_path()?;
+    let status = Command::new(&clang)
+        .arg(obj_path)
+        .arg(runtime_staticlib)
+        .arg("-lmsvcrt")
+        .arg("-lucrt")
+        .arg("-lvcruntime")
+        .arg("-llegacy_stdio_definitions")
+        .arg("-lkernel32")
+        .arg("-luserenv")
+        .arg("-lws2_32")
+        .arg("-lntdll")
+        .arg("-ladvapi32")
+        .arg("-lbcrypt")
+        .arg("-o")
+        .arg(output_path)
+        .status()
+        .with_context(|| format!("failed to invoke '{}'", clang.display()))?;
+    if !status.success() {
+        anyhow::bail!(
+            "native link failed (clang exit status {status}); object: '{}', output: '{}'",
+            obj_path.display(),
+            output_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn ensure_runtime_host_built() -> Result<()> {
+    let status = Command::new("cargo")
+        .arg("build")
+        .arg("-p")
+        .arg("aura-runtime-host")
+        .status()
+        .context("failed to invoke cargo for aura-runtime-host build")?;
+    if !status.success() {
+        anyhow::bail!("failed to build aura-runtime-host (cargo status {status})");
+    }
+    Ok(())
 }
 
 fn render_ir_pretty(module: &CheckedModule) -> String {
@@ -793,191 +843,6 @@ fn render_ir_pretty(module: &CheckedModule) -> String {
         i += 1;
     }
     out
-}
-
-fn render_ir_json(module: &CheckedModule) -> Result<String> {
-    let mut value_types = BTreeMap::new();
-    for (name, ty) in &module.value_types {
-        value_types.insert(name.clone(), ty.0);
-    }
-
-    let mut types = Vec::new();
-    let mut i = 0usize;
-    while let Some(ty) = module.types.get(aura_typecheck::TyId(i)) {
-        types.push(format!("{ty:?}"));
-        i += 1;
-    }
-
-    let declarations = module
-        .ir
-        .declarations
-        .iter()
-        .map(|d| IrDeclDump {
-            name: d.name.clone(),
-            ty: d.ty.0,
-            value: to_ir_expr(&d.value),
-        })
-        .collect();
-
-    let dump = IrDump {
-        contract_version: "v1",
-        declarations,
-        value_types,
-        types,
-    };
-
-    Ok(serde_json::to_string_pretty(&dump)?)
-}
-
-fn to_ir_expr(expr: &CheckedExpr) -> IrExprDump {
-    match expr {
-        CheckedExpr::Ident(v) => IrExprDump::Ident { value: v.clone() },
-        CheckedExpr::Int(v) => IrExprDump::Int { value: v.clone() },
-        CheckedExpr::Float(v) => IrExprDump::Float { value: v.clone() },
-        CheckedExpr::Char(v) => IrExprDump::Char { value: v.clone() },
-        CheckedExpr::String(v) => IrExprDump::String { value: v.clone() },
-        CheckedExpr::DotIdent { name, payload } => IrExprDump::DotIdent {
-            name: name.clone(),
-            payload: payload.as_ref().map(|p| Box::new(to_ir_expr(p))),
-        },
-        CheckedExpr::Tuple(items) => IrExprDump::List {
-            items: items.iter().map(to_ir_expr).collect(),
-        },
-        CheckedExpr::Struct(fields) => IrExprDump::Dict {
-            entries: fields
-                .iter()
-                .map(|(name, value)| {
-                    (
-                        IrExprDump::String {
-                            value: name.clone(),
-                        },
-                        to_ir_expr(value),
-                    )
-                })
-                .collect(),
-        },
-        CheckedExpr::Closure { params, return_ty } => IrExprDump::Closure {
-            params: params.clone(),
-            return_ty: return_ty.map(|t| t.0),
-        },
-        CheckedExpr::Any => IrExprDump::Any,
-        CheckedExpr::List(items) => IrExprDump::List {
-            items: items.iter().map(to_ir_expr).collect(),
-        },
-        CheckedExpr::Dict(entries) => IrExprDump::Dict {
-            entries: entries
-                .iter()
-                .map(|(k, v)| (to_ir_expr(k), to_ir_expr(v)))
-                .collect(),
-        },
-        CheckedExpr::Call { callee, args } => IrExprDump::Call {
-            callee: Box::new(to_ir_expr(callee)),
-            args: args.iter().map(to_ir_expr).collect(),
-        },
-        CheckedExpr::BinaryOp { op, lhs, rhs, ty } => IrExprDump::BinaryOp {
-            op: binary_op_name(*op).to_string(),
-            lhs: Box::new(to_ir_expr(lhs)),
-            rhs: Box::new(to_ir_expr(rhs)),
-            ty: ty.0,
-        },
-        CheckedExpr::MacroApply {
-            macro_name,
-            static_args,
-            operand,
-        } => IrExprDump::MacroApply {
-            macro_name: macro_name.clone(),
-            static_args: static_args.iter().map(to_ir_static_arg).collect(),
-            operand: Box::new(to_ir_expr(operand)),
-        },
-        CheckedExpr::Label { label, expr } => IrExprDump::Label {
-            label: label.clone(),
-            expr: Box::new(to_ir_expr(expr)),
-        },
-        CheckedExpr::MultiArm(arms) => IrExprDump::MultiArm {
-            arms: arms.iter().map(to_ir_expr).collect(),
-        },
-        CheckedExpr::If {
-            condition,
-            then_branch,
-            else_branch,
-        } => IrExprDump::If {
-            condition: Box::new(to_ir_expr(condition)),
-            then_branch: Box::new(to_ir_expr(then_branch)),
-            else_branch: else_branch.as_ref().map(|e| Box::new(to_ir_expr(e))),
-        },
-        CheckedExpr::Cases { arms } => IrExprDump::Cases {
-            arms: arms.iter().map(to_ir_expr).collect(),
-        },
-        CheckedExpr::Return { value } => IrExprDump::Return {
-            value: Box::new(to_ir_expr(value)),
-        },
-        CheckedExpr::Break { value } => IrExprDump::Break {
-            value: value.as_ref().map(|v| Box::new(to_ir_expr(v))),
-        },
-        CheckedExpr::Continue => IrExprDump::Continue,
-        CheckedExpr::Coerce { from, to, expr } => IrExprDump::Coerce {
-            from: from.0,
-            to: to.0,
-            expr: Box::new(to_ir_expr(expr)),
-        },
-        CheckedExpr::Cast { from, to, expr } => IrExprDump::Cast {
-            from: from.0,
-            to: to.0,
-            expr: Box::new(to_ir_expr(expr)),
-        },
-    }
-}
-
-fn to_ir_static_arg(arg: &CheckedStaticArg) -> IrStaticArgDump {
-    match arg {
-        CheckedStaticArg::Type(ty) => IrStaticArgDump::Type {
-            ty: to_ir_type_expr(ty),
-        },
-        CheckedStaticArg::Value(v) => IrStaticArgDump::Value {
-            value: to_ir_static_value(v),
-        },
-    }
-}
-
-fn to_ir_type_expr(ty: &CheckedTypeExpr) -> IrTypeExprDump {
-    match ty {
-        CheckedTypeExpr::Named { name, args } => IrTypeExprDump::Named {
-            name: name.clone(),
-            args: args.iter().map(to_ir_static_arg).collect(),
-        },
-        CheckedTypeExpr::Static(inner) => IrTypeExprDump::Static {
-            inner: Box::new(to_ir_type_expr(inner)),
-        },
-        CheckedTypeExpr::InferHole => IrTypeExprDump::InferHole,
-    }
-}
-
-fn to_ir_static_value(v: &CheckedStaticValue) -> IrStaticValueDump {
-    match v {
-        CheckedStaticValue::Int(s) => IrStaticValueDump::Int { value: s.clone() },
-        CheckedStaticValue::Float(s) => IrStaticValueDump::Float { value: s.clone() },
-        CheckedStaticValue::Ident(s) => IrStaticValueDump::Ident { value: s.clone() },
-        CheckedStaticValue::String(s) => IrStaticValueDump::String { value: s.clone() },
-        CheckedStaticValue::Char(s) => IrStaticValueDump::Char { value: s.clone() },
-    }
-}
-
-fn binary_op_name(op: BinaryOpKind) -> &'static str {
-    match op {
-        BinaryOpKind::Add => "add",
-        BinaryOpKind::Sub => "sub",
-        BinaryOpKind::Mul => "mul",
-        BinaryOpKind::Div => "div",
-        BinaryOpKind::Mod => "mod",
-        BinaryOpKind::Lt => "lt",
-        BinaryOpKind::Gt => "gt",
-        BinaryOpKind::Le => "le",
-        BinaryOpKind::Ge => "ge",
-        BinaryOpKind::Eq => "eq",
-        BinaryOpKind::Neq => "neq",
-        BinaryOpKind::And => "and",
-        BinaryOpKind::Or => "or",
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
