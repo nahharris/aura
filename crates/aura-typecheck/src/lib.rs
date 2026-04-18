@@ -21,6 +21,11 @@ pub use resolver::Resolver;
 pub use symbols::{ScopeId, SymbolId, SymbolKind};
 pub use types::{Ty, TyId, TyInterner};
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CheckOptions {
+    pub enforce_main_signature: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct CheckedModule {
     pub symbols: resolver::ResolvedSymbols,
@@ -36,11 +41,15 @@ pub struct CheckResult {
 }
 
 pub fn check_module(ast: &Program) -> CheckResult {
+    check_module_with_options(ast, CheckOptions::default())
+}
+
+pub fn check_module_with_options(ast: &Program, options: CheckOptions) -> CheckResult {
     let mut resolver = Resolver::new();
     let symbols = resolver.resolve_program(ast);
     let mut diagnostics = resolver.into_diagnostics();
 
-    let mut checker = TypeChecker::new();
+    let mut checker = TypeChecker::new(options);
     let value_types = checker.check_program(ast);
     let (types, checker_diagnostics, ir) = checker.into_parts();
     diagnostics.extend(checker_diagnostics);

@@ -50,6 +50,7 @@ pub enum CheckedExpr {
     },
     Tuple(Vec<CheckedExpr>),
     Struct(Vec<(String, CheckedExpr)>),
+    Block(Vec<CheckedExpr>),
     Closure {
         params: Vec<String>,
         return_ty: Option<TyId>,

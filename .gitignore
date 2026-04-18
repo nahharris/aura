@@ -2,3 +2,5 @@
 /target2
 .opencode/
 /toolchains/
+/e2e/*/target/
+/e2e/*/toolchains/

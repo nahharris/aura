@@ -1,0 +1,18 @@
+filters:
+  and:
+    - kind == "adr"
+properties:
+  status:
+    displayName: Status
+  date:
+    displayName: Date
+  related_paths:
+    displayName: Related Paths
+views:
+  - type: table
+    name: Decisions
+    order:
+      - file.name
+      - status
+      - date
+      - related_paths

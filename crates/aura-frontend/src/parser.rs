@@ -377,7 +377,7 @@ where
         self.expect_simple(&TokenKind::LBrace, "expected '{'", vec!["{"])?;
         if self.peek_is(&TokenKind::RBrace) {
             self.bump();
-            return Ok(Expr::List(Vec::new()));
+            return Ok(Expr::Block(Vec::new()));
         }
 
         let is_multi_arm = self.is_multi_arm_body();
@@ -429,13 +429,33 @@ where
             )?;
             Ok(Expr::MultiArm(arms))
         } else {
-            let expr = self.parse_expr()?;
+            let mut items = Vec::new();
+            let mut saw_semicolon = false;
+            loop {
+                items.push(self.parse_expr()?);
+                if self.peek_is(&TokenKind::Semi) {
+                    saw_semicolon = true;
+                    self.bump();
+                    if self.peek_is(&TokenKind::RBrace) {
+                        break;
+                    }
+                    continue;
+                }
+                break;
+            }
             self.expect_simple(
                 &TokenKind::RBrace,
                 "expected '}' after block body",
                 vec!["}"],
             )?;
-            Ok(expr)
+            if saw_semicolon {
+                Ok(Expr::Block(items))
+            } else {
+                Ok(items
+                    .into_iter()
+                    .next()
+                    .expect("non-empty non-multi-arm block should have one expression"))
+            }
         }
     }
 
@@ -2312,6 +2332,28 @@ mod tests {
             function.static_params[1].kind,
             StaticParamKind::Constraint(TypeExpr::Static(_))
         ));
+    }
+
+    #[test]
+    fn parse_function_body_with_multiple_expressions() {
+        let src = "def main() -> Void { 0; syscall_exit(0) }";
+        let parsed =
+            Parser::parse_source(src).expect("should parse function body with multiple expressions");
+        let Decl::Function(function) = &parsed.declarations[0] else {
+            panic!("expected function declaration")
+        };
+        assert!(matches!(u(&function.body), Expr::Block(items) if items.len() == 2));
+    }
+
+    #[test]
+    fn parse_function_body_with_optional_trailing_semicolon() {
+        let src = "def main() -> Void { 0; syscall_exit(0); }";
+        let parsed = Parser::parse_source(src)
+            .expect("should parse function body with optional trailing semicolon");
+        let Decl::Function(function) = &parsed.declarations[0] else {
+            panic!("expected function declaration")
+        };
+        assert!(matches!(u(&function.body), Expr::Block(items) if items.len() == 2));
     }
 
     #[test]

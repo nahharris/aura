@@ -94,9 +94,9 @@ pub fn classify_function_type(
 #[cfg(feature = "llvm-backend")]
 mod llvm_lowering {
     use inkwell::{
+        AddressSpace,
         context::Context,
         types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType},
-        AddressSpace,
     };
 
     use super::{AuraFunctionType, AuraValueType, CodegenError};
@@ -163,7 +163,7 @@ mod llvm_lowering {
 mod tests {
     use aura_typecheck::{Ty, TyInterner};
 
-    use super::{classify_function_type, classify_type, AuraValueType};
+    use super::{AuraValueType, classify_function_type, classify_type};
 
     #[test]
     fn classify_primitives_into_llvm_scalars() {

@@ -28,7 +28,7 @@ use super::{
 #[cfg(feature = "llvm-backend")]
 fn is_runtime_builtin_wrapper(decl: &aura_typecheck::checked_ir::CheckedDecl) -> bool {
     match &decl.value {
-        aura_typecheck::checked_ir::CheckedExpr::Ident(name) => name.starts_with("rt_"),
+        aura_typecheck::checked_ir::CheckedExpr::Ident(name) => name.starts_with("syscall_"),
         _ => false,
     }
 }
@@ -64,27 +64,6 @@ fn find_main_decl<'m>(
 #[cfg(feature = "llvm-backend")]
 fn is_void_ty(checked: &CheckedModule, ty: TyId) -> bool {
     matches!(checked.types.get(ty), Some(Ty::Void))
-}
-
-#[cfg(feature = "llvm-backend")]
-fn is_result_void_u8_ty(checked: &CheckedModule, ty: TyId) -> bool {
-    let Some(Ty::Enum(variants)) = checked.types.get(ty) else {
-        return false;
-    };
-    if variants.len() != 2 {
-        return false;
-    }
-    if variants[0].0 != "ok" || variants[0].1.is_some() {
-        return false;
-    }
-    if variants[1].0 != "err" {
-        return false;
-    }
-    let Some(err_ty) = variants[1].1 else {
-        return false;
-    };
-    matches!(checked.types.get(err_ty), Some(Ty::UInt8))
-        || matches!(checked.types.get(err_ty), Some(Ty::Nominal(name)) if name == "UInt8")
 }
 
 #[cfg(feature = "llvm-backend")]
@@ -130,28 +109,9 @@ fn build_native_main_wrapper<'ctx, 'm>(cg: &CodegenContext<'ctx, 'm>) -> Result<
         return Ok(());
     }
 
-    if is_result_void_u8_ty(cg.checked, *ret) {
-        let result = call.try_as_basic_value().left().ok_or_else(|| {
-            CodegenError::MainLowering("`main` result value was not returned".to_string())
-        })?;
-
-        let exit_i32 = if result.is_int_value() {
-            result.into_int_value()
-        } else if result.is_pointer_value() {
-            cg.context.i32_type().const_zero()
-        } else {
-            return Err(CodegenError::MainLowering(
-                "`main` lowered to unsupported ABI return value".to_string(),
-            ));
-        };
-        cg.builder.build_return(Some(&exit_i32)).map_err(|_| {
-            CodegenError::MainLowering("failed to return Result exit code".to_string())
-        })?;
-        return Ok(());
-    }
-
+    let _ = call;
     Err(CodegenError::MainLowering(
-        "`main` return type must be `Void` or `Result[Void, UInt8]`".to_string(),
+        "`main` return type must be `Void`".to_string(),
     ))
 }
 
@@ -360,14 +320,18 @@ mod tests {
 
     #[cfg(feature = "llvm-backend")]
     #[test]
-    fn object_emission_supports_result_void_u8_main_entrypoint() {
+    fn object_emission_rejects_non_void_main_entrypoint() {
         let src = "def main() -> Result[Void, UInt8] { .err(7) }";
         let program = Parser::parse_source(src).expect("parse");
         let checked = check_module(&program);
         let module = checked.module.expect("checked module");
         let out = std::env::temp_dir().join("aura-main-result.obj");
-        super::emit_object_file("main_result", &module, &out).expect("emit object");
-        assert!(out.exists());
+        let err = super::emit_object_file("main_result", &module, &out)
+            .expect_err("non-void main should fail");
+        assert!(
+            err.to_string().contains("return type must be `Void`"),
+            "unexpected error: {err}"
+        );
         let _ = std::fs::remove_file(out);
     }
 }

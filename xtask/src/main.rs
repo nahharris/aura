@@ -1,3 +1,5 @@
+mod docs;
+
 use std::env;
 use std::fs;
 use std::fs::File;
@@ -7,6 +9,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use docs::DocsCommands;
 use reqwest::blocking::Client;
 use tar::Archive;
 use xshell::{Shell, cmd};
@@ -28,6 +31,10 @@ enum Commands {
     Dev {
         #[command(subcommand)]
         command: DevCommands,
+    },
+    Docs {
+        #[command(subcommand)]
+        command: DocsCommands,
     },
     #[command(name = "llvm")]
     Llvm {
@@ -80,6 +87,7 @@ fn main() -> Result<()> {
             DevCommands::Fmt => dev_fmt(&sh),
             DevCommands::Qa => dev_qa(&sh),
         },
+        Commands::Docs { command } => docs::run(command, &root),
         Commands::Llvm { command } => match command {
             LlvmCommands::Setup => llvm_setup(&sh),
             LlvmCommands::Doctor => llvm_doctor(&sh),

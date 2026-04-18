@@ -330,6 +330,7 @@ impl<'a> Formatter<'a> {
                 }
                 self.out.push(')');
             }
+            Expr::Block(items) => self.write_inline_block(items),
             Expr::List(items) => {
                 self.out.push('[');
                 for (i, item) in items.iter().enumerate() {
@@ -595,6 +596,7 @@ impl<'a> Formatter<'a> {
         let body = body.unspanned();
         match body {
             Expr::MultiArm(arms) => self.write_multi_arm(arms),
+            Expr::Block(items) => self.write_sequence_block(items, compact),
             _ => {
                 self.out.push('{');
                 if compact {
@@ -615,6 +617,57 @@ impl<'a> Formatter<'a> {
                 }
             }
         }
+    }
+
+    fn write_inline_block(&mut self, items: &[Expr]) {
+        if items.is_empty() {
+            self.out.push_str("{}");
+            return;
+        }
+
+        if items.len() == 1 {
+            self.out.push('{');
+            self.out.push(' ');
+            self.write_expr(&items[0], false);
+            self.out.push(' ');
+            self.out.push('}');
+            return;
+        }
+
+        self.write_sequence_block(items, false);
+    }
+
+    fn write_sequence_block(&mut self, items: &[Expr], compact: bool) {
+        self.out.push('{');
+        if items.is_empty() {
+            if compact {
+                self.out.push(' ');
+            }
+            self.out.push('}');
+            return;
+        }
+
+        if compact && items.len() == 1 {
+            self.out.push(' ');
+            self.write_expr(&items[0], false);
+            self.out.push(' ');
+            self.out.push('}');
+            return;
+        }
+
+        self.newline();
+        self.indent += 1;
+        for (idx, item) in items.iter().enumerate() {
+            self.write_indent();
+            self.write_expr(item, false);
+            if idx + 1 < items.len() {
+                self.out.push(';');
+            }
+            self.newline();
+        }
+        self.indent = self.indent.saturating_sub(1);
+        self.write_indent();
+        self.out.push('}');
     }
 
     fn write_indent(&mut self) {

@@ -14,7 +14,7 @@ use aura_codegen::{emit_llvm_ir, emit_object_file};
 use aura_diagnostics::{Diagnostic, Severity, Span};
 use aura_frontend::ast::{Decl, Program};
 use aura_frontend::{FormatOptions, Parser, format_source, unified_diff};
-use aura_typecheck::{CheckedModule, check_module};
+use aura_typecheck::{CheckOptions, CheckedModule, check_module_with_options};
 use clap::{Parser as ClapParser, Subcommand, ValueEnum};
 use serde::Serialize;
 
@@ -230,65 +230,29 @@ fn init_cmd(name: &str) -> Result<ExitCode> {
 
 fn create_project_scaffold(project_root: &Path, project_name: &str) -> Result<()> {
     let src_dir = project_root.join("src");
-    let vendor_dir = project_root.join("vendor");
     let target_dir = project_root.join("target");
-    let vendor_stl_dir = vendor_dir.join("stl");
+    let gitignore_file = project_root.join(".gitignore");
 
     fs::create_dir_all(&src_dir)
         .with_context(|| format!("failed to create '{}'", src_dir.display()))?;
-    fs::create_dir_all(&vendor_stl_dir)
-        .with_context(|| format!("failed to create '{}'", vendor_stl_dir.display()))?;
     fs::create_dir_all(&target_dir)
         .with_context(|| format!("failed to create '{}'", target_dir.display()))?;
 
-    let manifest = format!(
-        "def project = (\n    name = \"{}\",\n    version = \"0.1.0\",\n    type = .binary,\n    dependencies = [],\n);\n",
-        project_name
-    );
+    let manifest =
+        include_str!("../templates/build.aura.tpl").replace("{{project_name}}", project_name);
     let build_file = project_root.join("build.aura");
     fs::write(&build_file, manifest)
         .with_context(|| format!("failed to write '{}'", build_file.display()))?;
 
     let main_file = src_dir.join("main.aura");
-    fs::write(&main_file, "def main() -> Int { 0 }\n")
+    let main_template = include_str!("../templates/main.aura.tpl");
+    fs::write(&main_file, main_template)
         .with_context(|| format!("failed to write '{}'", main_file.display()))?;
 
-    copy_dir_recursive(&workspace_stl_src_dir()?, &vendor_stl_dir)?;
+    let gitignore_template = include_str!("../templates/gitignore.tpl");
+    fs::write(&gitignore_file, gitignore_template)
+        .with_context(|| format!("failed to write '{}'", gitignore_file.display()))?;
 
-    Ok(())
-}
-
-fn workspace_stl_src_dir() -> Result<PathBuf> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
-    let stl = root.join("aura-stl").join("src");
-    if !stl.is_dir() {
-        anyhow::bail!(
-            "failed to locate workspace STL source directory at '{}'",
-            stl.display()
-        );
-    }
-    Ok(stl)
-}
-
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
-    for entry in fs::read_dir(src).with_context(|| format!("failed to read '{}'", src.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        let target = dst.join(entry.file_name());
-        if path.is_dir() {
-            fs::create_dir_all(&target)
-                .with_context(|| format!("failed to create '{}'", target.display()))?;
-            copy_dir_recursive(&path, &target)?;
-        } else {
-            fs::copy(&path, &target).with_context(|| {
-                format!(
-                    "failed to copy '{}' to '{}'",
-                    path.display(),
-                    target.display()
-                )
-            })?;
-        }
-    }
     Ok(())
 }
 
@@ -342,7 +306,7 @@ fn build_cmd(
         return build_project_cmd(&layout.build_file, out, format, diagnostics_format);
     }
 
-    build_single_file_cmd(&start, out, format, diagnostics_format)
+    build_single_file_cmd(&start, out, format, diagnostics_format, false)
 }
 
 fn build_single_file_cmd(
@@ -350,6 +314,7 @@ fn build_single_file_cmd(
     out: Option<&Path>,
     format: OutputFormat,
     diagnostics_format: DiagnosticsFormat,
+    enforce_main_signature: bool,
 ) -> Result<ExitCode> {
     let source = fs::read_to_string(input)
         .with_context(|| format!("failed to read source file '{}'", input.display()))?;
@@ -362,7 +327,12 @@ fn build_single_file_cmd(
         }
     };
 
-    let checked = check_module(&program);
+    let checked = check_module_with_options(
+        &program,
+        CheckOptions {
+            enforce_main_signature,
+        },
+    );
     let has_errors = checked
         .diagnostics
         .iter()
@@ -489,16 +459,25 @@ fn build_project_cmd(
         build_file.display()
     );
 
-    let compiled_stl_modules = compile_vendored_stl(project_root, format, diagnostics_format)?;
-    if compiled_stl_modules > 0 {
-        println!(
-            "cached {compiled_stl_modules} STL module(s) in {}",
-            project_root.join("target").join("stl").display()
-        );
-    }
-
     match manifest.kind {
-        ProjectType::Binary => build_single_file_cmd(&src_main, out, format, diagnostics_format),
+        ProjectType::Binary => {
+            let project_out = if out.is_none() {
+                Some(project_default_output_path(
+                    project_root,
+                    &manifest.name,
+                    format,
+                ))
+            } else {
+                None
+            };
+            build_single_file_cmd(
+                &src_main,
+                out.or(project_out.as_deref()),
+                format,
+                diagnostics_format,
+                true,
+            )
+        }
         ProjectType::Library => {
             println!(
                 "project '{}' is a library; skipping entrypoint build",
@@ -509,188 +488,25 @@ fn build_project_cmd(
     }
 }
 
-fn compile_vendored_stl(
+fn project_default_output_path(
     project_root: &Path,
-    format: OutputFormat,
-    diagnostics_format: DiagnosticsFormat,
-) -> Result<usize> {
-    let vendor_stl_dir = project_root.join("vendor").join("stl");
-    if !vendor_stl_dir.is_dir() {
-        return Ok(0);
-    }
-
-    let cache_dir = project_root.join("target").join("stl");
-    fs::create_dir_all(&cache_dir)
-        .with_context(|| format!("failed to create '{}'", cache_dir.display()))?;
-
-    let module_files = collect_aura_source_files(&vendor_stl_dir)?;
-    let module_files = sort_stl_modules_for_compile(module_files);
-    let mut compiled = 0usize;
-
-    for module_path in module_files {
-        let file_name = module_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        if file_name.ends_with(".test.aura") {
-            continue;
-        }
-
-        let source = fs::read_to_string(&module_path)
-            .with_context(|| format!("failed to read source file '{}'", module_path.display()))?;
-
-        let program = match Parser::parse_source(&source) {
-            Ok(program) => program,
-            Err(diag) => {
-                print_diagnostics(&[diag], diagnostics_format, &module_path, &source)?;
-                anyhow::bail!(
-                    "failed to parse vendored STL module '{}'",
-                    module_path.display()
-                );
-            }
-        };
-
-        let checked = check_module(&program);
-        let has_errors = checked
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error);
-        if has_errors {
-            print_diagnostics(
-                &checked.diagnostics,
-                diagnostics_format,
-                &module_path,
-                &source,
-            )?;
-            anyhow::bail!(
-                "failed to typecheck vendored STL module '{}'",
-                module_path.display()
-            );
-        }
-
-        if !checked.diagnostics.is_empty() {
-            print_diagnostics(
-                &checked.diagnostics,
-                diagnostics_format,
-                &module_path,
-                &source,
-            )?;
-        }
-
-        let module = checked
-            .module
-            .as_ref()
-            .expect("module should exist when diagnostics are error-free");
-        let relative_path = module_path.strip_prefix(&vendor_stl_dir).with_context(|| {
-            format!(
-                "failed to compute STL-relative path for '{}'",
-                module_path.display()
-            )
-        })?;
-        let rendered = match format {
-            OutputFormat::Auir | OutputFormat::Ll | OutputFormat::Native => render_ir_pretty(module),
-            OutputFormat::Obj => {
-                let module_name = module_name_from_path(&module_path);
-                let obj_path = stl_cache_output_path(&cache_dir, relative_path, OutputFormat::Obj);
-                ensure_parent_dir(&obj_path)?;
-                emit_object_file(&module_name, module, &obj_path)
-                    .map_err(|e| anyhow::anyhow!("object emission failed: {e}"))?;
-                compiled += 1;
-                continue;
-            }
-        };
-        let output_path = stl_cache_output_path(&cache_dir, relative_path, format);
-        if let Some(parent) = output_path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create '{}'", parent.display()))?;
-        }
-        fs::write(&output_path, rendered).with_context(|| {
-            format!(
-                "failed to write STL cache output '{}'",
-                output_path.display()
-            )
-        })?;
-        compiled += 1;
-    }
-
-    Ok(compiled)
-}
-
-fn sort_stl_modules_for_compile(mut files: Vec<PathBuf>) -> Vec<PathBuf> {
-    fn rank(path: &Path) -> usize {
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default();
-        match name {
-            "core" => 0,
-            "bool" => 1,
-            "option" => 2,
-            "result" => 3,
-            "ordering" => 4,
-            "seq" => 5,
-            "runtime" => 6,
-            _ => 100,
-        }
-    }
-
-    files.sort_by(|a, b| {
-        let ar = rank(a);
-        let br = rank(b);
-        ar.cmp(&br).then_with(|| a.cmp(b))
-    });
-    files
-}
-
-fn stl_cache_output_path(
-    cache_root: &Path,
-    relative_module: &Path,
+    project_name: &str,
     format: OutputFormat,
 ) -> PathBuf {
-    let stem = relative_module
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("module");
-    let ext = match format {
-        OutputFormat::Auir => "auir",
-        OutputFormat::Ll => "ll",
-        OutputFormat::Obj => "obj",
-        OutputFormat::Native => "ll",
+    let target_dir = project_root.join("target");
+    let file_name = match format {
+        OutputFormat::Auir => format!("{project_name}.auir"),
+        OutputFormat::Ll => format!("{project_name}.ll"),
+        OutputFormat::Obj => format!("{project_name}.obj"),
+        OutputFormat::Native => {
+            if cfg!(windows) {
+                format!("{project_name}.exe")
+            } else {
+                project_name.to_string()
+            }
+        }
     };
-    let output_file_name = format!("{stem}.{ext}");
-
-    let mut output_relative = relative_module.to_path_buf();
-    output_relative.set_file_name(output_file_name);
-    cache_root.join(output_relative)
-}
-
-fn collect_aura_source_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    collect_aura_source_files_recursive(root, &mut files)?;
-    files.sort();
-    Ok(files)
-}
-
-fn collect_aura_source_files_recursive(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    for entry in fs::read_dir(dir).with_context(|| format!("failed to read '{}'", dir.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_aura_source_files_recursive(&path, files)?;
-            continue;
-        }
-
-        if path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext == "aura")
-        {
-            files.push(path);
-        }
-    }
-    Ok(())
+    target_dir.join(file_name)
 }
 
 fn default_output_path(input: &Path, format: OutputFormat) -> PathBuf {
@@ -1495,7 +1311,7 @@ mod tests {
     }
 
     #[test]
-    fn init_scaffold_creates_manifest_main_and_vendor_stl() {
+    fn init_scaffold_creates_manifest_main_and_target_dir() {
         let mut root = std::env::temp_dir();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1509,14 +1325,14 @@ mod tests {
         let manifest = fs::read_to_string(root.join("build.aura")).expect("manifest should exist");
         assert!(manifest.contains("type = .binary"));
         assert!(root.join("src").join("main.aura").is_file());
-        assert!(root.join("vendor").join("stl").join("core.aura").is_file());
-        assert!(
-            root.join("vendor")
-                .join("stl")
-                .join("option.test.aura")
-                .is_file()
-        );
+        let main = fs::read_to_string(root.join("src").join("main.aura"))
+            .expect("main source should exist");
+        assert!(main.contains("syscall_exit"));
         assert!(root.join("target").is_dir());
+        assert!(root.join(".gitignore").is_file());
+        let gitignore =
+            fs::read_to_string(root.join(".gitignore")).expect("gitignore should exist");
+        assert!(gitignore.contains("/target/"));
 
         fs::remove_dir_all(root).expect("cleanup should succeed");
     }

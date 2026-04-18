@@ -111,6 +111,7 @@ pub enum Expr {
     },
     Tuple(Vec<Expr>),
     Struct(Vec<(String, Expr)>),
+    Block(Vec<Expr>),
     List(Vec<Expr>),
     Dict(Vec<(Expr, Expr)>),
     Closure {

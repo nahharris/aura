@@ -4,12 +4,24 @@ This file provides guidance for coding agents working in this repository.
 
 ## Project Overview
 
-Aura is currently frontend-only in active workspace scope.
+Aura is a multi-crate compiler workspace with an Obsidian vault in `docs/` that should track the codebase as an engineering second brain.
 
 - Authoritative spec: `DESIGN.md`
-- Active crate: `crates/aura-frontend`
+- Obsidian vault root: `docs/`
+- Workspace crates:
+  - `crates/aura-frontend`
+  - `crates/aura-typecheck`
+  - `crates/aura-codegen`
+  - `crates/aura-diagnostics`
+  - `crates/aura-cli`
+  - `crates/aura-runtime-host`
+  - `xtask`
+- Companion surfaces:
+  - `aura-stl`
+  - `examples`
+  - `tool`
 
-Key frontend files:
+Key entry files:
 
 - `crates/aura-frontend/src/token.rs` — token model
 - `crates/aura-frontend/src/lexer.rs` — source to tokens
@@ -17,6 +29,11 @@ Key frontend files:
 - `crates/aura-frontend/src/parser.rs` — parser + parser contract tests
 - `crates/aura-frontend/src/static_eval.rs` — compile-time-known/static interface hook
 - `crates/aura-frontend/src/lib.rs` — crate module surface
+- `crates/aura-typecheck/src/lib.rs` — typecheck entry point
+- `crates/aura-codegen/src/lib.rs` — backend entry point
+- `crates/aura-cli/src/main.rs` — CLI entry point
+- `xtask/src/main.rs` — automation command surface
+- `xtask/src/docs.rs` — Obsidian vault automation
 
 ## Build, Lint, and Test Commands
 
@@ -31,6 +48,8 @@ cargo xtask dev test
 cargo xtask dev lint
 cargo xtask dev fmt
 cargo xtask dev qa
+cargo xtask docs sync
+cargo xtask docs check
 ```
 
 Preferred command runner aliases (defined in `.cargo/config.toml`):
@@ -42,6 +61,8 @@ cargo test-all
 cargo check-all
 cargo build-all
 cargo fmt-all
+cargo docs-sync
+cargo docs-check
 ```
 
 ## Xtask Usage
@@ -63,6 +84,9 @@ cargo xtask llvm test
 cargo xtask llvm clippy
 cargo xtask llvm run -- -p aura-cli -- build path/to/main.aura
 cargo xtask llvm cargo -- test -p aura-codegen --features llvm-backend
+cargo xtask docs sync
+cargo xtask docs check
+cargo xtask docs new-adr --title "Decision Name"
 ```
 
 On Windows, xtask also applies an LLVM compatibility workaround when needed by creating
@@ -74,7 +98,16 @@ Do not run direct `cargo` commands for LLVM-featured tasks; always use `cargo xt
 LLVM-sensitive CLI builds (`--format ll`, `--format obj`, `--format native`) also depend on
 the managed Clang/LLVM toolchain; run them only via `cargo xtask llvm run -- ...`.
 
-Frontend crate only:
+Docs workflow:
+
+```bash
+cargo xtask docs sync
+cargo xtask docs check
+```
+
+Use `cargo xtask docs sync` to refresh generated inventory notes and scaffold any missing curated notes in the Obsidian vault. Use `cargo xtask docs check` to detect stale generated docs in CI or before closing out doc-related work.
+
+Frontend-only test loop:
 
 ```bash
 cargo xtask dev test

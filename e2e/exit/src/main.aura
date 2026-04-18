@@ -1,0 +1,4 @@
+def main() -> Void {
+    0;
+    syscall_exit(0)
+}

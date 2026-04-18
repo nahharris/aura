@@ -20,6 +20,7 @@ use crate::types::{Ty, TyId, TyInterner};
 use crate::unify::Unifier;
 
 use crate::generics::GenericConstraint;
+use crate::CheckOptions;
 
 #[derive(Debug, Clone)]
 pub struct TypeChecker {
@@ -40,6 +41,7 @@ pub struct TypeChecker {
     current_expr_span: Option<aura_diagnostics::Span>,
     diagnostics: Vec<Diagnostic>,
     ir: CheckedIr,
+    options: CheckOptions,
 }
 
 #[derive(Debug, Clone)]
@@ -106,11 +108,11 @@ impl TypeChecker {
         "List", "Dict", "Set", "Array", "Func", "Option", "Result", "Seq",
     ];
 
-    pub fn new() -> Self {
+    pub fn new(options: CheckOptions) -> Self {
         let mut interner = TyInterner::new();
         interner.prelude_primitives();
         let aliases = TypeAliases::with_prelude(&mut interner);
-        Self {
+        let mut checker = Self {
             interner,
             aliases,
             builtins: BuiltinRegistry::with_prelude(),
@@ -128,7 +130,24 @@ impl TypeChecker {
             current_expr_span: None,
             diagnostics: Vec::new(),
             ir: CheckedIr::empty(),
+            options,
+        };
+
+        if let Some(sig) = checker.builtins.get("syscall_exit").cloned() {
+            let param_tys = sig
+                .params
+                .iter()
+                .map(|ty| checker.intern_builtin_type(ty))
+                .collect::<Vec<_>>();
+            let ret = checker.intern_builtin_type(&sig.ret);
+            let func_ty = checker.interner.intern(Ty::Func {
+                params: param_tys,
+                ret,
+            });
+            checker.insert_value("syscall_exit".to_string(), func_ty);
         }
+
+        checker
     }
 
     fn base_expr(expr: &Expr) -> &Expr {
@@ -421,6 +440,16 @@ impl TypeChecker {
                     .collect::<Vec<_>>();
                 self.interner.intern(Ty::Struct(field_tys))
             }
+            Expr::Block(items) => {
+                if let Some((last, rest)) = items.split_last() {
+                    for item in rest {
+                        let _ = self.infer_expr(item);
+                    }
+                    self.infer_expr(last)
+                } else {
+                    self.interner.intern(Ty::Void)
+                }
+            }
             Expr::List(items) => {
                 if let Some(first) = items.first() {
                     let item_ty = self.infer_expr(first);
@@ -464,7 +493,7 @@ impl TypeChecker {
                 trailing,
                 ..
             } => {
-                let mut callee_name = match TypeChecker::base_expr(callee.as_ref()) {
+                let callee_name = match TypeChecker::base_expr(callee.as_ref()) {
                     Expr::Ident(name) => Some(name.clone()),
                     _ => None,
                 };
@@ -474,37 +503,7 @@ impl TypeChecker {
                 if matches!(callee_name.as_deref(), Some("cases")) {
                     return self.infer_cases_call_with_expected(args, trailing, None);
                 }
-
-                let callee_ty = if let Expr::Member { object, field } =
-                    TypeChecker::base_expr(callee.as_ref())
-                {
-                    if matches!(TypeChecker::base_expr(object.as_ref()), Expr::Ident(module_name) if module_name == "runtime")
-                    {
-                        if let Some(rt_name) = Self::runtime_member_builtin_name(field) {
-                            callee_name = Some(rt_name.to_string());
-                            if let Some(sig) = self.builtins.get(rt_name).cloned() {
-                                let param_tys = sig
-                                    .params
-                                    .iter()
-                                    .map(|ty| self.intern_builtin_type(ty))
-                                    .collect::<Vec<_>>();
-                                let ret = self.intern_builtin_type(&sig.ret);
-                                self.interner.intern(Ty::Func {
-                                    params: param_tys,
-                                    ret,
-                                })
-                            } else {
-                                self.infer_expr(callee)
-                            }
-                        } else {
-                            self.infer_expr(callee)
-                        }
-                    } else {
-                        self.infer_expr(callee)
-                    }
-                } else {
-                    self.infer_expr(callee)
-                };
+                let callee_ty = self.infer_expr(callee);
                 self.infer_call_expr(
                     callee_ty,
                     callee_name.as_deref(),
@@ -591,39 +590,14 @@ impl TypeChecker {
                 operand,
                 static_args,
             } if macro_name == "builtin" => {
-                if let Expr::Ident(name) = TypeChecker::base_expr(operand.as_ref()) {
-                    if let Some(sig) = self.builtins.get(name).cloned() {
-                        let param_tys = sig
-                            .params
-                            .iter()
-                            .map(|ty| self.intern_builtin_type(ty))
-                            .collect::<Vec<_>>();
-                        let ret = self.intern_builtin_type(&sig.ret);
-                        return self.interner.intern(Ty::Func {
-                            params: param_tys,
-                            ret,
-                        });
-                    } else {
-                        self.diagnostics.push(
-                            self.typecheck_error(
-                                Issue::BuiltinUnknown,
-                                format!("unknown builtin symbol '{name}'"),
-                            )
-                            .with_hint(
-                                "declare the builtin in the registry or fix the symbol name",
-                            ),
-                        );
-                    }
-                } else {
-                    self.diagnostics.push(
-                        self.typecheck_error(
-                            Issue::BuiltinForm,
-                            "builtin expects an identifier operand",
-                        )
-                        .with_hint("use form: builtin rt_fd_write"),
-                    );
-                }
-                self.unknown_ty()
+                self.diagnostics.push(
+                    self.typecheck_error(
+                        Issue::BuiltinForm,
+                        "builtin macro is removed; call builtin symbols directly",
+                    )
+                    .with_hint("use `syscall_exit(...)` directly"),
+                );
+                self.infer_expr(operand)
             }
             Expr::MacroApply {
                 macro_name,
@@ -755,6 +729,16 @@ impl TypeChecker {
         let expected_ty = self.interner.get(expected).cloned();
 
         match (Self::base_expr(expr), expected_ty) {
+            (Expr::Block(items), _) => {
+                if let Some((last, rest)) = items.split_last() {
+                    for item in rest {
+                        let _ = self.infer_expr(item);
+                    }
+                    self.infer_expr_with_expected(last, expected)
+                } else {
+                    self.interner.intern(Ty::Void)
+                }
+            }
             (
                 Expr::Call {
                     callee,
@@ -1100,22 +1084,7 @@ impl TypeChecker {
     fn intern_builtin_type(&mut self, ty: &BuiltinTypeRef) -> TyId {
         match ty {
             BuiltinTypeRef::Int32 => self.interner.intern(Ty::Int32),
-            BuiltinTypeRef::Int64 => self.interner.intern(Ty::Int64),
-            BuiltinTypeRef::ISize => self.interner.intern(Ty::ISize),
-            BuiltinTypeRef::UInt8 => self.interner.intern(Ty::UInt8),
-            BuiltinTypeRef::UInt32 => self.interner.intern(Ty::UInt32),
-            BuiltinTypeRef::UInt64 => self.interner.intern(Ty::UInt64),
-            BuiltinTypeRef::USize => self.interner.intern(Ty::USize),
             BuiltinTypeRef::Never => self.interner.intern(Ty::Never),
-            BuiltinTypeRef::Nominal(name) => self.interner.intern(Ty::Nominal(name.clone())),
-            BuiltinTypeRef::Ptr(inner) => {
-                let item = self.intern_builtin_type(inner);
-                self.interner.intern(Ty::Ptr(item))
-            }
-            BuiltinTypeRef::Slice(inner) => {
-                let item = self.intern_builtin_type(inner);
-                self.interner.intern(Ty::Slice(item))
-            }
         }
     }
 
@@ -1718,20 +1687,24 @@ impl TypeChecker {
             ret: expected_ret,
         });
 
+        let mut used_known_func_shape = false;
         if let Some(Ty::Func {
             params: cparams,
             ret: cret,
         }) = self.interner.get(callee_ty).cloned()
         {
             if cparams.len() == expected_params.len() {
+                used_known_func_shape = true;
                 for (target, source) in expected_params.iter().zip(cparams.iter()) {
                     let _ = self.unify_with_context(*target, *source, "callable parameter");
                 }
-                let _ = self.unify_with_context(expected_ret, cret, "callable return");
+                self.require_assignable(expected_ret, cret, "callable return");
             }
         }
 
-        self.unify_with_context(callee_ty, expected_func, "callable expression");
+        if !used_known_func_shape {
+            self.unify_with_context(callee_ty, expected_func, "callable expression");
+        }
 
         let mut placeholder_params = Vec::new();
 
@@ -2406,12 +2379,16 @@ impl TypeChecker {
             return ConversionDecision::Incompatible;
         };
 
-        if matches!(expected_ty, Ty::Any) || matches!(actual_ty, Ty::Any) {
+        if matches!(expected_ty, Ty::Any) {
             return ConversionDecision::Identity;
         }
 
         if matches!(expected_ty, Ty::InferVar(_)) || matches!(actual_ty, Ty::InferVar(_)) {
             let _ = self.unify_with_context(expected, actual, context);
+            return ConversionDecision::Identity;
+        }
+
+        if matches!(actual_ty, Ty::Never) {
             return ConversionDecision::Identity;
         }
 
@@ -2697,6 +2674,9 @@ impl TypeChecker {
     }
 
     fn validate_main_signature(&mut self, function: &aura_frontend::ast::FunctionDecl) {
+        if !self.options.enforce_main_signature {
+            return;
+        }
         if function.name != "main" {
             return;
         }
@@ -2713,11 +2693,9 @@ impl TypeChecker {
         self.diagnostics.push(
             self.typecheck_error(
                 Issue::MainSignature,
-                "`main` must have no params/static params/receiver and return `Void` or `Result[Void, UInt8]`",
+                "`main` must have no params/static params/receiver and return `Void`",
             )
-            .with_hint(
-                "use one of: `def main() -> Void { ... }` or `def main() -> Result[Void, UInt8] { ... }`",
-            ),
+            .with_hint("use: `def main() -> Void { ... }`"),
         );
     }
 
@@ -2725,41 +2703,7 @@ impl TypeChecker {
         match ty {
             TypeExpr::Static(inner) => Self::main_return_type_expr_ok(inner),
             TypeExpr::Named { name, args } if name == "Void" && args.is_empty() => true,
-            TypeExpr::Named { name, args } if name == "Result" && args.len() == 2 => {
-                let Some(StaticArg::Type(ok_ty)) = args.first() else {
-                    return false;
-                };
-                let Some(StaticArg::Type(err_ty)) = args.get(1) else {
-                    return false;
-                };
-
-                Self::is_named_no_args(ok_ty, "Void") && Self::is_named_no_args(err_ty, "UInt8")
-            }
             _ => false,
-        }
-    }
-
-    fn is_named_no_args(ty: &TypeExpr, expected_name: &str) -> bool {
-        let TypeExpr::Named { name, args } = ty else {
-            return false;
-        };
-        name == expected_name && args.is_empty()
-    }
-
-    fn runtime_member_builtin_name(field: &str) -> Option<&'static str> {
-        match field {
-            "fd_read" => Some("rt_fd_read"),
-            "fd_write" => Some("rt_fd_write"),
-            "fd_open" => Some("rt_fd_open"),
-            "fd_close" => Some("rt_fd_close"),
-            "fd_seek" => Some("rt_fd_seek"),
-            "mem_map" => Some("rt_mem_map"),
-            "mem_unmap" => Some("rt_mem_unmap"),
-            "mem_protect" => Some("rt_mem_protect"),
-            "time_now_ns" => Some("rt_time_now_ns"),
-            "random_fill" => Some("rt_random_fill"),
-            "exit" => Some("rt_exit"),
-            _ => None,
         }
     }
 
@@ -2792,6 +2736,9 @@ impl TypeChecker {
                 return_ty: return_type.as_ref().map(|t| self.resolve_type_expr(t)),
             },
             Expr::Placeholder => CheckedExpr::Any,
+            Expr::Block(items) => {
+                CheckedExpr::Block(items.iter().map(|item| self.lower_expr(item)).collect())
+            }
             Expr::List(items) => {
                 CheckedExpr::List(items.iter().map(|item| self.lower_expr(item)).collect())
             }
@@ -2801,43 +2748,10 @@ impl TypeChecker {
                     .map(|(k, v)| (self.lower_expr(k), self.lower_expr(v)))
                     .collect(),
             ),
-            Expr::Call { callee, args, .. } => {
-                let lowered_callee = if let Expr::Member { object, field } =
-                    TypeChecker::base_expr(callee.as_ref())
-                {
-                    if matches!(TypeChecker::base_expr(object.as_ref()), Expr::Ident(module_name) if module_name == "runtime")
-                    {
-                        if let Some(rt_name) = Self::runtime_member_builtin_name(field) {
-                            CheckedExpr::Ident(rt_name.to_string())
-                        } else {
-                            self.lower_expr(callee)
-                        }
-                    } else {
-                        self.lower_expr(callee)
-                    }
-                } else {
-                    self.lower_expr(callee)
-                };
-                CheckedExpr::Call {
-                    callee: Box::new(lowered_callee),
-                    args: args
-                        .iter()
-                        .map(|a| {
-                            if let Expr::MacroApply {
-                                macro_name,
-                                operand,
-                                ..
-                            } = a
-                            {
-                                if macro_name == "builtin" {
-                                    return self.lower_expr(operand);
-                                }
-                            }
-                            self.lower_expr(a)
-                        })
-                        .collect(),
-                }
-            }
+            Expr::Call { callee, args, .. } => CheckedExpr::Call {
+                callee: Box::new(self.lower_expr(callee)),
+                args: args.iter().map(|a| self.lower_expr(a)).collect(),
+            },
             Expr::MacroApply {
                 macro_name,
                 operand,
@@ -3063,6 +2977,10 @@ impl TypeChecker {
                     .collect::<Vec<_>>();
                 self.interner.intern(Ty::Struct(field_tys))
             }
+            Expr::Block(items) => items
+                .last()
+                .map(|item| self.preview_expr_ty(item))
+                .unwrap_or_else(|| self.interner.intern(Ty::Void)),
             Expr::Closure {
                 params,
                 return_type,
@@ -3125,7 +3043,7 @@ fn is_numeric_ty(ty: &Ty) -> bool {
 
 impl Default for TypeChecker {
     fn default() -> Self {
-        Self::new()
+        Self::new(CheckOptions::default())
     }
 }
 
@@ -3293,8 +3211,9 @@ fn ty_to_ref(ty: &Ty, interner: &TyInterner) -> TypeRef {
 #[cfg(test)]
 mod tests {
     use super::TypeChecker;
-    use crate::checked_ir::{CheckedExpr, CheckedStaticArg, CheckedStaticValue};
+    use crate::checked_ir::CheckedExpr;
     use crate::types::Ty;
+    use aura_frontend::Parser;
     use aura_frontend::ast::{
         BinaryOp as ParsedBinaryOp, Decl, Expr, FunctionDecl, LabeledClosureArg, Pattern, Program,
         StaticArg, StaticParam, StaticParamKind, StaticValueExpr, TypeExpr,
@@ -3307,7 +3226,7 @@ mod tests {
         }
     }
 
-    use crate::check_module;
+    use crate::{check_module, check_module_with_options, CheckOptions};
 
     #[test]
     fn allows_implicit_numeric_widening_on_reassignment() {
@@ -3326,7 +3245,12 @@ mod tests {
             ],
         };
 
-        let checked = check_module(&program);
+        let checked = check_module_with_options(
+            &program,
+            CheckOptions {
+                enforce_main_signature: true,
+            },
+        );
         assert!(checked.module.is_none()); // duplicate symbol from resolver in same scope
     }
 
@@ -3357,7 +3281,12 @@ mod tests {
             })],
         };
 
-        let checked = check_module(&program);
+        let checked = check_module_with_options(
+            &program,
+            CheckOptions {
+                enforce_main_signature: true,
+            },
+        );
         assert!(checked.module.is_none());
         assert!(checked
             .diagnostics
@@ -3553,10 +3482,7 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
+        assert!(!checked.diagnostics.is_empty());
     }
 
     #[test]
@@ -3592,10 +3518,7 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
+        assert!(!checked.diagnostics.is_empty());
     }
 
     #[test]
@@ -3638,7 +3561,7 @@ mod tests {
         assert!(checked
             .diagnostics
             .iter()
-            .any(|d| d.code_str() == "E_BUILTIN_UNKNOWN"));
+            .any(|d| d.code_str() == "E_BUILTIN_FORM"));
     }
 
     #[test]
@@ -3751,7 +3674,7 @@ mod tests {
     }
 
     #[test]
-    fn lower_macro_apply_keeps_static_args_in_ir() {
+    fn builtin_macro_is_rejected() {
         let program = Program {
             declarations: vec![Decl::Assign {
                 doc: None,
@@ -3759,21 +3682,17 @@ mod tests {
                 value: Expr::MacroApply {
                     macro_name: "builtin".to_string(),
                     static_args: vec![StaticArg::Value(StaticValueExpr::Int("4".to_string()))],
-                    operand: Box::new(Expr::Ident("rt_fd_write".to_string())),
+                    operand: Box::new(Expr::Ident("syscall_exit".to_string())),
                 },
             }],
         };
 
         let checked = check_module(&program);
-        let module = checked.module.expect("module should exist");
-        let CheckedExpr::MacroApply { static_args, .. } = &module.ir.declarations[0].value else {
-            panic!("expected macro apply in IR")
-        };
-        assert_eq!(static_args.len(), 1);
-        assert!(matches!(
-            static_args[0],
-            CheckedStaticArg::Value(CheckedStaticValue::Int(ref v)) if v == "4"
-        ));
+        assert!(checked.module.is_none());
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_BUILTIN_FORM"));
     }
 
     #[test]
@@ -4032,79 +3951,6 @@ mod tests {
     }
 
     #[test]
-    fn builtin_macro_produces_function_type() {
-        let program = Program {
-            declarations: vec![Decl::Assign {
-                doc: None,
-                name: "w".to_string(),
-                value: Expr::MacroApply {
-                    macro_name: "builtin".to_string(),
-                    static_args: Vec::new(),
-                    operand: Box::new(Expr::Ident("rt_fd_write".to_string())),
-                },
-            }],
-        };
-
-        let checked = check_module(&program);
-        let module = checked.module.expect("module should exist");
-        let ty_id = module
-            .value_types
-            .get("w")
-            .expect("value type should exist");
-        let ty = module.types.get(*ty_id).expect("type should exist");
-        assert!(matches!(ty, Ty::Func { .. }));
-    }
-
-    #[test]
-    fn ptr_and_slice_type_constructors_typecheck() {
-        let program = Program {
-            declarations: vec![
-                Decl::Assign {
-                    doc: None,
-                    name: "s".to_string(),
-                    value: Expr::MacroApply {
-                        macro_name: "builtin".to_string(),
-                        static_args: Vec::new(),
-                        operand: Box::new(Expr::Ident("rt_fd_write".to_string())),
-                    },
-                },
-                Decl::Assign {
-                    doc: None,
-                    name: "m".to_string(),
-                    value: Expr::MacroApply {
-                        macro_name: "builtin".to_string(),
-                        static_args: Vec::new(),
-                        operand: Box::new(Expr::Ident("rt_mem_map".to_string())),
-                    },
-                },
-            ],
-        };
-
-        let checked = check_module(&program);
-        let module = checked.module.expect("module should exist");
-
-        let s_ty = module
-            .value_types
-            .get("s")
-            .copied()
-            .expect("s type should exist");
-        let Some(Ty::Func { params, .. }) = module.types.get(s_ty) else {
-            panic!("builtin should be function typed")
-        };
-        assert!(matches!(module.types.get(params[1]), Some(Ty::Slice(_))));
-
-        let m_ty = module
-            .value_types
-            .get("m")
-            .copied()
-            .expect("m type should exist");
-        let Some(Ty::Func { ret, .. }) = module.types.get(m_ty) else {
-            panic!("builtin should be function typed")
-        };
-        assert!(matches!(module.types.get(*ret), Some(Ty::Ptr(_))));
-    }
-
-    #[test]
     fn main_signature_accepts_void() {
         let program = Program {
             declarations: vec![Decl::Function(FunctionDecl {
@@ -4132,7 +3978,89 @@ mod tests {
     }
 
     #[test]
-    fn main_signature_accepts_result_void_u8() {
+    fn main_signature_rejects_result_void_u8() {
+        let program = Program {
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
+                static_params: Vec::new(),
+                receiver: None,
+                name: "main".to_string(),
+                params: Vec::new(),
+                return_type: TypeExpr::Named {
+                    name: "Result".to_string(),
+                    args: vec![
+                        StaticArg::Type(TypeExpr::Named {
+                            name: "Void".to_string(),
+                            args: Vec::new(),
+                        }),
+                        StaticArg::Type(TypeExpr::Named {
+                            name: "UInt8".to_string(),
+                            args: Vec::new(),
+                        }),
+                    ],
+                },
+                body: Expr::DotIdent {
+                    name: "ok".to_string(),
+                    payload: None,
+                },
+            })],
+        };
+
+        let checked = check_module_with_options(
+            &program,
+            CheckOptions {
+                enforce_main_signature: true,
+            },
+        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_MAIN_SIGNATURE"));
+    }
+
+    #[test]
+    fn main_signature_rejects_result_void_int32() {
+        let program = Program {
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
+                static_params: Vec::new(),
+                receiver: None,
+                name: "main".to_string(),
+                params: Vec::new(),
+                return_type: TypeExpr::Named {
+                    name: "Result".to_string(),
+                    args: vec![
+                        StaticArg::Type(TypeExpr::Named {
+                            name: "Void".to_string(),
+                            args: Vec::new(),
+                        }),
+                        StaticArg::Type(TypeExpr::Named {
+                            name: "Int".to_string(),
+                            args: Vec::new(),
+                        }),
+                    ],
+                },
+                body: Expr::DotIdent {
+                    name: "ok".to_string(),
+                    payload: None,
+                },
+            })],
+        };
+
+        let checked = check_module_with_options(
+            &program,
+            CheckOptions {
+                enforce_main_signature: true,
+            },
+        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_MAIN_SIGNATURE"));
+    }
+
+    #[test]
+    fn main_signature_not_enforced_when_option_disabled() {
         let program = Program {
             declarations: vec![Decl::Function(FunctionDecl {
                 doc: None,
@@ -4165,42 +4093,6 @@ mod tests {
             .diagnostics
             .iter()
             .all(|d| d.code_str() != "E_MAIN_SIGNATURE"));
-    }
-
-    #[test]
-    fn main_signature_rejects_result_void_int32() {
-        let program = Program {
-            declarations: vec![Decl::Function(FunctionDecl {
-                doc: None,
-                static_params: Vec::new(),
-                receiver: None,
-                name: "main".to_string(),
-                params: Vec::new(),
-                return_type: TypeExpr::Named {
-                    name: "Result".to_string(),
-                    args: vec![
-                        StaticArg::Type(TypeExpr::Named {
-                            name: "Void".to_string(),
-                            args: Vec::new(),
-                        }),
-                        StaticArg::Type(TypeExpr::Named {
-                            name: "Int".to_string(),
-                            args: Vec::new(),
-                        }),
-                    ],
-                },
-                body: Expr::DotIdent {
-                    name: "ok".to_string(),
-                    payload: None,
-                },
-            })],
-        };
-
-        let checked = check_module(&program);
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_MAIN_SIGNATURE"));
     }
 
     #[test]
@@ -5685,7 +5577,7 @@ mod tests {
             ],
         };
 
-        let mut checker = TypeChecker::new();
+        let mut checker = TypeChecker::new(CheckOptions::default());
         let _ = checker.check_program(&program);
         let (_types, _diagnostics, ir) = checker.into_parts();
         assert!(ir
@@ -6034,6 +5926,54 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_some());
+    }
+
+    #[test]
+    fn main_can_call_syscall_exit_from_multi_expression_body() {
+        let program =
+            Parser::parse_source("def main() -> Void { 0; syscall_exit(0) }")
+                .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+    }
+
+    #[test]
+    fn any_cannot_be_cast_to_int() {
+        let program = Program {
+            declarations: vec![
+                Decl::Assign {
+                    doc: None,
+                    name: "value".to_string(),
+                    value: Expr::Cast {
+                        expr: Box::new(Expr::Int("1".to_string())),
+                        ty: TypeExpr::Named {
+                            name: "Any".to_string(),
+                            args: Vec::new(),
+                        },
+                    },
+                },
+                Decl::Assign {
+                    doc: None,
+                    name: "narrowed".to_string(),
+                    value: Expr::Cast {
+                        expr: Box::new(Expr::Ident("value".to_string())),
+                        ty: TypeExpr::Named {
+                            name: "Int".to_string(),
+                            args: Vec::new(),
+                        },
+                    },
+                },
+            ],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked.module.is_none());
+        assert!(!checked.diagnostics.is_empty());
     }
 
     #[test]

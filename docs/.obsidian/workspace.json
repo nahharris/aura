@@ -1,0 +1,202 @@
+{
+  "main": {
+    "id": "8b8df9e6a14e3178",
+    "type": "split",
+    "children": [
+      {
+        "id": "1912ece4e3aebe6a",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "64d3a652f7f86ae7",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Architecture/Testing Strategy.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Testing Strategy"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "f2529bdba5c9e1b9",
+    "type": "split",
+    "children": [
+      {
+        "id": "94398f14f0f1e029",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "bb3621c39058506f",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Explorador de arquivos"
+            }
+          },
+          {
+            "id": "85350842fc46a2d9",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Procurar"
+            }
+          },
+          {
+            "id": "e736a31be25411e3",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Marcadores"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "50781a09de520ebd",
+    "type": "split",
+    "children": [
+      {
+        "id": "42b04f90f70df9ac",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "d7c1743335697f11",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Links inversos"
+            }
+          },
+          {
+            "id": "6cc29865d9fa6885",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Links de saída"
+            }
+          },
+          {
+            "id": "d3447d9a1d95f0a4",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Etiquetas"
+            }
+          },
+          {
+            "id": "71ea25f7ecc23fc6",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "Todas as propriedades"
+            }
+          },
+          {
+            "id": "b393095ebe4e5327",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Sumário"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Abrir a troca rápida": false,
+      "graph:Abrir visualização em gráfico": false,
+      "canvas:Criar novo canvas": false,
+      "daily-notes:Abrir a nota de hoje": false,
+      "templates:Inserir modelo": false,
+      "command-palette:Abrir paleta de comandos": false,
+      "bases:Criar nova base": false
+    }
+  },
+  "active": "64d3a652f7f86ae7",
+  "lastOpenFiles": [
+    "Architecture/Repo Map.md",
+    "Architecture/Build And Dev Workflow.md",
+    "Bases/Subsystems.base",
+    "Bases/Decisions.base",
+    "Contracts/Typecheck IR.md",
+    "Decisions/README.md",
+    "Generated/Test Inventory.md",
+    "Generated/Examples Inventory.md",
+    "Generated/Directory Inventory.md",
+    "Generated/Commands Inventory.md",
+    "Language/Examples Index.md",
+    "Language/Syntax And Semantics.md",
+    "Language/Design Overview.md",
+    "Subsystems/CLI.md",
+    "Home.md",
+    "Bem-vindo.md"
+  ]
+}

@@ -1,0 +1,21 @@
+filters:
+  and:
+    - kind == "subsystem"
+properties:
+  status:
+    displayName: Status
+  source_paths:
+    displayName: Source Paths
+  depends_on:
+    displayName: Depends On
+  last_reviewed:
+    displayName: Last Reviewed
+views:
+  - type: table
+    name: Subsystems
+    order:
+      - file.name
+      - status
+      - source_paths
+      - depends_on
+      - last_reviewed

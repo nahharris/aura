@@ -58,6 +58,7 @@ fn semantically_checked_ir_has_no_any_nodes_for_core_operator_path() {
             }
             CheckedExpr::Tuple(items) => items.iter().any(contains_any),
             CheckedExpr::Struct(fields) => fields.iter().any(|(_, v)| contains_any(v)),
+            CheckedExpr::Block(items) => items.iter().any(contains_any),
             CheckedExpr::List(items) => items.iter().any(contains_any),
             CheckedExpr::Dict(entries) => entries
                 .iter()
@@ -155,6 +156,7 @@ fn pipe_operator_consumes_placeholder_in_rhs_call_without_any_nodes() {
             }
             CheckedExpr::Tuple(items) => items.iter().any(contains_any),
             CheckedExpr::Struct(fields) => fields.iter().any(|(_, v)| contains_any(v)),
+            CheckedExpr::Block(items) => items.iter().any(contains_any),
             CheckedExpr::List(items) => items.iter().any(contains_any),
             CheckedExpr::Dict(entries) => entries
                 .iter()

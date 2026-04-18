@@ -7,10 +7,10 @@ use super::error::CodegenError;
 
 #[cfg(feature = "llvm-backend")]
 use inkwell::{
+    AddressSpace,
     module::Linkage,
     types::BasicTypeEnum,
     values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum},
-    AddressSpace,
 };
 
 #[cfg(feature = "llvm-backend")]
@@ -28,6 +28,7 @@ pub fn classify_expr_kind(expr: &CheckedExpr) -> &'static str {
         CheckedExpr::DotIdent { .. } => "dot_ident",
         CheckedExpr::Tuple(_) => "tuple",
         CheckedExpr::Struct(_) => "struct",
+        CheckedExpr::Block(_) => "block",
         CheckedExpr::Closure { .. } => "closure",
         CheckedExpr::Any => "any",
         CheckedExpr::List(_) => "list",
@@ -88,6 +89,17 @@ pub fn lower_expr<'ctx, 'm>(
                 .build_global_string_ptr(value, "str")
                 .map_err(|_| CodegenError::UnsupportedExpression("string"))?;
             Ok(ptr.as_pointer_value().as_basic_value_enum())
+        }
+        CheckedExpr::Block(items) => {
+            let mut last = cg
+                .context
+                .ptr_type(AddressSpace::default())
+                .const_null()
+                .as_basic_value_enum();
+            for item in items {
+                last = lower_expr(cg, item)?;
+            }
+            Ok(last)
         }
         CheckedExpr::DotIdent { name, payload } => match (name.as_str(), payload.as_deref()) {
             ("ok", _) => Ok(cg.context.i32_type().const_zero().as_basic_value_enum()),
@@ -172,36 +184,6 @@ fn lower_call<'ctx, 'm>(
         name.as_str()
     };
 
-    if resolved_name == "rt_fd_write" && args.len() == 2 {
-        let puts = if let Some(existing) = cg.module.get_function("puts") {
-            existing
-        } else {
-            let i32_ty = cg.context.i32_type();
-            let ptr_ty = cg.context.ptr_type(AddressSpace::default());
-            let puts_ty = i32_ty.fn_type(&[ptr_ty.into()], false);
-            cg.module
-                .add_function("puts", puts_ty, Some(Linkage::External))
-        };
-
-        let text = lower_expr(cg, &args[1])?;
-        let text_ptr = if let BasicValueEnum::PointerValue(p) = text {
-            p
-        } else {
-            return Err(CodegenError::UnsupportedExpression("call"));
-        };
-
-        let call_args = vec![BasicMetadataValueEnum::from(text_ptr)];
-        let _ = cg
-            .builder
-            .build_call(puts, &call_args, "call_puts")
-            .map_err(|_| CodegenError::UnsupportedExpression("call"))?;
-
-        return Ok(cg
-            .context
-            .i64_type()
-            .const_zero()
-            .as_basic_value_enum());
-    }
     let function = if let Some(function) = cg.module.get_function(resolved_name) {
         function
     } else if let Some(fn_ty) = runtime_builtin_function_type(cg, resolved_name) {
@@ -258,21 +240,10 @@ fn runtime_builtin_function_type<'ctx, 'm>(
     name: &str,
 ) -> Option<inkwell::types::FunctionType<'ctx>> {
     let i32_ty = cg.context.i32_type();
-    let i64_ty = cg.context.i64_type();
     let void_ty = cg.context.void_type();
-    let ptr_ty = cg.context.ptr_type(AddressSpace::default());
 
     let ty = match name {
-        "rt_exit" => void_ty.fn_type(&[i32_ty.into()], false),
-        "rt_fd_read" | "rt_fd_write" => i64_ty.fn_type(&[i32_ty.into(), ptr_ty.into()], false),
-        "rt_fd_open" => i32_ty.fn_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false),
-        "rt_fd_close" => i32_ty.fn_type(&[i32_ty.into()], false),
-        "rt_fd_seek" => i64_ty.fn_type(&[i32_ty.into(), i64_ty.into(), i32_ty.into()], false),
-        "rt_mem_map" => ptr_ty.fn_type(&[i64_ty.into(), i32_ty.into(), i32_ty.into()], false),
-        "rt_mem_unmap" => i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
-        "rt_mem_protect" => i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i32_ty.into()], false),
-        "rt_time_now_ns" => i64_ty.fn_type(&[], false),
-        "rt_random_fill" => i32_ty.fn_type(&[ptr_ty.into()], false),
+        "syscall_exit" => void_ty.fn_type(&[i32_ty.into()], false),
         _ => return None,
     };
     Some(ty)
