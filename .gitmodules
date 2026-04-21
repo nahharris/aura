@@ -13,3 +13,6 @@
 [submodule "tool/aura-nvim"]
 	path = tool/aura-nvim
 	url = https://github.com/nahharris/aura-nvim.git
+[submodule "tool/auon"]
+	path = tool/auon
+	url = ../auon

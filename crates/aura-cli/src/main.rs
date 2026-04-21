@@ -1465,9 +1465,7 @@ mod tests {
         let main = fs::read_to_string(root.join("src").join("main.aura"))
             .expect("main source should exist");
         assert!(main.contains("use io = \"@stl/io\";"));
-        assert!(main.contains("print(\"Hello, \");"));
-        assert!(main.contains("io.println(\"world!\");"));
-        assert!(main.contains("exit(.success)"));
+        assert!(main.contains("println(\"Hello, world!\");"));
         assert!(root.join("target").is_dir());
         assert!(root.join(".gitignore").is_file());
         let gitignore =
