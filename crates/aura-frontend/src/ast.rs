@@ -112,6 +112,7 @@ pub enum Expr {
     Tuple(Vec<Expr>),
     Struct(Vec<(String, Expr)>),
     Block(Vec<Expr>),
+    Bindings(Vec<Binding>),
     List(Vec<Expr>),
     Dict(Vec<(Expr, Expr)>),
     Closure {
@@ -135,6 +136,10 @@ pub enum Expr {
         static_args: Vec<StaticArg>,
         operand: Box<Expr>,
     },
+    Assign {
+        name: String,
+        value: Box<Expr>,
+    },
     Binary {
         op: BinaryOp,
         lhs: Box<Expr>,
@@ -149,6 +154,12 @@ pub enum Expr {
         expr: Box<Expr>,
         ty: TypeExpr,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Binding {
+    pub pattern: Pattern,
+    pub value: Expr,
 }
 
 impl Expr {

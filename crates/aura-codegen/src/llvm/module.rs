@@ -286,7 +286,7 @@ mod tests {
     #[cfg(not(feature = "llvm-backend"))]
     use aura_frontend::Parser;
     #[cfg(feature = "llvm-backend")]
-    use aura_typecheck::check_module;
+    use aura_typecheck::{CheckOptions, check_module, check_module_with_options};
     #[cfg(not(feature = "llvm-backend"))]
     use aura_typecheck::check_module;
 
@@ -309,7 +309,7 @@ mod tests {
     #[cfg(feature = "llvm-backend")]
     #[test]
     fn object_emission_supports_void_main_entrypoint() {
-        let program = Parser::parse_source("def main() -> Void { .unit }").expect("parse");
+        let program = Parser::parse_source("def main() -> Void { () }").expect("parse");
         let checked = check_module(&program);
         let module = checked.module.expect("checked module");
         let out = std::env::temp_dir().join("aura-main-void.obj");
@@ -320,18 +320,32 @@ mod tests {
 
     #[cfg(feature = "llvm-backend")]
     #[test]
-    fn object_emission_rejects_non_void_main_entrypoint() {
-        let src = "def main() -> Result[Void, UInt8] { .err(7) }";
+    fn object_emission_supports_local_assignment_before_exit() {
+        let src = "def main() -> Void { let exit_code = 0; exit_code = 0; syscall_exit(exit_code) }";
         let program = Parser::parse_source(src).expect("parse");
         let checked = check_module(&program);
         let module = checked.module.expect("checked module");
-        let out = std::env::temp_dir().join("aura-main-result.obj");
-        let err = super::emit_object_file("main_result", &module, &out)
-            .expect_err("non-void main should fail");
-        assert!(
-            err.to_string().contains("return type must be `Void`"),
-            "unexpected error: {err}"
-        );
+        let out = std::env::temp_dir().join("aura-main-local-assign.obj");
+        super::emit_object_file("main_local_assign", &module, &out).expect("emit object");
+        assert!(out.exists());
         let _ = std::fs::remove_file(out);
+    }
+
+    #[cfg(feature = "llvm-backend")]
+    #[test]
+    fn non_void_main_is_rejected_before_codegen() {
+        let src = "def main() -> Result[Void, UInt8] { .err(7) }";
+        let program = Parser::parse_source(src).expect("parse");
+        let checked = check_module_with_options(
+            &program,
+            CheckOptions {
+                enforce_main_signature: false,
+            },
+        );
+        assert!(
+            checked.module.is_none(),
+            "expected invalid non-void main to be rejected before codegen"
+        );
+        assert!(!checked.diagnostics.is_empty());
     }
 }

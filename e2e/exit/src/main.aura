@@ -1,4 +1,4 @@
 def main() -> Void {
-    0;
-    syscall_exit(0)
+    let exit_code = 1;
+    syscall_exit(exit_code)
 }

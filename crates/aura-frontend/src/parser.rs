@@ -1,8 +1,8 @@
 #![allow(clippy::result_large_err)]
 
 use crate::ast::{
-    Arm, BinaryOp, Decl, DocAttribute, Expr, FunctionDecl, LabeledClosureArg, MacroDecl, Param,
-    Pattern, Program, StaticArg, StaticParam, StaticParamKind, StaticValueExpr, SymbolDoc,
+    Arm, BinaryOp, Binding, Decl, DocAttribute, Expr, FunctionDecl, LabeledClosureArg, MacroDecl,
+    Param, Pattern, Program, StaticArg, StaticParam, StaticParamKind, StaticValueExpr, SymbolDoc,
     TypeExpr, UseDecl,
 };
 use crate::lexer::lex;
@@ -429,33 +429,13 @@ where
             )?;
             Ok(Expr::MultiArm(arms))
         } else {
-            let mut items = Vec::new();
-            let mut saw_semicolon = false;
-            loop {
-                items.push(self.parse_expr()?);
-                if self.peek_is(&TokenKind::Semi) {
-                    saw_semicolon = true;
-                    self.bump();
-                    if self.peek_is(&TokenKind::RBrace) {
-                        break;
-                    }
-                    continue;
-                }
-                break;
-            }
+            let body = self.parse_sequence_until(&[TokenKind::RBrace])?;
             self.expect_simple(
                 &TokenKind::RBrace,
                 "expected '}' after block body",
                 vec!["}"],
             )?;
-            if saw_semicolon {
-                Ok(Expr::Block(items))
-            } else {
-                Ok(items
-                    .into_iter()
-                    .next()
-                    .expect("non-empty non-multi-arm block should have one expression"))
-            }
+            Ok(body)
         }
     }
 
@@ -847,8 +827,30 @@ where
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
         let mark = self.mark();
-        let expr = self.parse_elvis_expr()?;
+        let expr = self.parse_assign_expr()?;
         Ok(self.with_span(mark, expr))
+    }
+
+    fn parse_assign_expr(&mut self) -> Result<Expr, ParseError> {
+        let mark = self.mark();
+        let expr = self.parse_elvis_expr()?;
+        if !self.peek_is(&TokenKind::Eq) {
+            return Ok(self.with_span(mark, expr));
+        }
+
+        let Some(name) = self.ident_assign_target(&expr) else {
+            return Ok(self.with_span(mark, expr));
+        };
+
+        self.bump();
+        let value = self.parse_assign_expr()?;
+        Ok(self.with_span(
+            mark,
+            Expr::Assign {
+                name,
+                value: Box::new(value),
+            },
+        ))
     }
 
     fn starts_type_expr(&self) -> bool {
@@ -1169,10 +1171,24 @@ where
             ));
         }
 
-        let operand = if self.is_macro_apply_start() {
+        let operand = if head_name == "let" || head_name == "def" {
+            let operand_mark = self.mark();
+            match self.parse_binding_payload() {
+                Ok(operand) => operand,
+                Err(err) if err.message.contains("expected '=' in binding") => {
+                    self.cursor = operand_mark;
+                    if self.is_macro_apply_start() {
+                        self.parse_macro_apply_expr()?
+                    } else {
+                        self.parse_assign_expr()?
+                    }
+                }
+                Err(err) => return Err(err),
+            }
+        } else if self.is_macro_apply_start() {
             self.parse_macro_apply_expr()?
         } else {
-            self.parse_postfix_expr()?
+            self.parse_assign_expr()?
         };
         Ok(self.with_span(
             mark,
@@ -1279,7 +1295,7 @@ where
             return Ok(Expr::Struct(fields));
         }
 
-        let first = self.parse_expr()?;
+        let first = self.parse_elvis_expr()?;
         if !self.peek_is(&TokenKind::Comma) {
             self.expect_simple(
                 &TokenKind::RParen,
@@ -1312,19 +1328,19 @@ where
             return Ok(Expr::List(Vec::new()));
         }
 
-        let first = self.parse_expr()?;
+        let first = self.parse_sequence_until(&[TokenKind::Comma, TokenKind::RBracket])?;
         if self.peek_is(&TokenKind::Eq) {
             self.bump();
-            let value = self.parse_expr()?;
+            let value = self.parse_sequence_until(&[TokenKind::Comma, TokenKind::RBracket])?;
             let mut entries = vec![(first, value)];
             while self.peek_is(&TokenKind::Comma) {
                 self.bump();
                 if self.peek_is(&TokenKind::RBracket) {
                     break;
                 }
-                let key = self.parse_expr()?;
+                let key = self.parse_elvis_expr()?;
                 self.expect_simple(&TokenKind::Eq, "expected '=' in dict entry", vec!["="])?;
-                let value = self.parse_expr()?;
+                let value = self.parse_sequence_until(&[TokenKind::Comma, TokenKind::RBracket])?;
                 entries.push((key, value));
             }
             self.expect_simple(
@@ -1341,7 +1357,7 @@ where
             if self.peek_is(&TokenKind::RBracket) {
                 break;
             }
-            items.push(self.parse_expr()?);
+            items.push(self.parse_sequence_until(&[TokenKind::Comma, TokenKind::RBracket])?);
         }
         self.expect_simple(
             &TokenKind::RBracket,
@@ -1349,6 +1365,50 @@ where
             vec!["]"],
         )?;
         Ok(Expr::List(items))
+    }
+
+    fn parse_binding_payload(&mut self) -> Result<Expr, ParseError> {
+        let mut bindings = Vec::new();
+        loop {
+            let pattern = self.parse_pattern()?;
+            self.expect_simple(&TokenKind::Eq, "expected '=' in binding", vec!["="])?;
+            let value = self.parse_assign_expr()?;
+            bindings.push(Binding { pattern, value });
+            if self.peek_is(&TokenKind::Comma) {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        Ok(Expr::Bindings(bindings))
+    }
+
+    fn parse_sequence_until(&mut self, terminators: &[TokenKind]) -> Result<Expr, ParseError> {
+        let mut items = vec![self.parse_expr()?];
+        let mut saw_semi = false;
+        while self.peek_is(&TokenKind::Semi) {
+            saw_semi = true;
+            self.bump();
+            if terminators.iter().any(|tok| self.peek_is(tok)) {
+                break;
+            }
+            items.push(self.parse_expr()?);
+        }
+        if saw_semi {
+            Ok(Expr::Block(items))
+        } else {
+            Ok(items
+                .into_iter()
+                .next()
+                .expect("sequence parser should produce at least one expression"))
+        }
+    }
+
+    fn ident_assign_target(&self, expr: &Expr) -> Option<String> {
+        match expr.unspanned() {
+            Expr::Ident(name) => Some(name.clone()),
+            _ => None,
+        }
     }
 
     fn starts_operand(&self) -> bool {
@@ -1796,7 +1856,7 @@ fn collect_macro_symbols(tokens: &[Token]) -> HashSet<String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::ast::{Decl, Expr, Pattern, StaticArg, StaticParamKind, TypeExpr};
+    use crate::ast::{BinaryOp, Decl, Expr, Pattern, StaticArg, StaticParamKind, TypeExpr};
     use crate::parser::Parser;
 
     fn u(expr: &Expr) -> &Expr {
@@ -2354,6 +2414,117 @@ mod tests {
             panic!("expected function declaration")
         };
         assert!(matches!(u(&function.body), Expr::Block(items) if items.len() == 2));
+    }
+
+    #[test]
+    fn parse_function_body_with_local_let_binding() {
+        let src = "def main() -> Void { let exit_code = 0; syscall_exit(exit_code) }";
+        let parsed = Parser::parse_source(src).expect("should parse local let binding");
+        let Decl::Function(function) = &parsed.declarations[0] else {
+            panic!("expected function declaration")
+        };
+        let Expr::Block(items) = u(&function.body) else {
+            panic!("expected block body")
+        };
+        assert_eq!(items.len(), 2);
+        assert!(matches!(
+            u(&items[0]),
+            Expr::MacroApply { macro_name, operand, .. }
+                if macro_name == "let"
+                    && matches!(
+                        u(operand.as_ref()),
+                        Expr::Bindings(bindings)
+                            if bindings.len() == 1
+                                && matches!(bindings[0].pattern, Pattern::Ident(ref name) if name == "exit_code")
+                                && matches!(u(&bindings[0].value), Expr::Int(ref v) if v == "0")
+                    )
+        ));
+    }
+
+    #[test]
+    fn parse_local_def_binding_in_block() {
+        let src = "def main() -> Int { def x = 1; x }";
+        let parsed = Parser::parse_source(src).expect("should parse local def binding");
+        let Decl::Function(function) = &parsed.declarations[0] else {
+            panic!("expected function declaration")
+        };
+        let Expr::Block(items) = u(&function.body) else {
+            panic!("expected block body")
+        };
+        assert_eq!(items.len(), 2);
+        assert!(matches!(
+            u(&items[0]),
+            Expr::MacroApply { macro_name, .. } if macro_name == "def"
+        ));
+    }
+
+    #[test]
+    fn parse_assignment_expression_is_right_associative_and_low_precedence() {
+        let src = "def main() -> Int { let x = 0; let y = 0; x = y = 1 + 2; x }";
+        let parsed = Parser::parse_source(src).expect("should parse assignment expression");
+        let Decl::Function(function) = &parsed.declarations[0] else {
+            panic!("expected function declaration")
+        };
+        let Expr::Block(items) = u(&function.body) else {
+            panic!("expected block body")
+        };
+        assert!(matches!(
+            u(&items[2]),
+            Expr::Assign { name, value }
+                if name == "x"
+                    && matches!(
+                        u(value.as_ref()),
+                        Expr::Assign { name, value }
+                            if name == "y"
+                                && matches!(
+                                    u(value.as_ref()),
+                                    Expr::Binary { op: BinaryOp::Add, .. }
+                                )
+                    )
+        ));
+    }
+
+    #[test]
+    fn parse_comma_chained_bindings_for_local_let() {
+        let src = "def main() -> Int { let a = 1, b = 2, c = a + b; c }";
+        let parsed = Parser::parse_source(src).expect("should parse chained local bindings");
+        let Decl::Function(function) = &parsed.declarations[0] else {
+            panic!("expected function declaration")
+        };
+        let Expr::Block(items) = u(&function.body) else {
+            panic!("expected block body")
+        };
+        assert!(matches!(
+            u(&items[0]),
+            Expr::MacroApply { macro_name, operand, .. }
+                if macro_name == "let"
+                    && matches!(u(operand.as_ref()), Expr::Bindings(bindings) if bindings.len() == 3)
+        ));
+    }
+
+    #[test]
+    fn parse_collection_item_sequences_are_scoped_per_comma() {
+        let src = "def xs = [let x = 0; x = x + 1; x, 42]";
+        let parsed =
+            Parser::parse_source(src).expect("should parse collection item scoped sequences");
+        let Decl::Assign { value, .. } = &parsed.declarations[0] else {
+            panic!("expected assignment declaration")
+        };
+        let Expr::List(items) = u(value) else {
+            panic!("expected list literal")
+        };
+        assert_eq!(items.len(), 2);
+        let Expr::Block(first_item) = u(&items[0]) else {
+            panic!("expected scoped block for first list item")
+        };
+        assert_eq!(first_item.len(), 3);
+        assert!(matches!(
+            u(&first_item[0]),
+            Expr::MacroApply { macro_name, .. } if macro_name == "let"
+        ));
+        assert!(matches!(u(&first_item[1]), Expr::Assign { name, .. } if name == "x"));
+        assert!(matches!(u(&first_item[2]), Expr::Ident(name) if name == "x"));
+        assert!(matches!(u(&items[1]), Expr::Int(value) if value == "42"));
     }
 
     #[test]

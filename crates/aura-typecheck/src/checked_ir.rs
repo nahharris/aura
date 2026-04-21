@@ -51,6 +51,15 @@ pub enum CheckedExpr {
     Tuple(Vec<CheckedExpr>),
     Struct(Vec<(String, CheckedExpr)>),
     Block(Vec<CheckedExpr>),
+    LocalBind {
+        bindings: Vec<CheckedBinding>,
+        mutable: bool,
+    },
+    AssignLocal {
+        name: String,
+        value: Box<CheckedExpr>,
+        ty: TyId,
+    },
     Closure {
         params: Vec<String>,
         return_ty: Option<TyId>,
@@ -103,6 +112,13 @@ pub enum CheckedExpr {
         to: TyId,
         expr: Box<CheckedExpr>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedBinding {
+    pub name: Option<String>,
+    pub ty: TyId,
+    pub value: CheckedExpr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -6,6 +6,8 @@ This file provides guidance for coding agents working in this repository.
 
 Aura is a multi-crate compiler workspace with an Obsidian vault in `docs/` that should track the codebase as an engineering second brain.
 
+Agents should treat `docs/` as a maintained second-brain surface, not as optional prose. When a change affects architecture, compiler behavior, syntax, typing rules, codegen behavior, build workflows, project layout, or developer workflows, update the relevant notes in `docs/` in the same task unless the user explicitly says not to.
+
 - Authoritative spec: `DESIGN.md`
 - Obsidian vault root: `docs/`
 - Workspace crates:
@@ -34,6 +36,16 @@ Key entry files:
 - `crates/aura-cli/src/main.rs` — CLI entry point
 - `xtask/src/main.rs` — automation command surface
 - `xtask/src/docs.rs` — Obsidian vault automation
+
+## Second Brain Expectations
+
+- Keep `docs/` aligned with the actual codebase and `DESIGN.md`.
+- When editing notes in `docs/`, use the `obsidian-markdown` skill so Obsidian-specific Markdown stays valid and linked.
+- When the task involves interacting with or verifying the live Obsidian vault, use the `obsidian-cli` skill if Obsidian is available.
+- Prefer updating an existing relevant note over creating duplicate notes with overlapping scope.
+- If a code change introduces a new concept, workflow, invariant, or notable implementation detail, either document it in an existing note or add a clearly named new note in `docs/`.
+- Preserve vault structure and internal links. Use wikilinks for links within `docs/` when appropriate.
+- Before closing out doc-affecting work, run the docs sync/check flow when it is relevant to the change.
 
 ## Build, Lint, and Test Commands
 
@@ -107,6 +119,8 @@ cargo xtask docs check
 
 Use `cargo xtask docs sync` to refresh generated inventory notes and scaffold any missing curated notes in the Obsidian vault. Use `cargo xtask docs check` to detect stale generated docs in CI or before closing out doc-related work.
 
+For work that changes the codebase shape or documented workflows, prefer running `cargo xtask docs sync` after edits and `cargo xtask docs check` before completion.
+
 Frontend-only test loop:
 
 ```bash
@@ -133,3 +147,4 @@ cargo xtask dev test
 
 - New syntax work must include parser tests in `crates/aura-frontend/src/parser.rs` (or dedicated frontend tests).
 - Prefer descriptive test names and `assert_eq!` where direct value comparison is suitable.
+- If the task changes architecture, workflows, or curated documentation, update the affected Obsidian notes under `docs/` and verify the docs workflow still passes when relevant.

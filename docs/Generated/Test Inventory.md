@@ -2,15 +2,13 @@
 title: Test Inventory
 kind: generated
 generated_by: cargo xtask docs sync
-generated_at: 2026-04-18T14:14:12.7917183Z
+generated_at: 2026-04-21T08:52:12.3907534Z
 ---
 
 # Test Inventory
 
 | Path | Surface |
 | --- | --- |
-| `aura-stl/src/option.test.aura` | stdlib |
-| `aura-stl/src/result.test.aura` | stdlib |
 | `crates/aura-frontend/tests/diagnostics_snapshot.rs` | frontend |
 | `crates/aura-typecheck/tests/diagnostics_snapshot.rs` | typecheck |
 | `crates/aura-typecheck/tests/ir_contract_snapshot.rs` | typecheck |

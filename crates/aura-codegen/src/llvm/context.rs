@@ -1,8 +1,12 @@
 #[cfg(feature = "llvm-backend")]
+use std::{cell::RefCell, collections::HashMap};
+
+#[cfg(feature = "llvm-backend")]
 use inkwell::{
     builder::Builder,
     context::Context,
     module::Module,
+    values::PointerValue,
     targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine},
 };
 
@@ -12,11 +16,19 @@ use aura_typecheck::CheckedModule;
 use super::error::CodegenError;
 
 #[cfg(feature = "llvm-backend")]
+#[derive(Clone, Copy)]
+pub struct LocalSlot<'ctx> {
+    pub ptr: PointerValue<'ctx>,
+    pub ty: aura_typecheck::TyId,
+}
+
+#[cfg(feature = "llvm-backend")]
 pub struct CodegenContext<'ctx, 'm> {
     pub context: &'ctx Context,
     pub module: Module<'ctx>,
     pub builder: Builder<'ctx>,
     pub checked: &'m CheckedModule,
+    pub local_scopes: RefCell<Vec<HashMap<String, LocalSlot<'ctx>>>>,
 }
 
 #[cfg(feature = "llvm-backend")]
@@ -29,7 +41,33 @@ impl<'ctx, 'm> CodegenContext<'ctx, 'm> {
             module,
             builder,
             checked,
+            local_scopes: RefCell::new(vec![HashMap::new()]),
         }
+    }
+
+    pub fn push_local_scope(&self) {
+        self.local_scopes.borrow_mut().push(HashMap::new());
+    }
+
+    pub fn pop_local_scope(&self) {
+        let mut scopes = self.local_scopes.borrow_mut();
+        if scopes.len() > 1 {
+            let _ = scopes.pop();
+        }
+    }
+
+    pub fn insert_local(&self, name: String, slot: LocalSlot<'ctx>) {
+        if let Some(scope) = self.local_scopes.borrow_mut().last_mut() {
+            scope.insert(name, slot);
+        }
+    }
+
+    pub fn lookup_local(&self, name: &str) -> Option<LocalSlot<'ctx>> {
+        self.local_scopes
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).copied())
     }
 
     pub fn initialize_native_target() -> Result<(), CodegenError> {

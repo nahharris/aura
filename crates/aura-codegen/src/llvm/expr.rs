@@ -15,6 +15,8 @@ use inkwell::{
 
 #[cfg(feature = "llvm-backend")]
 use super::context::CodegenContext;
+#[cfg(feature = "llvm-backend")]
+use super::types::classify_type;
 
 pub fn classify_expr_kind(expr: &CheckedExpr) -> &'static str {
     match expr {
@@ -29,6 +31,8 @@ pub fn classify_expr_kind(expr: &CheckedExpr) -> &'static str {
         CheckedExpr::Tuple(_) => "tuple",
         CheckedExpr::Struct(_) => "struct",
         CheckedExpr::Block(_) => "block",
+        CheckedExpr::LocalBind { .. } => "local_bind",
+        CheckedExpr::AssignLocal { .. } => "assign_local",
         CheckedExpr::Closure { .. } => "closure",
         CheckedExpr::Any => "any",
         CheckedExpr::List(_) => "list",
@@ -90,7 +94,13 @@ pub fn lower_expr<'ctx, 'm>(
                 .map_err(|_| CodegenError::UnsupportedExpression("string"))?;
             Ok(ptr.as_pointer_value().as_basic_value_enum())
         }
+        CheckedExpr::Tuple(items) if items.is_empty() => Ok(cg
+            .context
+            .ptr_type(AddressSpace::default())
+            .const_null()
+            .as_basic_value_enum()),
         CheckedExpr::Block(items) => {
+            cg.push_local_scope();
             let mut last = cg
                 .context
                 .ptr_type(AddressSpace::default())
@@ -98,6 +108,28 @@ pub fn lower_expr<'ctx, 'm>(
                 .as_basic_value_enum();
             for item in items {
                 last = lower_expr(cg, item)?;
+            }
+            cg.pop_local_scope();
+            Ok(last)
+        }
+        CheckedExpr::LocalBind { bindings, .. } => {
+            let mut last = cg
+                .context
+                .ptr_type(AddressSpace::default())
+                .const_null()
+                .as_basic_value_enum();
+            for binding in bindings {
+                let lowered = lower_expr(cg, &binding.value)?;
+                last = lowered;
+                let Some(name) = binding.name.as_ref() else {
+                    continue;
+                };
+                let slot = allocate_local_slot(cg, name, binding.ty)?;
+                let stored = coerce_basic_value_for_slot(cg, lowered, binding.ty)?;
+                cg.builder
+                    .build_store(slot.ptr, stored)
+                    .map_err(|_| CodegenError::UnsupportedExpression("local_bind"))?;
+                cg.insert_local(name.clone(), slot);
             }
             Ok(last)
         }
@@ -115,7 +147,21 @@ pub fn lower_expr<'ctx, 'm>(
             }
             _ => Err(CodegenError::UnsupportedExpression("dot_ident")),
         },
+        CheckedExpr::AssignLocal { name, value, ty } => {
+            let slot = cg
+                .lookup_local(name)
+                .ok_or(CodegenError::UnsupportedExpression("assign_local"))?;
+            let lowered = lower_expr(cg, value)?;
+            let stored = coerce_basic_value_for_slot(cg, lowered, *ty)?;
+            cg.builder
+                .build_store(slot.ptr, stored)
+                .map_err(|_| CodegenError::UnsupportedExpression("assign_local"))?;
+            load_local_slot(cg, slot, name)
+        }
         CheckedExpr::Ident(name) => {
+            if let Some(slot) = cg.lookup_local(name) {
+                return load_local_slot(cg, slot, name);
+            }
             if name == "main" {
                 if let Some(function) = cg.module.get_function("aura_user_main") {
                     return Ok(function
@@ -142,6 +188,65 @@ pub fn lower_expr<'ctx, 'm>(
         _ => Err(CodegenError::UnsupportedExpression(classify_expr_kind(
             expr,
         ))),
+    }
+}
+
+#[cfg(feature = "llvm-backend")]
+fn allocate_local_slot<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    name: &str,
+    ty: aura_typecheck::TyId,
+) -> Result<super::context::LocalSlot<'ctx>, CodegenError> {
+    let value_ty = classify_type(&cg.checked.types, ty)?;
+    let basic_ty = value_ty.to_basic_type(cg.context)?;
+    let ptr = cg
+        .builder
+        .build_alloca(basic_ty, &format!("local_{name}"))
+        .map_err(|_| CodegenError::UnsupportedExpression("local_bind"))?;
+    Ok(super::context::LocalSlot { ptr, ty })
+}
+
+#[cfg(feature = "llvm-backend")]
+fn load_local_slot<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    slot: super::context::LocalSlot<'ctx>,
+    name: &str,
+) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    let value_ty = classify_type(&cg.checked.types, slot.ty)?;
+    let basic_ty = value_ty.to_basic_type(cg.context)?;
+    cg.builder
+        .build_load(basic_ty, slot.ptr, &format!("load_{name}"))
+        .map_err(|_| CodegenError::UnsupportedExpression("ident"))
+}
+
+#[cfg(feature = "llvm-backend")]
+fn coerce_basic_value_for_slot<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    value: BasicValueEnum<'ctx>,
+    target_ty: aura_typecheck::TyId,
+) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    let value_ty = classify_type(&cg.checked.types, target_ty)?;
+    let target_basic_ty = value_ty.to_basic_type(cg.context)?;
+    match (value, target_basic_ty) {
+        (BasicValueEnum::IntValue(int_val), BasicTypeEnum::IntType(target_int_ty)) => {
+            let from_w = int_val.get_type().get_bit_width();
+            let to_w = target_int_ty.get_bit_width();
+            if from_w == to_w {
+                Ok(int_val.as_basic_value_enum())
+            } else if from_w > to_w {
+                cg.builder
+                    .build_int_truncate(int_val, target_int_ty, "local_trunc")
+                    .map(|v| v.as_basic_value_enum())
+                    .map_err(|_| CodegenError::UnsupportedExpression("assign_local"))
+            } else {
+                cg.builder
+                    .build_int_z_extend(int_val, target_int_ty, "local_zext")
+                    .map(|v| v.as_basic_value_enum())
+                    .map_err(|_| CodegenError::UnsupportedExpression("assign_local"))
+            }
+        }
+        (value, _) if value.get_type() == target_basic_ty => Ok(value),
+        (value, _) => Ok(value),
     }
 }
 

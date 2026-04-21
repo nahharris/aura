@@ -331,6 +331,7 @@ impl<'a> Formatter<'a> {
                 self.out.push(')');
             }
             Expr::Block(items) => self.write_inline_block(items),
+            Expr::Bindings(bindings) => self.write_bindings(bindings),
             Expr::List(items) => {
                 self.out.push('[');
                 for (i, item) in items.iter().enumerate() {
@@ -401,6 +402,11 @@ impl<'a> Formatter<'a> {
                 self.write_static_args(static_args);
                 self.out.push(' ');
                 self.write_expr(operand, true);
+            }
+            Expr::Assign { name, value } => {
+                self.out.push_str(name);
+                self.out.push_str(" = ");
+                self.write_expr(value, false);
             }
             Expr::Binary { op, lhs, rhs } => self.write_binary(*op, lhs, rhs),
             Expr::TypeExpr(ty) => self.write_type_expr(ty),
@@ -526,6 +532,17 @@ impl<'a> Formatter<'a> {
             }
         }
         self.out.push(']');
+    }
+
+    fn write_bindings(&mut self, bindings: &[crate::ast::Binding]) {
+        for (i, binding) in bindings.iter().enumerate() {
+            if i > 0 {
+                self.out.push_str(", ");
+            }
+            self.write_pattern(&binding.pattern);
+            self.out.push_str(" = ");
+            self.write_expr(&binding.value, false);
+        }
     }
 
     fn write_static_value(&mut self, v: &StaticValueExpr) {

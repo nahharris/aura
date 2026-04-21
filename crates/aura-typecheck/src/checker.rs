@@ -9,8 +9,8 @@ use aura_frontend::ast::{
 use crate::aliases::TypeAliases;
 use crate::builtins::{BuiltinRegistry, BuiltinTypeRef};
 use crate::checked_ir::{
-    BinaryOpKind, CheckedDecl, CheckedExpr, CheckedIr, CheckedStaticArg, CheckedStaticValue,
-    CheckedTypeExpr,
+    BinaryOpKind, CheckedBinding, CheckedDecl, CheckedExpr, CheckedIr, CheckedStaticArg,
+    CheckedStaticValue, CheckedTypeExpr,
 };
 use crate::interfaces::InterfaceRegistry;
 use crate::modules::ModuleChecker;
@@ -33,7 +33,7 @@ pub struct TypeChecker {
     unifier: Unifier,
     next_infer_var: u32,
     obligation_stack: Vec<String>,
-    value_env_scopes: Vec<HashMap<String, TyId>>,
+    value_env_scopes: Vec<HashMap<String, ValueBinding>>,
     generic_env_scopes: Vec<HashMap<String, TyId>>,
     function_generics: HashMap<String, Vec<FunctionGenericInfo>>,
     pending_constraints: Vec<TypeConstraint>,
@@ -42,6 +42,12 @@ pub struct TypeChecker {
     diagnostics: Vec<Diagnostic>,
     ir: CheckedIr,
     options: CheckOptions,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ValueBinding {
+    ty: TyId,
+    mutable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -144,7 +150,7 @@ impl TypeChecker {
                 params: param_tys,
                 ret,
             });
-            checker.insert_value("syscall_exit".to_string(), func_ty);
+            checker.insert_value("syscall_exit".to_string(), func_ty, false);
         }
 
         checker
@@ -243,7 +249,7 @@ impl TypeChecker {
                     });
                 }
                 values.insert(name.clone(), ty);
-                self.insert_value(name.clone(), ty);
+                self.insert_value(name.clone(), ty, false);
                 self.pop_obligation();
                 self.current_expr_span = prev_span;
             }
@@ -264,7 +270,7 @@ impl TypeChecker {
                 self.push_scope();
                 for param in &function.params {
                     let param_ty = self.resolve_type_expr(&param.ty);
-                    self.insert_value(param.name.clone(), param_ty);
+                    self.insert_value(param.name.clone(), param_ty, false);
                 }
                 if let Expr::MultiArm(arms) = TypeChecker::base_expr(&function.body) {
                     self.diagnostics
@@ -306,7 +312,7 @@ impl TypeChecker {
                 });
                 self.pop_scope();
                 self.pop_generic_scope();
-                self.insert_value(function.name.clone(), func_ty);
+                self.insert_value(function.name.clone(), func_ty, false);
                 if !function.static_params.is_empty() {
                     self.function_generics.insert(
                         function.name.clone(),
@@ -329,7 +335,7 @@ impl TypeChecker {
                 self.push_scope();
                 for param in &macro_decl.params {
                     let param_ty = self.resolve_type_expr(&param.ty);
-                    self.insert_value(param.name.clone(), param_ty);
+                    self.insert_value(param.name.clone(), param_ty, false);
                 }
                 if let Expr::MultiArm(arms) = TypeChecker::base_expr(&macro_decl.body) {
                     self.diagnostics
@@ -427,6 +433,9 @@ impl TypeChecker {
             }
             Expr::Label { expr, .. } => self.infer_expr(expr),
             Expr::Tuple(items) => {
+                if items.is_empty() {
+                    return self.interner.intern(Ty::Void);
+                }
                 let item_tys = items
                     .iter()
                     .map(|item| self.infer_expr(item))
@@ -441,14 +450,61 @@ impl TypeChecker {
                 self.interner.intern(Ty::Struct(field_tys))
             }
             Expr::Block(items) => {
-                if let Some((last, rest)) = items.split_last() {
+                self.push_scope();
+                let result = if let Some((last, rest)) = items.split_last() {
                     for item in rest {
                         let _ = self.infer_expr(item);
                     }
                     self.infer_expr(last)
                 } else {
                     self.interner.intern(Ty::Void)
+                };
+                self.pop_scope();
+                result
+            }
+            Expr::Bindings(_) => {
+                self.diagnostics.push(
+                    self.typecheck_error(
+                        Issue::MacroUntyped,
+                        "binding payloads must be consumed by `let` or `def`",
+                    )
+                    .with_hint("use binding payloads through `let ...` or `def ...`"),
+                );
+                self.unknown_ty()
+            }
+            Expr::Assign { name, value } => {
+                let Some(binding) = self.lookup_value_binding(name) else {
+                    self.diagnostics.push(
+                        self.typecheck_error(
+                            Issue::UnresolvedIdent { name: name.clone() },
+                            format!("cannot assign to undeclared local '{name}'"),
+                        )
+                        .with_hint("declare the local with `let` or `def` before assigning"),
+                    );
+                    return self.unknown_ty();
+                };
+                if !binding.mutable {
+                    let binding_ty = self
+                        .interner
+                        .get(binding.ty)
+                        .cloned()
+                        .unwrap_or_else(|| self.missing_ty_fallback());
+                    self.diagnostics.push(
+                        self.typecheck_error(
+                            Issue::TypeMismatch {
+                                context: TypingContext::Assignment,
+                                expected: ty_to_ref(&binding_ty, &self.interner),
+                                actual: ty_to_ref(&binding_ty, &self.interner),
+                            },
+                            format!("cannot assign to immutable local '{name}'"),
+                        )
+                        .with_hint("use `let` for mutable locals or stop reassigning this name"),
+                    );
+                    return binding.ty;
                 }
+                let rhs_ty = self.infer_expr_with_expected(value, binding.ty);
+                self.require_assignable(binding.ty, rhs_ty, "assignment");
+                binding.ty
             }
             Expr::List(items) => {
                 if let Some(first) = items.first() {
@@ -584,6 +640,28 @@ impl TypeChecker {
                     );
                     self.unknown_ty()
                 }
+            }
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                static_args,
+            } if macro_name == "let" || macro_name == "def" => {
+                let Expr::Bindings(bindings) = TypeChecker::base_expr(operand.as_ref()) else {
+                    self.diagnostics.push(
+                        self.typecheck_error(
+                            Issue::MacroUntyped,
+                            format!("`{macro_name}` expects binding payloads"),
+                        )
+                        .with_hint(format!("use form like `{macro_name} name = value`")),
+                    );
+                    return self.unknown_ty();
+                };
+                let is_mutable = macro_name == "let";
+                for binding in bindings {
+                    let value_ty = self.infer_expr(&binding.value);
+                    self.bind_local_pattern(&binding.pattern, value_ty, is_mutable);
+                }
+                self.interner.intern(Ty::Void)
             }
             Expr::MacroApply {
                 macro_name,
@@ -730,14 +808,52 @@ impl TypeChecker {
 
         match (Self::base_expr(expr), expected_ty) {
             (Expr::Block(items), _) => {
-                if let Some((last, rest)) = items.split_last() {
+                self.push_scope();
+                let result = if let Some((last, rest)) = items.split_last() {
                     for item in rest {
                         let _ = self.infer_expr(item);
                     }
                     self.infer_expr_with_expected(last, expected)
                 } else {
                     self.interner.intern(Ty::Void)
+                };
+                self.pop_scope();
+                result
+            }
+            (Expr::Assign { name, value }, _) => {
+                let Some(binding) = self.lookup_value_binding(name) else {
+                    self.diagnostics.push(
+                        self.typecheck_error(
+                            Issue::UnresolvedIdent { name: name.clone() },
+                            format!("cannot assign to undeclared local '{name}'"),
+                        )
+                        .with_hint("declare the local with `let` or `def` before assigning"),
+                    );
+                    return self.unknown_ty();
+                };
+                if !binding.mutable {
+                    let binding_ty = self
+                        .interner
+                        .get(binding.ty)
+                        .cloned()
+                        .unwrap_or_else(|| self.missing_ty_fallback());
+                    self.diagnostics.push(
+                        self.typecheck_error(
+                            Issue::TypeMismatch {
+                                context: TypingContext::Assignment,
+                                expected: ty_to_ref(&binding_ty, &self.interner),
+                                actual: ty_to_ref(&binding_ty, &self.interner),
+                            },
+                            format!("cannot assign to immutable local '{name}'"),
+                        )
+                        .with_hint("use `let` for mutable locals or stop reassigning this name"),
+                    );
+                    return binding.ty;
                 }
+                let actual = self.infer_expr_with_expected(value, binding.ty);
+                self.require_assignable(binding.ty, actual, "assignment");
+                self.require_assignable(expected, binding.ty, "bidirectional expected type");
+                binding.ty
             }
             (
                 Expr::Call {
@@ -803,6 +919,18 @@ impl TypeChecker {
                         self.unknown_ty()
                     }
                 };
+                self.require_assignable(expected, actual, "bidirectional expected type");
+                actual
+            }
+            (
+                Expr::MacroApply {
+                    macro_name,
+                    operand,
+                    ..
+                },
+                _,
+            ) if macro_name == "let" || macro_name == "def" => {
+                let actual = self.infer_expr(expr);
                 self.require_assignable(expected, actual, "bidirectional expected type");
                 actual
             }
@@ -996,6 +1124,9 @@ impl TypeChecker {
                     self.require_assignable(expected_item, item_ty, "list element");
                 }
                 self.interner.intern(Ty::List(expected_item))
+            }
+            (Expr::Tuple(items), Some(Ty::Void)) if items.is_empty() => {
+                self.interner.intern(Ty::Void)
             }
             (Expr::Tuple(items), Some(Ty::Tuple(expected_items))) => {
                 for (item, expected_item) in items.iter().zip(expected_items.iter()) {
@@ -1261,6 +1392,10 @@ impl TypeChecker {
                 name: name.clone(),
                 args: args.iter().map(|a| self.lower_static_arg(a)).collect(),
             },
+            TypeExpr::Tuple(items) if items.is_empty() => CheckedTypeExpr::Named {
+                name: "Void".to_string(),
+                args: Vec::new(),
+            },
             TypeExpr::Tuple(items) => CheckedTypeExpr::Named {
                 name: "Tuple".to_string(),
                 args: items
@@ -1374,6 +1509,7 @@ impl TypeChecker {
         match ty {
             TypeExpr::Static(inner) => self.resolve_type_expr(inner),
             TypeExpr::InferHole => self.unknown_ty(),
+            TypeExpr::Tuple(items) if items.is_empty() => self.interner.intern(Ty::Void),
             TypeExpr::Tuple(items) => {
                 let lowered = items
                     .iter()
@@ -2617,9 +2753,9 @@ impl TypeChecker {
         }
     }
 
-    fn insert_value(&mut self, name: String, ty: TyId) {
+    fn insert_value(&mut self, name: String, ty: TyId, mutable: bool) {
         if let Some(scope) = self.value_env_scopes.last_mut() {
-            scope.insert(name, ty);
+            scope.insert(name, ValueBinding { ty, mutable });
         }
     }
 
@@ -2648,7 +2784,7 @@ impl TypeChecker {
         match pattern {
             Pattern::Ident(name) if name != "true" && name != "false" => {
                 let ty = self.interner.fresh_infer_var(&mut self.next_infer_var);
-                self.insert_value(name.clone(), ty);
+                self.insert_value(name.clone(), ty, false);
             }
             Pattern::DotVariant { payload, .. } => {
                 if let Some(inner) = payload.as_ref() {
@@ -2659,7 +2795,28 @@ impl TypeChecker {
         }
     }
 
+    fn bind_local_pattern(&mut self, pattern: &Pattern, ty: TyId, mutable: bool) {
+        match pattern {
+            Pattern::Ident(name) if name != "true" && name != "false" => {
+                self.insert_value(name.clone(), ty, mutable);
+            }
+            Pattern::DotVariant { payload, .. } => {
+                if let Some(inner) = payload.as_ref() {
+                    self.bind_local_pattern(inner, ty, mutable);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn lookup_value(&self, name: &str) -> Option<TyId> {
+        self.value_env_scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).map(|binding| binding.ty))
+    }
+
+    fn lookup_value_binding(&self, name: &str) -> Option<ValueBinding> {
         self.value_env_scopes
             .iter()
             .rev()
@@ -2739,6 +2896,12 @@ impl TypeChecker {
             Expr::Block(items) => {
                 CheckedExpr::Block(items.iter().map(|item| self.lower_expr(item)).collect())
             }
+            Expr::Bindings(_) => CheckedExpr::Any,
+            Expr::Assign { name, value } => CheckedExpr::AssignLocal {
+                name: name.clone(),
+                value: Box::new(self.lower_expr(value)),
+                ty: self.preview_expr_ty(expr),
+            },
             Expr::List(items) => {
                 CheckedExpr::List(items.iter().map(|item| self.lower_expr(item)).collect())
             }
@@ -2752,6 +2915,27 @@ impl TypeChecker {
                 callee: Box::new(self.lower_expr(callee)),
                 args: args.iter().map(|a| self.lower_expr(a)).collect(),
             },
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                ..
+            } if macro_name == "let" || macro_name == "def" => {
+                let Expr::Bindings(bindings) = TypeChecker::base_expr(operand.as_ref()) else {
+                    return CheckedExpr::Any;
+                };
+                let lowered_bindings = bindings
+                    .iter()
+                    .flat_map(|binding| {
+                        let value = self.lower_expr(&binding.value);
+                        let ty = self.preview_expr_ty(&binding.value);
+                        Self::collect_checked_bindings(&binding.pattern, ty, &value)
+                    })
+                    .collect();
+                CheckedExpr::LocalBind {
+                    bindings: lowered_bindings,
+                    mutable: macro_name == "let",
+                }
+            }
             Expr::MacroApply {
                 macro_name,
                 operand,
@@ -2964,6 +3148,9 @@ impl TypeChecker {
             Expr::Char(_) => self.interner.intern(Ty::Char),
             Expr::String(_) => self.interner.intern(Ty::Nominal("String".to_string())),
             Expr::Tuple(items) => {
+                if items.is_empty() {
+                    return self.interner.intern(Ty::Void);
+                }
                 let item_tys = items
                     .iter()
                     .map(|item| self.preview_expr_ty(item))
@@ -2977,10 +3164,12 @@ impl TypeChecker {
                     .collect::<Vec<_>>();
                 self.interner.intern(Ty::Struct(field_tys))
             }
+            Expr::Bindings(_) => self.interner.intern(Ty::Void),
             Expr::Block(items) => items
                 .last()
                 .map(|item| self.preview_expr_ty(item))
                 .unwrap_or_else(|| self.interner.intern(Ty::Void)),
+            Expr::Assign { name, .. } => self.lookup_value(name).unwrap_or_else(|| self.unknown_ty()),
             Expr::Closure {
                 params,
                 return_type,
@@ -3015,8 +3204,45 @@ impl TypeChecker {
             }
             Expr::Member { object, .. } => self.preview_expr_ty(object),
             Expr::Binary { op, lhs, rhs } => self.infer_binary_expr(*op, lhs, rhs),
+            Expr::MacroApply { macro_name, .. } if macro_name == "let" || macro_name == "def" => {
+                self.interner.intern(Ty::Void)
+            }
             Expr::TypeExpr(_) => self.unknown_ty(),
             _ => self.infer_expr(expr),
+        }
+    }
+
+    fn collect_checked_bindings(
+        pattern: &Pattern,
+        ty: TyId,
+        value: &CheckedExpr,
+    ) -> Vec<CheckedBinding> {
+        match pattern {
+            Pattern::Ident(name) if name != "true" && name != "false" => vec![CheckedBinding {
+                name: Some(name.clone()),
+                ty,
+                value: value.clone(),
+            }],
+            Pattern::Wildcard => vec![CheckedBinding {
+                name: None,
+                ty,
+                value: value.clone(),
+            }],
+            Pattern::DotVariant { payload, .. } => payload
+                .as_deref()
+                .map(|inner| Self::collect_checked_bindings(inner, ty, value))
+                .unwrap_or_else(|| {
+                    vec![CheckedBinding {
+                        name: None,
+                        ty,
+                        value: value.clone(),
+                    }]
+                }),
+            _ => vec![CheckedBinding {
+                name: None,
+                ty,
+                value: value.clone(),
+            }],
         }
     }
 }
@@ -3413,6 +3639,27 @@ mod tests {
             module.ir.declarations[0].value,
             CheckedExpr::Int(_)
         ));
+    }
+
+    #[test]
+    fn checked_ir_emits_local_bind_and_local_assignment_nodes() {
+        let program = Parser::parse_source("def main() -> Int { let x = 1; x = 2; x }")
+            .expect("source should parse");
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("checked module should exist");
+        let main_decl = module
+            .ir
+            .declarations
+            .iter()
+            .find(|decl| decl.name == "aura_user_main")
+            .expect("main declaration should exist");
+
+        let CheckedExpr::Block(items) = &main_decl.value else {
+            panic!("expected block body in checked ir")
+        };
+        assert!(matches!(items[0], CheckedExpr::LocalBind { mutable: true, .. }));
+        assert!(matches!(items[1], CheckedExpr::AssignLocal { .. }));
     }
 
     #[test]
@@ -4116,6 +4363,57 @@ mod tests {
             .expect("value type should exist");
         let ty = module.types.get(*ty_id).expect("type should exist");
         assert!(matches!(ty, Ty::Void));
+    }
+
+    #[test]
+    fn empty_tuple_expression_is_void_typed() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                doc: None,
+                name: "v".to_string(),
+                value: Expr::Tuple(Vec::new()),
+            }],
+        };
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        let ty_id = module.value_types.get("v").expect("value type should exist");
+        let ty = module.types.get(*ty_id).expect("type should exist");
+        assert!(matches!(ty, Ty::Void));
+    }
+
+    #[test]
+    fn empty_tuple_type_expr_resolves_to_void() {
+        let program = Program {
+            declarations: vec![Decl::Function(FunctionDecl {
+                doc: None,
+                static_params: Vec::new(),
+                receiver: None,
+                name: "id".to_string(),
+                params: vec![aura_frontend::ast::Param {
+                    name: "x".to_string(),
+                    ty: TypeExpr::Tuple(Vec::new()),
+                }],
+                return_type: TypeExpr::Tuple(Vec::new()),
+                body: Expr::Ident("x".to_string()),
+            })],
+        };
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        let decl = module
+            .ir
+            .declarations
+            .iter()
+            .find(|decl| decl.name == "id")
+            .expect("function declaration should exist");
+        let ty = module.types.get(decl.ty).expect("type should exist");
+        let Ty::Func { params, ret } = ty else {
+            panic!("expected function type")
+        };
+        assert_eq!(params.len(), 1);
+        assert!(matches!(module.types.get(params[0]), Some(Ty::Void)));
+        assert!(matches!(module.types.get(*ret), Some(Ty::Void)));
     }
 
     #[test]
@@ -5940,6 +6238,82 @@ mod tests {
             "expected module, got diagnostics: {:?}",
             checked.diagnostics
         );
+    }
+
+    #[test]
+    fn main_can_call_syscall_exit_from_local_let_binding() {
+        let program =
+            Parser::parse_source("def main() -> Void { let exit_code = 0; syscall_exit(exit_code) }")
+                .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+    }
+
+    #[test]
+    fn local_let_can_be_reassigned() {
+        let program = Parser::parse_source("def main() -> Int { let x = 1; x = 2; x }")
+            .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+        assert!(!checked
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("immutable local")));
+    }
+
+    #[test]
+    fn local_def_cannot_be_reassigned() {
+        let program = Parser::parse_source("def main() -> Int { def x = 1; x = 2; x }")
+            .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"
+                && d.hint
+                    .as_deref()
+                    .is_some_and(|hint| hint.contains("use `let`"))));
+    }
+
+    #[test]
+    fn local_shadowing_is_allowed() {
+        let program =
+            Parser::parse_source("def main() -> Int { let x = 1; let y = { let x = 2; x }; x }")
+                .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+        assert!(!checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
+    }
+
+    #[test]
+    fn collection_item_locals_do_not_leak_across_commas() {
+        let program = Parser::parse_source("def xs = [let x = 0; x, x]")
+            .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
     }
 
     #[test]

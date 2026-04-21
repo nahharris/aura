@@ -596,10 +596,8 @@ fn link_native_binary(obj_path: &Path, output_path: &Path) -> Result<()> {
     let status = Command::new(&clang)
         .arg(obj_path)
         .arg(runtime_staticlib)
-        .arg("-lmsvcrt")
-        .arg("-lucrt")
-        .arg("-lvcruntime")
-        .arg("-llegacy_stdio_definitions")
+        // Let the Rust staticlib supply its own CRT defaults; forcing MSVCRT here
+        // conflicts with the staticlib's runtime model and triggers LNK4098.
         .arg("-lkernel32")
         .arg("-luserenv")
         .arg("-lws2_32")
@@ -1328,6 +1326,8 @@ mod tests {
         let main = fs::read_to_string(root.join("src").join("main.aura"))
             .expect("main source should exist");
         assert!(main.contains("syscall_exit"));
+        assert!(main.contains("let exit_code = 0;"));
+        assert!(main.contains("syscall_exit(exit_code)"));
         assert!(root.join("target").is_dir());
         assert!(root.join(".gitignore").is_file());
         let gitignore =
