@@ -16,3 +16,6 @@
 [submodule "tool/auon"]
 	path = tool/auon
 	url = ../auon
+[submodule "tool/auon-rs"]
+	path = tool/auon-rs
+	url = ../auon-rs

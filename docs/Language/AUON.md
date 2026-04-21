@@ -18,6 +18,11 @@ AUON is Aura Object Notation: Aura-shaped serialized data, not full Aura evaluat
 - current repo work is spec-first only
 - parser, compiler integration, schema language, and tooling support come later
 
+## Ecosystem Surfaces
+
+- `tool/auon/` carries normative AUON language spec and examples
+- `tool/auon-rs/` carries serde-compatible Rust parser/serializer support for AUON
+
 ## Core Rules
 
 - one `.auon` file encodes exactly one value
@@ -39,6 +44,13 @@ This follows Aura language direction: these spellings are runtime aliases, not r
 ## Typing Direction
 
 AUON parsers should adapt decoded values to target-platform types, deriving from Aura type shapes where possible. Phase 1 defines syntax and normalization only, not schema policy.
+
+Current Rust support surface in `tool/auon-rs` exposes:
+
+- public AUON `Value` DOM with separate `Int` and `Float`
+- parser entrypoints for raw AUON text
+- serde encode/decode entrypoints for typed Rust data
+- compact and pretty AUON emitters using document-friendly top-level omission where unambiguous
 
 ## Related Notes
 

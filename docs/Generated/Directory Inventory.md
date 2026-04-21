@@ -2,7 +2,7 @@
 title: Directory Inventory
 kind: generated
 generated_by: cargo xtask docs sync
-generated_at: 2026-04-21T20:08:17.322742Z
+generated_at: 2026-04-21T21:53:17.9822801Z
 ---
 
 # Directory Inventory
