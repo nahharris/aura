@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use aura_diagnostics::{Diagnostic, Issue};
-use aura_frontend::ast::{Decl, Program};
+use aura_frontend::ast::{Decl, Program, UseBinding};
 
 #[derive(Debug, Clone, Default)]
 pub struct ModuleImports {
@@ -22,17 +22,37 @@ impl ModuleChecker {
     pub fn check_program(&mut self, program: &Program) {
         for decl in &program.declarations {
             if let Decl::Use(use_decl) = decl {
-                if self.imports.namespaces.contains_key(&use_decl.target) {
-                    self.diagnostics.push(
-                        Diagnostic::error(Issue::UseDuplicate)
-                            .with_hint("rename one import target or remove duplicate import"),
-                    );
-                    continue;
-                }
+                match &use_decl.binding {
+                    UseBinding::Namespace(alias) => {
+                        if self.imports.namespaces.contains_key(alias) {
+                            self.diagnostics.push(
+                                Diagnostic::error(Issue::UseDuplicate).with_hint(
+                                    "rename one import target or remove duplicate import",
+                                ),
+                            );
+                            continue;
+                        }
 
-                self.imports
-                    .namespaces
-                    .insert(use_decl.target.clone(), use_decl.target.clone());
+                        self.imports
+                            .namespaces
+                            .insert(alias.clone(), use_decl.source.clone());
+                    }
+                    UseBinding::Fields(fields) => {
+                        for field in fields {
+                            if self.imports.namespaces.contains_key(&field.local_name) {
+                                self.diagnostics.push(
+                                    Diagnostic::error(Issue::UseDuplicate).with_hint(
+                                        "rename one import target or remove duplicate import",
+                                    ),
+                                );
+                                continue;
+                            }
+                            self.imports
+                                .namespaces
+                                .insert(field.local_name.clone(), use_decl.source.clone());
+                        }
+                    }
+                }
             }
         }
     }
@@ -48,7 +68,7 @@ impl ModuleChecker {
 
 #[cfg(test)]
 mod tests {
-    use aura_frontend::ast::{Decl, Program, UseDecl};
+    use aura_frontend::ast::{Decl, Program, UseBinding, UseDecl};
 
     use crate::modules::ModuleChecker;
 
@@ -57,10 +77,12 @@ mod tests {
         let program = Program {
             declarations: vec![
                 Decl::Use(UseDecl {
-                    target: "io".to_string(),
+                    binding: UseBinding::Namespace("io".to_string()),
+                    source: "./io".to_string(),
                 }),
                 Decl::Use(UseDecl {
-                    target: "io".to_string(),
+                    binding: UseBinding::Namespace("io".to_string()),
+                    source: "./other".to_string(),
                 }),
             ],
         };

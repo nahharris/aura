@@ -1,3 +1,4 @@
+pub mod compile;
 pub mod discover;
 pub mod manifest;
 

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use aura_diagnostics::{Diagnostic, Issue, Stage};
-use aura_frontend::ast::{Decl, Program};
+use aura_frontend::ast::{Decl, Program, UseBinding};
 
 use crate::symbols::{ScopeId, Symbol, SymbolId, SymbolKind};
 
@@ -43,7 +43,14 @@ impl Resolver {
                 Decl::Assign { name, .. } => self.declare(name, SymbolKind::Value),
                 Decl::Macro(m) => self.declare(&m.name, SymbolKind::Function),
                 Decl::Function(f) => self.declare(&f.name, SymbolKind::Function),
-                Decl::Use(u) => self.declare(&u.target, SymbolKind::Module),
+                Decl::Use(u) => match &u.binding {
+                    UseBinding::Namespace(alias) => self.declare(alias, SymbolKind::Module),
+                    UseBinding::Fields(fields) => {
+                        for field in fields {
+                            self.declare(&field.local_name, SymbolKind::Value);
+                        }
+                    }
+                },
             }
         }
 

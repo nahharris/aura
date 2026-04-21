@@ -49,7 +49,20 @@ pub struct FunctionDecl {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UseDecl {
-    pub target: String,
+    pub binding: UseBinding,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UseBinding {
+    Namespace(String),
+    Fields(Vec<UseField>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UseField {
+    pub local_name: String,
+    pub source_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,4 +1,6 @@
 #[cfg(feature = "llvm-backend")]
+use aura_runtime_host::{RuntimeTypeRef, runtime_function};
+#[cfg(feature = "llvm-backend")]
 use aura_typecheck::checked_ir::BinaryOpKind;
 use aura_typecheck::checked_ir::CheckedExpr;
 
@@ -16,7 +18,7 @@ use inkwell::{
 #[cfg(feature = "llvm-backend")]
 use super::context::CodegenContext;
 #[cfg(feature = "llvm-backend")]
-use super::types::classify_type;
+use super::types::{AuraFunctionType, AuraValueType, classify_type};
 
 pub fn classify_expr_kind(expr: &CheckedExpr) -> &'static str {
     match expr {
@@ -145,6 +147,11 @@ pub fn lower_expr<'ctx, 'm>(
                     .const_int(parsed as u64, false)
                     .as_basic_value_enum())
             }
+            (_, None) => Ok(cg
+                .context
+                .ptr_type(AddressSpace::default())
+                .const_null()
+                .as_basic_value_enum()),
             _ => Err(CodegenError::UnsupportedExpression("dot_ident")),
         },
         CheckedExpr::AssignLocal { name, value, ty } => {
@@ -162,15 +169,14 @@ pub fn lower_expr<'ctx, 'm>(
             if let Some(slot) = cg.lookup_local(name) {
                 return load_local_slot(cg, slot, name);
             }
-            if name == "main" {
-                if let Some(function) = cg.module.get_function("aura_user_main") {
-                    return Ok(function
-                        .as_global_value()
-                        .as_pointer_value()
-                        .as_basic_value_enum());
-                }
+            let symbol_name = cg.resolve_symbol_name(name);
+            if let Some(function) = cg.module.get_function(symbol_name) {
+                return Ok(function
+                    .as_global_value()
+                    .as_pointer_value()
+                    .as_basic_value_enum());
             }
-            if let Some(global) = cg.module.get_global(name) {
+            if let Some(global) = cg.module.get_global(&format!("{symbol_name}_global")) {
                 let value_ty: inkwell::types::BasicTypeEnum<'ctx> = global
                     .get_value_type()
                     .try_into()
@@ -283,11 +289,7 @@ fn lower_call<'ctx, 'm>(
     let CheckedExpr::Ident(name) = callee else {
         return Err(CodegenError::UnsupportedExpression("call"));
     };
-    let resolved_name = if name == "main" {
-        "aura_user_main"
-    } else {
-        name.as_str()
-    };
+    let resolved_name = cg.resolve_symbol_name(name);
 
     let function = if let Some(function) = cg.module.get_function(resolved_name) {
         function
@@ -344,22 +346,24 @@ fn runtime_builtin_function_type<'ctx, 'm>(
     cg: &CodegenContext<'ctx, 'm>,
     name: &str,
 ) -> Option<inkwell::types::FunctionType<'ctx>> {
-    let i32_ty = cg.context.i32_type();
-    let i64_ty = cg.context.i64_type();
-    let i8_ty = cg.context.i8_type();
-    let ptr_ty = cg.context.ptr_type(AddressSpace::default());
-    let void_ty = cg.context.void_type();
+    let abi = runtime_function(name)?;
+    AuraFunctionType {
+        params: abi.params.iter().map(runtime_value_type).collect(),
+        ret: runtime_value_type(&abi.ret),
+    }
+    .to_llvm_fn_type(cg.context, false)
+    .ok()
+}
 
-    let ty = match name {
-        "syscall_exit" => void_ty.fn_type(&[i32_ty.into()], false),
-        "syscall_write" => i64_ty.fn_type(&[i32_ty.into(), ptr_ty.into()], false),
-        "bytes_new" => ptr_ty.fn_type(&[i64_ty.into()], false),
-        "bytes_get" => i8_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
-        "bytes_set" => void_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i8_ty.into()], false),
-        "string_into" => ptr_ty.fn_type(&[ptr_ty.into()], false),
-        _ => return None,
-    };
-    Some(ty)
+#[cfg(feature = "llvm-backend")]
+fn runtime_value_type(ty: &RuntimeTypeRef) -> AuraValueType {
+    match ty {
+        RuntimeTypeRef::Int32 => AuraValueType::Int32,
+        RuntimeTypeRef::ISize | RuntimeTypeRef::USize => AuraValueType::Int64,
+        RuntimeTypeRef::UInt8 => AuraValueType::Int8,
+        RuntimeTypeRef::Void | RuntimeTypeRef::Never => AuraValueType::Void,
+        RuntimeTypeRef::Bytes | RuntimeTypeRef::String => AuraValueType::Pointer,
+    }
 }
 
 #[cfg(feature = "llvm-backend")]

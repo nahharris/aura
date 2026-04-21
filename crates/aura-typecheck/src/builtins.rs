@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use aura_runtime_host::{RuntimeTypeRef, runtime_functions};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuiltinTypeRef {
     Int32,
@@ -26,24 +28,19 @@ pub struct BuiltinRegistry {
 
 impl BuiltinRegistry {
     pub fn with_prelude() -> Self {
-        let mut entries = HashMap::new();
-
-        entries.insert(
-            "syscall_exit".to_string(),
-            BuiltinSignature {
-                name: "syscall_exit".to_string(),
-                params: vec![BuiltinTypeRef::Int32],
-                ret: BuiltinTypeRef::Never,
-            },
-        );
-        entries.insert(
-            "syscall_write".to_string(),
-            BuiltinSignature {
-                name: "syscall_write".to_string(),
-                params: vec![BuiltinTypeRef::Int32, BuiltinTypeRef::Bytes],
-                ret: BuiltinTypeRef::ISize,
-            },
-        );
+        let entries = runtime_functions()
+            .iter()
+            .map(|abi| {
+                (
+                    abi.name.to_string(),
+                    BuiltinSignature {
+                        name: abi.name.to_string(),
+                        params: abi.params.iter().map(builtin_type_from_runtime).collect(),
+                        ret: builtin_type_from_runtime(&abi.ret),
+                    },
+                )
+            })
+            .collect();
         Self { entries }
     }
 
@@ -59,6 +56,19 @@ impl BuiltinRegistry {
 impl Default for BuiltinRegistry {
     fn default() -> Self {
         Self::with_prelude()
+    }
+}
+
+fn builtin_type_from_runtime(ty: &RuntimeTypeRef) -> BuiltinTypeRef {
+    match ty {
+        RuntimeTypeRef::Int32 => BuiltinTypeRef::Int32,
+        RuntimeTypeRef::ISize => BuiltinTypeRef::ISize,
+        RuntimeTypeRef::USize => BuiltinTypeRef::USize,
+        RuntimeTypeRef::UInt8 => BuiltinTypeRef::UInt8,
+        RuntimeTypeRef::Void => BuiltinTypeRef::Void,
+        RuntimeTypeRef::Bytes => BuiltinTypeRef::Bytes,
+        RuntimeTypeRef::String => BuiltinTypeRef::String,
+        RuntimeTypeRef::Never => BuiltinTypeRef::Never,
     }
 }
 

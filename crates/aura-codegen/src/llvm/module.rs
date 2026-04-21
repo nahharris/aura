@@ -1,5 +1,7 @@
 use aura_typecheck::CheckedModule;
 #[cfg(feature = "llvm-backend")]
+use aura_runtime_host::runtime_function;
+#[cfg(feature = "llvm-backend")]
 use aura_typecheck::Ty;
 #[cfg(feature = "llvm-backend")]
 use aura_typecheck::TyId;
@@ -13,6 +15,8 @@ use super::error::CodegenError;
 use super::expr::classify_expr_kind;
 #[cfg(feature = "llvm-backend")]
 use super::expr::lower_expr;
+#[cfg(feature = "llvm-backend")]
+use super::types::classify_type;
 
 #[cfg(feature = "llvm-backend")]
 use inkwell::context::Context;
@@ -26,9 +30,47 @@ use super::{
 };
 
 #[cfg(feature = "llvm-backend")]
+fn bind_function_params<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    decl: &aura_typecheck::checked_ir::CheckedDecl,
+    function: inkwell::values::FunctionValue<'ctx>,
+) -> Result<(), CodegenError> {
+    let Some(Ty::Func { params, .. }) = cg.checked.types.get(decl.ty) else {
+        return Err(CodegenError::InvalidFunctionType(decl.name.clone()));
+    };
+    if decl.params.len() != params.len() {
+        return Err(CodegenError::InvalidFunctionType(decl.name.clone()));
+    }
+
+    for (index, (param_name, param_ty)) in decl.params.iter().zip(params.iter()).enumerate() {
+        let Some(value) = function.get_nth_param(index as u32) else {
+            return Err(CodegenError::InvalidFunctionType(decl.name.clone()));
+        };
+        let value_ty = classify_type(&cg.checked.types, *param_ty)?;
+        let basic_ty = value_ty.to_basic_type(cg.context)?;
+        let slot = cg
+            .builder
+            .build_alloca(basic_ty, &format!("param_{param_name}"))
+            .map_err(|_| CodegenError::UnsupportedExpression("param"))?;
+        cg.builder
+            .build_store(slot, value)
+            .map_err(|_| CodegenError::UnsupportedExpression("param"))?;
+        cg.insert_local(
+            param_name.clone(),
+            super::context::LocalSlot {
+                ptr: slot,
+                ty: *param_ty,
+            },
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "llvm-backend")]
 fn is_runtime_builtin_wrapper(decl: &aura_typecheck::checked_ir::CheckedDecl) -> bool {
     match &decl.value {
-        aura_typecheck::checked_ir::CheckedExpr::Ident(name) => name.starts_with("syscall_"),
+        aura_typecheck::checked_ir::CheckedExpr::Ident(name) => runtime_function(name).is_some(),
         _ => false,
     }
 }
@@ -54,11 +96,7 @@ fn ensure_native_main_stub<'ctx, 'm>(cg: &CodegenContext<'ctx, 'm>) -> Result<()
 fn find_main_decl<'m>(
     checked: &'m CheckedModule,
 ) -> Option<&'m aura_typecheck::checked_ir::CheckedDecl> {
-    checked
-        .ir
-        .declarations
-        .iter()
-        .find(|d| d.name == "main" || d.name == "aura_user_main")
+    checked.ir.declarations.iter().find(|d| d.name == "main")
 }
 
 #[cfg(feature = "llvm-backend")]
@@ -85,7 +123,7 @@ fn build_native_main_wrapper<'ctx, 'm>(cg: &CodegenContext<'ctx, 'm>) -> Result<
         ));
     }
 
-    let user_main_name = "aura_user_main";
+    let user_main_name = main_decl.link_name.as_str();
     let user_main = if let Some(existing) = cg.module.get_function(user_main_name) {
         existing
     } else {
@@ -99,7 +137,7 @@ fn build_native_main_wrapper<'ctx, 'm>(cg: &CodegenContext<'ctx, 'm>) -> Result<
     let call = cg
         .builder
         .build_call(user_main, &[], "call_user_main")
-        .map_err(|_| CodegenError::MainLowering("failed to call `aura_user_main`".to_string()))?;
+        .map_err(|_| CodegenError::MainLowering("failed to call lowered `main`".to_string()))?;
 
     if is_void_ty(cg.checked, *ret) {
         let zero = cg.context.i32_type().const_zero();
@@ -129,81 +167,8 @@ pub fn emit_module_stub(
         .iter()
         .filter_map(|decl| {
             let ty = checked.types.get(decl.ty)?;
-            if matches!(ty, Ty::Func { .. }) {
-                return Some(decl.name.clone());
-            }
-            None
-        })
-        .collect::<HashSet<_>>();
-
-    for decl in &checked.ir.declarations {
-        if is_runtime_builtin_wrapper(decl) {
-            continue;
-        }
-        let Some(ty) = checked.types.get(decl.ty) else {
-            return Err(CodegenError::InvalidTypeId(decl.ty.0));
-        };
-
-        if matches!(ty, Ty::Func { .. }) {
-            declare_function_with_name(&cg, decl, &decl.name)?;
-        } else {
-            declare_global_stub(&cg, decl)?;
-        }
-    }
-
-    for decl in &checked.ir.declarations {
-        if is_runtime_builtin_wrapper(decl) {
-            continue;
-        }
-        if !function_names.contains(&decl.name) {
-            continue;
-        }
-
-        let function = cg
-            .module
-            .get_function(&decl.name)
-            .ok_or(CodegenError::InvalidFunctionType(decl.name.clone()))?;
-        let entry = cg.context.append_basic_block(function, "entry");
-        cg.builder.position_at_end(entry);
-
-        let lowered = lower_expr(&cg, &decl.value)
-            .map_err(|_| CodegenError::UnsupportedExpression(classify_expr_kind(&decl.value)))?;
-
-        if function.get_type().get_return_type().is_some() {
-            cg.builder.build_return(Some(&lowered)).map_err(|_| {
-                CodegenError::UnsupportedExpression(classify_expr_kind(&decl.value))
-            })?;
-        } else {
-            cg.builder.build_return(None).map_err(|_| {
-                CodegenError::UnsupportedExpression(classify_expr_kind(&decl.value))
-            })?;
-        }
-    }
-
-    Ok(cg.module.print_to_string().to_string())
-}
-
-#[cfg(feature = "llvm-backend")]
-pub fn emit_object_file(
-    module_name: &str,
-    checked: &CheckedModule,
-    out_path: &Path,
-) -> Result<(), CodegenError> {
-    CodegenContext::initialize_native_target()?;
-    let target_machine = CodegenContext::native_target_machine()
-        .ok_or(CodegenError::NativeTargetMachineUnavailable)?;
-
-    let context = Context::create();
-    let cg = CodegenContext::new(&context, module_name, checked);
-
-    let function_names = checked
-        .ir
-        .declarations
-        .iter()
-        .filter_map(|decl| {
-            let ty = checked.types.get(decl.ty)?;
-            if matches!(ty, Ty::Func { .. }) {
-                return Some(decl.name.clone());
+            if matches!(ty, Ty::Func { .. }) && !decl.is_extern {
+                return Some(decl.link_name.clone());
             }
             None
         })
@@ -225,16 +190,21 @@ pub fn emit_object_file(
     }
 
     for decl in &checked.ir.declarations {
-        if !function_names.contains(&decl.name) {
+        if is_runtime_builtin_wrapper(decl) || decl.is_extern {
+            continue;
+        }
+        if !function_names.contains(&decl.link_name) {
             continue;
         }
 
         let function = cg
             .module
-            .get_function(&decl.name)
+            .get_function(&decl.link_name)
             .ok_or(CodegenError::InvalidFunctionType(decl.name.clone()))?;
         let entry = cg.context.append_basic_block(function, "entry");
         cg.builder.position_at_end(entry);
+        cg.push_local_scope();
+        bind_function_params(&cg, decl, function)?;
 
         let lowered = lower_expr(&cg, &decl.value)
             .map_err(|_| CodegenError::UnsupportedExpression(classify_expr_kind(&decl.value)))?;
@@ -248,9 +218,98 @@ pub fn emit_object_file(
                 CodegenError::UnsupportedExpression(classify_expr_kind(&decl.value))
             })?;
         }
+        cg.pop_local_scope();
     }
 
-    build_native_main_wrapper(&cg)?;
+    Ok(cg.module.print_to_string().to_string())
+}
+
+#[cfg(feature = "llvm-backend")]
+pub fn emit_object_file(
+    module_name: &str,
+    checked: &CheckedModule,
+    out_path: &Path,
+) -> Result<(), CodegenError> {
+    emit_object_file_with_options(module_name, checked, out_path, true)
+}
+
+#[cfg(feature = "llvm-backend")]
+pub fn emit_object_file_with_options(
+    module_name: &str,
+    checked: &CheckedModule,
+    out_path: &Path,
+    include_native_entry: bool,
+) -> Result<(), CodegenError> {
+    CodegenContext::initialize_native_target()?;
+    let target_machine = CodegenContext::native_target_machine()
+        .ok_or(CodegenError::NativeTargetMachineUnavailable)?;
+
+    let context = Context::create();
+    let cg = CodegenContext::new(&context, module_name, checked);
+
+    let function_names = checked
+        .ir
+        .declarations
+        .iter()
+        .filter_map(|decl| {
+            let ty = checked.types.get(decl.ty)?;
+            if matches!(ty, Ty::Func { .. }) && !decl.is_extern {
+                return Some(decl.link_name.clone());
+            }
+            None
+        })
+        .collect::<HashSet<_>>();
+
+    for decl in &checked.ir.declarations {
+        if is_runtime_builtin_wrapper(decl) {
+            continue;
+        }
+        let Some(ty) = checked.types.get(decl.ty) else {
+            return Err(CodegenError::InvalidTypeId(decl.ty.0));
+        };
+
+        if matches!(ty, Ty::Func { .. }) {
+            declare_function(&cg, decl)?;
+        } else {
+            declare_global_stub(&cg, decl)?;
+        }
+    }
+
+    for decl in &checked.ir.declarations {
+        if is_runtime_builtin_wrapper(decl) || decl.is_extern {
+            continue;
+        }
+        if !function_names.contains(&decl.link_name) {
+            continue;
+        }
+
+        let function = cg
+            .module
+            .get_function(&decl.link_name)
+            .ok_or(CodegenError::InvalidFunctionType(decl.name.clone()))?;
+        let entry = cg.context.append_basic_block(function, "entry");
+        cg.builder.position_at_end(entry);
+        cg.push_local_scope();
+        bind_function_params(&cg, decl, function)?;
+
+        let lowered = lower_expr(&cg, &decl.value)
+            .map_err(|_| CodegenError::UnsupportedExpression(classify_expr_kind(&decl.value)))?;
+
+        if function.get_type().get_return_type().is_some() {
+            cg.builder.build_return(Some(&lowered)).map_err(|_| {
+                CodegenError::UnsupportedExpression(classify_expr_kind(&decl.value))
+            })?;
+        } else {
+            cg.builder.build_return(None).map_err(|_| {
+                CodegenError::UnsupportedExpression(classify_expr_kind(&decl.value))
+            })?;
+        }
+        cg.pop_local_scope();
+    }
+
+    if include_native_entry {
+        build_native_main_wrapper(&cg)?;
+    }
 
     if let Err(msg) = cg.module.verify() {
         return Err(CodegenError::ModuleVerification(msg.to_string()));
@@ -267,6 +326,16 @@ pub fn emit_object_file(
     _module_name: &str,
     _checked: &CheckedModule,
     _out_path: &Path,
+) -> Result<(), CodegenError> {
+    Err(CodegenError::BackendDisabled)
+}
+
+#[cfg(not(feature = "llvm-backend"))]
+pub fn emit_object_file_with_options(
+    _module_name: &str,
+    _checked: &CheckedModule,
+    _out_path: &Path,
+    _include_native_entry: bool,
 ) -> Result<(), CodegenError> {
     Err(CodegenError::BackendDisabled)
 }

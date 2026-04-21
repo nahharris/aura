@@ -11,6 +11,8 @@ use inkwell::{
 };
 
 #[cfg(feature = "llvm-backend")]
+use aura_typecheck::checked_ir::CheckedDecl;
+#[cfg(feature = "llvm-backend")]
 use aura_typecheck::CheckedModule;
 
 use super::error::CodegenError;
@@ -68,6 +70,20 @@ impl<'ctx, 'm> CodegenContext<'ctx, 'm> {
             .iter()
             .rev()
             .find_map(|scope| scope.get(name).copied())
+    }
+
+    pub fn lookup_decl(&self, name: &str) -> Option<&'m CheckedDecl> {
+        self.checked
+            .ir
+            .declarations
+            .iter()
+            .find(|decl| decl.name == name)
+    }
+
+    pub fn resolve_symbol_name<'a>(&'a self, name: &'a str) -> &'a str {
+        self.lookup_decl(name)
+            .map(|decl| decl.link_name.as_str())
+            .unwrap_or(name)
     }
 
     pub fn initialize_native_target() -> Result<(), CodegenError> {

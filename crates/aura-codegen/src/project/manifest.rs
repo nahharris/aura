@@ -28,6 +28,7 @@ pub struct Dependency {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DependencySource {
+    Path { path: String },
     Git { url: String, tag: String },
 }
 
@@ -214,6 +215,14 @@ fn parse_dependencies(value: &Expr) -> Result<Vec<Dependency>, ManifestError> {
 }
 
 fn parse_dependency_source(value: &str) -> Result<DependencySource, ManifestError> {
+    if let Some(path) = value.strip_prefix("path:") {
+        if path.is_empty() {
+            return Err(ManifestError::InvalidDependencySource(value.to_string()));
+        }
+        return Ok(DependencySource::Path {
+            path: path.to_string(),
+        });
+    }
     let Some((url, tag)) = value.rsplit_once('@') else {
         return Err(ManifestError::InvalidDependencySource(value.to_string()));
     };
@@ -269,6 +278,27 @@ mod tests {
         assert!(matches!(
             manifest.dependencies[0].source,
             DependencySource::Git { ref url, ref tag } if url == "https://github.com/acme/aura-json" && tag == "v1.2.3"
+        ));
+    }
+
+    #[test]
+    fn parses_path_dependency_sources() {
+        let src = r#"
+            def project = (
+                name = "hello",
+                version = "0.1.0",
+                type = .binary,
+                dependencies = [
+                    "@stl" = "path:../../aura-stl",
+                ],
+            );
+        "#;
+        let manifest = parse_manifest_source(src).expect("must parse");
+        assert_eq!(manifest.dependencies.len(), 1);
+        assert_eq!(manifest.dependencies[0].alias, "@stl");
+        assert!(matches!(
+            manifest.dependencies[0].source,
+            DependencySource::Path { ref path } if path == "../../aura-stl"
         ));
     }
 
@@ -338,6 +368,25 @@ mod tests {
         assert!(
             matches!(err, ManifestError::InvalidDependencySource(v) if v == "https://github.com/acme/aura-json")
         );
+    }
+
+    #[test]
+    fn rejects_empty_path_dependency_source() {
+        let src = r#"
+            def project = (
+                name = "hello",
+                version = "0.1.0",
+                type = .binary,
+                dependencies = [
+                    "@stl" = "path:",
+                ],
+            );
+        "#;
+        let err = parse_manifest_source(src).expect_err("must fail");
+        assert!(matches!(
+            err,
+            ManifestError::InvalidDependencySource(v) if v == "path:"
+        ));
     }
 
     #[test]

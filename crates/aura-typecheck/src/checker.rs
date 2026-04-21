@@ -20,7 +20,7 @@ use crate::types::{Ty, TyId, TyInterner};
 use crate::unify::Unifier;
 
 use crate::generics::GenericConstraint;
-use crate::CheckOptions;
+use crate::{CheckContext, CheckOptions, ImportBinding};
 
 #[derive(Debug, Clone)]
 pub struct TypeChecker {
@@ -41,6 +41,8 @@ pub struct TypeChecker {
     current_expr_span: Option<aura_diagnostics::Span>,
     diagnostics: Vec<Diagnostic>,
     ir: CheckedIr,
+    imported_values: HashMap<String, ImportBinding>,
+    namespaces: HashMap<String, HashMap<String, ImportBinding>>,
     options: CheckOptions,
 }
 
@@ -122,10 +124,28 @@ impl TypeChecker {
         "List", "Dict", "Set", "Array", "Func", "Option", "Result", "Seq",
     ];
 
-    pub fn new(options: CheckOptions) -> Self {
+    pub fn new(context: CheckContext, options: CheckOptions) -> Self {
         let mut interner = TyInterner::new();
         interner.prelude_primitives();
         let aliases = TypeAliases::with_prelude(&mut interner);
+        let namespaces = context
+            .namespaces
+            .into_iter()
+            .map(|(alias, bindings)| {
+                (
+                    alias,
+                    bindings
+                        .into_iter()
+                        .map(|binding| (binding.local_name.clone(), binding))
+                        .collect::<HashMap<_, _>>(),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let imported_values = context
+            .imported_values
+            .into_iter()
+            .map(|binding| (binding.local_name.clone(), binding))
+            .collect::<HashMap<_, _>>();
         let mut checker = Self {
             interner,
             aliases,
@@ -144,6 +164,8 @@ impl TypeChecker {
             current_expr_span: None,
             diagnostics: Vec::new(),
             ir: CheckedIr::empty(),
+            imported_values,
+            namespaces,
             options,
         };
 
@@ -159,6 +181,20 @@ impl TypeChecker {
                 ret,
             });
             checker.insert_value(sig.name, func_ty, false);
+        }
+
+        let imported_bindings = checker.imported_values.values().cloned().collect::<Vec<_>>();
+        for binding in imported_bindings {
+            let ty = checker.type_ref_to_ty(&binding.ty);
+            checker.insert_value(binding.local_name.clone(), ty, false);
+            checker.ir.declarations.push(CheckedDecl {
+                name: binding.local_name,
+                link_name: binding.link_name,
+                params: Vec::new(),
+                ty,
+                is_extern: true,
+                value: CheckedExpr::Any,
+            });
         }
 
         checker
@@ -178,6 +214,115 @@ impl TypeChecker {
 
     fn nominal_ty(&mut self, name: &str) -> TyId {
         self.interner.intern(Ty::Nominal(name.to_string()))
+    }
+
+    fn type_ref_to_ty(&mut self, ty: &TypeRef) -> TyId {
+        match ty {
+            TypeRef::Primitive(primitive) => match primitive {
+                PrimitiveType::Int8 => self.interner.intern(Ty::Int8),
+                PrimitiveType::Int16 => self.interner.intern(Ty::Int16),
+                PrimitiveType::Int32 => self.interner.intern(Ty::Int32),
+                PrimitiveType::Int64 => self.interner.intern(Ty::Int64),
+                PrimitiveType::Int128 => self.interner.intern(Ty::Int128),
+                PrimitiveType::ISize => self.interner.intern(Ty::ISize),
+                PrimitiveType::UInt8 => self.interner.intern(Ty::UInt8),
+                PrimitiveType::UInt16 => self.interner.intern(Ty::UInt16),
+                PrimitiveType::UInt32 => self.interner.intern(Ty::UInt32),
+                PrimitiveType::UInt64 => self.interner.intern(Ty::UInt64),
+                PrimitiveType::UInt128 => self.interner.intern(Ty::UInt128),
+                PrimitiveType::USize => self.interner.intern(Ty::USize),
+                PrimitiveType::Float32 => self.interner.intern(Ty::Float32),
+                PrimitiveType::Float64 => self.interner.intern(Ty::Float64),
+                PrimitiveType::Bool => self.interner.intern(Ty::Bool),
+                PrimitiveType::Char => self.interner.intern(Ty::Char),
+                PrimitiveType::Void => self.interner.intern(Ty::Void),
+                PrimitiveType::Never => self.interner.intern(Ty::Never),
+                PrimitiveType::Any => self.interner.intern(Ty::Any),
+            },
+            TypeRef::InferVar(v) => self.interner.intern(Ty::InferVar(*v)),
+            TypeRef::GenericParam(name) => self.interner.intern(Ty::GenericParam(name.clone())),
+            TypeRef::Nominal(name) => self.nominal_ty(name),
+            TypeRef::List(item) => {
+                let item_ty = self.type_ref_to_ty(item);
+                self.interner.intern(Ty::List(item_ty))
+            }
+            TypeRef::Dict { key, value } => {
+                let key_ty = self.type_ref_to_ty(key);
+                let value_ty = self.type_ref_to_ty(value);
+                self.interner.intern(Ty::Dict {
+                    key: key_ty,
+                    value: value_ty,
+                })
+            }
+            TypeRef::Set(item) => {
+                let item_ty = self.type_ref_to_ty(item);
+                self.interner.intern(Ty::Set(item_ty))
+            }
+            TypeRef::Array { item, size } => {
+                let item_ty = self.type_ref_to_ty(item);
+                self.interner.intern(Ty::Array {
+                    item: item_ty,
+                    size: *size,
+                })
+            }
+            TypeRef::Func { params, ret } => {
+                let param_tys = params
+                    .iter()
+                    .map(|param| self.type_ref_to_ty(param))
+                    .collect::<Vec<_>>();
+                let ret_ty = self.type_ref_to_ty(ret);
+                self.interner.intern(Ty::Func {
+                    params: param_tys,
+                    ret: ret_ty,
+                })
+            }
+            TypeRef::Tuple(items) => {
+                let item_tys = items
+                    .iter()
+                    .map(|item| self.type_ref_to_ty(item))
+                    .collect::<Vec<_>>();
+                self.interner.intern(Ty::Tuple(item_tys))
+            }
+            TypeRef::Struct(fields) => {
+                let field_tys = fields
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), self.type_ref_to_ty(ty)))
+                    .collect::<Vec<_>>();
+                self.interner.intern(Ty::Struct(field_tys))
+            }
+            TypeRef::Union(items) => {
+                let item_tys = items
+                    .iter()
+                    .map(|item| self.type_ref_to_ty(item))
+                    .collect::<Vec<_>>();
+                self.interner.intern(Ty::Union(item_tys))
+            }
+            TypeRef::Enum(variants) => {
+                let lowered = variants
+                    .iter()
+                    .map(|(name, ty)| {
+                        (
+                            name.clone(),
+                            ty.as_ref().map(|inner| self.type_ref_to_ty(inner)),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                self.interner.intern(Ty::Enum(lowered))
+            }
+            TypeRef::Unknown => self.unknown_ty(),
+        }
+    }
+
+    fn imported_binding(&self, name: &str) -> Option<&ImportBinding> {
+        self.imported_values.get(name)
+    }
+
+    fn namespace_binding(&self, namespace: &str, field: &str) -> Option<&ImportBinding> {
+        self.namespaces.get(namespace).and_then(|fields| fields.get(field))
+    }
+
+    fn namespace_alias_conflicts(&self, name: &str) -> bool {
+        self.namespaces.contains_key(name)
     }
 
     fn classify_builtin_member_call(object: &Expr, field: &str) -> Option<BuiltinMemberCall> {
@@ -362,6 +507,17 @@ impl TypeChecker {
 
         for decl in &program.declarations {
             if let Decl::Assign { name, value, .. } = decl {
+                if self.imported_binding(name).is_some() || self.namespace_alias_conflicts(name) {
+                    self.diagnostics.push(
+                        self.typecheck_error(
+                            Issue::ResolveDuplicate,
+                            format!("declaration '{name}' conflicts with an imported name"),
+                        )
+                        .with_stage(Stage::Resolver)
+                        .with_hint("rename the declaration or adjust the imports"),
+                    );
+                    continue;
+                }
                 let prev_span = self.current_expr_span;
                 self.current_expr_span = Expr::span(value);
                 self.push_obligation(format!("checking declaration `{name}`"));
@@ -381,14 +537,20 @@ impl TypeChecker {
                     );
                     self.ir.declarations.push(CheckedDecl {
                         name: name.clone(),
+                        link_name: name.clone(),
+                        params: Vec::new(),
                         ty: existing,
+                        is_extern: false,
                         value: coerced,
                     });
                 } else {
                     let lowered = self.lower_expr(value);
                     self.ir.declarations.push(CheckedDecl {
                         name: name.clone(),
+                        link_name: name.clone(),
+                        params: Vec::new(),
                         ty,
+                        is_extern: false,
                         value: lowered,
                     });
                 }
@@ -399,6 +561,22 @@ impl TypeChecker {
             }
 
             if let Decl::Function(function) = decl {
+                if self.imported_binding(&function.name).is_some()
+                    || self.namespace_alias_conflicts(&function.name)
+                {
+                    self.diagnostics.push(
+                        self.typecheck_error(
+                            Issue::ResolveDuplicate,
+                            format!(
+                                "function '{}' conflicts with an imported name",
+                                function.name
+                            ),
+                        )
+                        .with_stage(Stage::Resolver)
+                        .with_hint("rename the function or adjust the imports"),
+                    );
+                    continue;
+                }
                 let prev_span = self.current_expr_span;
                 self.current_expr_span = Expr::span(&function.body);
                 self.push_obligation(format!("checking function `{}`", function.name));
@@ -446,12 +624,11 @@ impl TypeChecker {
                     ret: expected_ret,
                 });
                 self.ir.declarations.push(CheckedDecl {
-                    name: if function.name == "main" {
-                        "aura_user_main".to_string()
-                    } else {
-                        function.name.clone()
-                    },
+                    name: function.name.clone(),
+                    link_name: function.name.clone(),
+                    params: function.params.iter().map(|param| param.name.clone()).collect(),
                     ty: func_ty,
+                    is_extern: false,
                     value: lowered_body,
                 });
                 self.pop_scope();
@@ -472,6 +649,19 @@ impl TypeChecker {
             }
 
             if let Decl::Macro(macro_decl) = decl {
+                if self.imported_binding(&macro_decl.name).is_some()
+                    || self.namespace_alias_conflicts(&macro_decl.name)
+                {
+                    self.diagnostics.push(
+                        self.typecheck_error(
+                            Issue::ResolveDuplicate,
+                            format!("macro '{}' conflicts with an imported name", macro_decl.name),
+                        )
+                        .with_stage(Stage::Resolver)
+                        .with_hint("rename the macro or adjust the imports"),
+                    );
+                    continue;
+                }
                 let prev_span = self.current_expr_span;
                 self.current_expr_span = Expr::span(&macro_decl.body);
                 self.push_obligation(format!("checking macro `{}`", macro_decl.name));
@@ -502,7 +692,10 @@ impl TypeChecker {
                 );
                 self.ir.declarations.push(CheckedDecl {
                     name: macro_decl.name.clone(),
+                    link_name: macro_decl.name.clone(),
+                    params: Vec::new(),
                     ty: expected_ret,
+                    is_extern: false,
                     value: lowered_body,
                 });
                 self.pop_scope();
@@ -533,6 +726,8 @@ impl TypeChecker {
             Expr::Ident(name) => {
                 if let Some(ty) = self.lookup_value(name) {
                     ty
+                } else if self.namespace_alias_conflicts(name) {
+                    self.unknown_ty()
                 } else if name == "true" || name == "false" {
                     self.interner.intern(Ty::Bool)
                 } else {
@@ -694,6 +889,21 @@ impl TypeChecker {
                 ..
             } => {
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
+                    if let Expr::Ident(namespace) = TypeChecker::base_expr(object) {
+                        if let Some(binding) = self.namespace_binding(namespace, field).cloned() {
+                            let callee_ty = self.type_ref_to_ty(&binding.ty);
+                            return self.infer_call_expr(
+                                callee_ty,
+                                Some(binding.local_name.as_str()),
+                                static_args,
+                                args,
+                                trailing,
+                                None,
+                            );
+                        }
+                    }
+                }
+                if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
                     if let Some(ret) =
                         self.infer_builtin_member_call(object, field, args, trailing, None)
                     {
@@ -758,10 +968,19 @@ impl TypeChecker {
                 }
             }
             Expr::Binary { op, lhs, rhs } => self.infer_binary_expr(*op, lhs, rhs),
-            Expr::Member { object, .. } => {
-                let _ = self.infer_expr(object);
-                self.unknown_ty()
-            }
+            Expr::Member { object, field } => match TypeChecker::base_expr(object) {
+                Expr::Ident(namespace) => {
+                    let _ = self.infer_expr(object);
+                    self.namespace_binding(namespace, field)
+                        .cloned()
+                        .map(|binding| self.type_ref_to_ty(&binding.ty))
+                        .unwrap_or_else(|| self.unknown_ty())
+                }
+                _ => {
+                    let _ = self.infer_expr(object);
+                    self.unknown_ty()
+                }
+            },
             Expr::TypeExpr(_) => self.unknown_ty(),
             Expr::Placeholder => self.unknown_ty(),
             Expr::MultiArm(arms) => {
@@ -1010,12 +1229,33 @@ impl TypeChecker {
                 Expr::Call {
                     callee,
                     static_args,
-                args,
-                trailing,
-                ..
+                    args,
+                    trailing,
+                    ..
                 },
                 _,
             ) => {
+                if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
+                    if let Expr::Ident(namespace) = TypeChecker::base_expr(object) {
+                        if let Some(binding) = self.namespace_binding(namespace, field).cloned() {
+                            let callee_ty = self.type_ref_to_ty(&binding.ty);
+                            let actual = self.infer_call_expr(
+                                callee_ty,
+                                Some(binding.local_name.as_str()),
+                                static_args,
+                                args,
+                                trailing,
+                                Some(expected),
+                            );
+                            self.require_assignable(
+                                expected,
+                                actual,
+                                "bidirectional expected type",
+                            );
+                            return actual;
+                        }
+                    }
+                }
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
                     if let Some(actual) = self
                         .infer_builtin_member_call(object, field, args, trailing, Some(expected))
@@ -3049,7 +3289,11 @@ impl TypeChecker {
     fn lower_expr(&mut self, expr: &Expr) -> CheckedExpr {
         match expr {
             Expr::Spanned { expr, .. } => self.lower_expr(expr),
-            Expr::Ident(v) => CheckedExpr::Ident(v.clone()),
+            Expr::Ident(v) => CheckedExpr::Ident(
+                self.imported_binding(v)
+                    .map(|binding| binding.link_name.clone())
+                    .unwrap_or_else(|| v.clone()),
+            ),
             Expr::Int(v) => CheckedExpr::Int(v.clone()),
             Expr::Float(v) => CheckedExpr::Float(v.clone()),
             Expr::Char(v) => CheckedExpr::Char(v.clone()),
@@ -3094,6 +3338,16 @@ impl TypeChecker {
                     .collect(),
             ),
             Expr::Call { callee, args, .. } => {
+                if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
+                    if let Expr::Ident(namespace) = TypeChecker::base_expr(object) {
+                        if let Some(binding) = self.namespace_binding(namespace, field) {
+                            return CheckedExpr::Call {
+                                callee: Box::new(CheckedExpr::Ident(binding.link_name.clone())),
+                                args: args.iter().map(|a| self.lower_expr(a)).collect(),
+                            };
+                        }
+                    }
+                }
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
                     if let Some(lowered) = self.lower_builtin_member_call(object, field, args) {
                         return lowered;
@@ -3262,9 +3516,18 @@ impl TypeChecker {
                     .map(|arm| self.lower_expr(&arm.body))
                     .collect::<Vec<_>>(),
             ),
-            Expr::Member { object, field } => CheckedExpr::DotIdent {
-                name: field.clone(),
-                payload: Some(Box::new(self.lower_expr(object))),
+            Expr::Member { object, field } => match TypeChecker::base_expr(object) {
+                Expr::Ident(namespace) => self
+                    .namespace_binding(namespace, field)
+                    .map(|binding| CheckedExpr::Ident(binding.link_name.clone()))
+                    .unwrap_or_else(|| CheckedExpr::DotIdent {
+                        name: field.clone(),
+                        payload: Some(Box::new(self.lower_expr(object))),
+                    }),
+                _ => CheckedExpr::DotIdent {
+                    name: field.clone(),
+                    payload: Some(Box::new(self.lower_expr(object))),
+                },
             },
             Expr::Binary { op, lhs, rhs } => {
                 if matches!(op, ParsedBinaryOp::Pipe) {
@@ -3458,7 +3721,7 @@ fn is_numeric_ty(ty: &Ty) -> bool {
 
 impl Default for TypeChecker {
     fn default() -> Self {
-        Self::new(CheckOptions::default())
+        Self::new(CheckContext::default(), CheckOptions::default())
     }
 }
 
@@ -3614,10 +3877,11 @@ mod tests {
     use super::TypeChecker;
     use crate::checked_ir::CheckedExpr;
     use crate::types::Ty;
+    use crate::CheckContext;
     use aura_frontend::Parser;
     use aura_frontend::ast::{
         BinaryOp as ParsedBinaryOp, Decl, Expr, FunctionDecl, LabeledClosureArg, Pattern, Program,
-        StaticArg, StaticParam, StaticParamKind, StaticValueExpr, TypeExpr,
+        StaticArg, StaticParam, StaticParamKind, StaticValueExpr, TypeExpr, UseBinding, UseDecl,
     };
 
     fn ty_param(name: &str) -> StaticParam {
@@ -3827,7 +4091,7 @@ mod tests {
             .ir
             .declarations
             .iter()
-            .find(|decl| decl.name == "aura_user_main")
+            .find(|decl| decl.name == "main")
             .expect("main declaration should exist");
 
         let CheckedExpr::Block(items) = &main_decl.value else {
@@ -3947,11 +4211,13 @@ mod tests {
     fn duplicate_use_targets_fail_typecheck_pipeline() {
         let program = Program {
             declarations: vec![
-                Decl::Use(aura_frontend::ast::UseDecl {
-                    target: "io".to_string(),
+                Decl::Use(UseDecl {
+                    binding: UseBinding::Namespace("io".to_string()),
+                    source: "./io".to_string(),
                 }),
-                Decl::Use(aura_frontend::ast::UseDecl {
-                    target: "io".to_string(),
+                Decl::Use(UseDecl {
+                    binding: UseBinding::Namespace("io".to_string()),
+                    source: "./io".to_string(),
                 }),
             ],
         };
@@ -6050,7 +6316,7 @@ mod tests {
             ],
         };
 
-        let mut checker = TypeChecker::new(CheckOptions::default());
+        let mut checker = TypeChecker::new(CheckContext::default(), CheckOptions::default());
         let _ = checker.check_program(&program);
         let (_types, _diagnostics, ir) = checker.into_parts();
         assert!(ir
@@ -6483,7 +6749,7 @@ mod tests {
             .ir
             .declarations
             .iter()
-            .find(|decl| decl.name == "main" || decl.name == "aura_user_main")
+            .find(|decl| decl.name == "main")
             .expect("main declaration should exist");
         assert!(matches!(module.types.get(main_decl.ty), Some(Ty::Func { .. })));
     }

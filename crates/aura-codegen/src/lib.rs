@@ -23,6 +23,15 @@ pub fn emit_object_file(
     llvm::module::emit_object_file(module_name, checked, out_path)
 }
 
+pub fn emit_object_file_with_options(
+    module_name: &str,
+    checked: &CheckedModule,
+    out_path: &Path,
+    include_native_entry: bool,
+) -> Result<(), CodegenError> {
+    llvm::module::emit_object_file_with_options(module_name, checked, out_path, include_native_entry)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

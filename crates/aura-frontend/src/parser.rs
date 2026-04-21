@@ -3,7 +3,7 @@
 use crate::ast::{
     Arm, BinaryOp, Binding, Decl, DocAttribute, Expr, FunctionDecl, LabeledClosureArg, MacroDecl,
     Param, Pattern, Program, StaticArg, StaticParam, StaticParamKind, StaticValueExpr, SymbolDoc,
-    TypeExpr, UseDecl,
+    TypeExpr, UseBinding, UseDecl, UseField,
 };
 use crate::lexer::lex;
 use crate::static_eval::{MinimalStaticChecker, StaticSatisfies};
@@ -237,8 +237,57 @@ where
 
     fn parse_use_decl(&mut self) -> Result<Decl, ParseError> {
         self.expect_ident_exact("use")?;
-        let target = self.expect_ident("expected use target")?;
-        Ok(Decl::Use(UseDecl { target }))
+        let binding = if self.peek_is(&TokenKind::LParen) {
+            self.bump();
+            let mut fields = Vec::new();
+            loop {
+                let first = self.expect_ident("expected imported symbol name")?;
+                let (local_name, source_name) = if self.peek_is(&TokenKind::Eq) {
+                    self.bump();
+                    let source = self.expect_ident("expected exported symbol name after '='")?;
+                    (first, source)
+                } else {
+                    (first.clone(), first)
+                };
+                fields.push(UseField {
+                    local_name,
+                    source_name,
+                });
+
+                if self.peek_is(&TokenKind::Comma) {
+                    self.bump();
+                    if self.peek_is(&TokenKind::RParen) {
+                        self.bump();
+                        break;
+                    }
+                    continue;
+                }
+
+                self.expect_simple(
+                    &TokenKind::RParen,
+                    "expected ')' after imported fields",
+                    vec![")"],
+                )?;
+                break;
+            }
+            UseBinding::Fields(fields)
+        } else {
+            let alias = self.expect_ident("expected use target alias")?;
+            UseBinding::Namespace(alias)
+        };
+        self.expect_simple(&TokenKind::Eq, "expected '=' after use binding", vec!["="])?;
+        let source_expr = self.parse_atom_expr()?;
+        let source = match source_expr.unspanned() {
+            Expr::String(source) => source.clone(),
+            _ => {
+                return Err(self.error_here(
+                    "expected string literal module source after '='",
+                    vec!["string"],
+                    Some("use `use io = \"@stl/io\";`".to_string()),
+                ));
+            }
+        };
+        Ok(Decl::Use(UseDecl { binding, source }))
     }
 
     fn parse_function_decl(&mut self, doc: Option<DocAttribute>) -> Result<Decl, ParseError> {
@@ -1856,7 +1905,9 @@ fn collect_macro_symbols(tokens: &[Token]) -> HashSet<String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::ast::{BinaryOp, Decl, Expr, Pattern, StaticArg, StaticParamKind, TypeExpr};
+    use crate::ast::{
+        BinaryOp, Decl, Expr, Pattern, StaticArg, StaticParamKind, TypeExpr, UseBinding, UseDecl,
+    };
     use crate::parser::Parser;
 
     fn u(expr: &Expr) -> &Expr {
@@ -2769,8 +2820,58 @@ mod tests {
     }
 
     #[test]
+    fn parse_namespace_use_decl() {
+        let src = "use io = \"@stl/io\"";
+        let parsed = Parser::parse_source(src).expect("should parse namespace use");
+        assert_eq!(parsed.declarations.len(), 1);
+        assert!(matches!(
+            &parsed.declarations[0],
+            Decl::Use(UseDecl {
+                binding: UseBinding::Namespace(alias),
+                source,
+            }) if alias == "io" && source == "@stl/io"
+        ));
+    }
+
+    #[test]
+    fn parse_destructured_use_decl() {
+        let src = "use (print, read) = \"@stl/io\"";
+        let parsed = Parser::parse_source(src).expect("should parse destructured use");
+        assert!(matches!(
+            &parsed.declarations[0],
+            Decl::Use(UseDecl {
+                binding: UseBinding::Fields(fields),
+                source,
+            }) if source == "@stl/io"
+                && fields.len() == 2
+                && fields[0].source_name == "print"
+                && fields[0].local_name == "print"
+                && fields[1].source_name == "read"
+                && fields[1].local_name == "read"
+        ));
+    }
+
+    #[test]
+    fn parse_renamed_use_decl() {
+        let src = "use (my_print = print, read) = \"@stl/io\"";
+        let parsed = Parser::parse_source(src).expect("should parse renamed use");
+        assert!(matches!(
+            &parsed.declarations[0],
+            Decl::Use(UseDecl {
+                binding: UseBinding::Fields(fields),
+                source,
+            }) if source == "@stl/io"
+                && fields.len() == 2
+                && fields[0].source_name == "print"
+                && fields[0].local_name == "my_print"
+                && fields[1].source_name == "read"
+                && fields[1].local_name == "read"
+        ));
+    }
+
+    #[test]
     fn parse_reinforcement_no_special_cases() {
-        let src = "def a = def value; def b = let value; def c = if cond; def d = cases cond; def e = loop body; def f = return value; def g = break value; def h = continue value; use io; def i = builtin foo; def j = label[.outer] { value }";
+        let src = "def a = def value; def b = let value; def c = if cond; def d = cases cond; def e = loop body; def f = return value; def g = break value; def h = continue value; use io = \"./io\"; def i = builtin foo; def j = label[.outer] { value }";
         let parsed = Parser::parse_source(src).expect("should parse mundane macro forms");
         assert_eq!(parsed.declarations.len(), 11);
         assert!(matches!(parsed.declarations[8], Decl::Use(_)));
@@ -2877,7 +2978,7 @@ mod tests {
 
     #[test]
     fn doc_attribute_only_allows_def_target() {
-        let src = "doc[\"# io\"] use io";
+        let src = "doc[\"# io\"] use io = \"./io\"";
         let err = Parser::parse_source(src).expect_err("doc should only annotate def");
         assert!(err.message.contains("doc attribute"));
     }

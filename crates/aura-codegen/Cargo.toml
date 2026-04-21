@@ -10,5 +10,6 @@ llvm-backend = ["dep:inkwell"]
 [dependencies]
 aura-diagnostics = { path = "../aura-diagnostics" }
 aura-frontend = { path = "../aura-frontend" }
+aura-runtime-host = { path = "../aura-runtime-host" }
 aura-typecheck = { path = "../aura-typecheck" }
 inkwell = { version = "0.5", default-features = false, features = ["llvm18-0-prefer-dynamic"], optional = true }

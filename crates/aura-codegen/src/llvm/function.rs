@@ -22,7 +22,7 @@ pub fn declare_function<'ctx, 'm>(
     cg: &CodegenContext<'ctx, 'm>,
     decl: &CheckedDecl,
 ) -> Result<inkwell::values::FunctionValue<'ctx>, CodegenError> {
-    declare_function_with_name(cg, decl, &decl.name)
+    declare_function_with_name(cg, decl, &decl.link_name)
 }
 
 #[cfg(feature = "llvm-backend")]
@@ -54,8 +54,12 @@ pub fn declare_global_stub<'ctx, 'm>(
 
     let global = cg
         .module
-        .add_global(basic_ty, None, &format!("{}_global", decl.name));
-    global.set_initializer(&basic_ty.const_zero());
+        .add_global(basic_ty, None, &format!("{}_global", decl.link_name));
+    if decl.is_extern {
+        global.set_linkage(Linkage::External);
+    } else {
+        global.set_initializer(&basic_ty.const_zero());
+    }
     Ok(())
 }
 

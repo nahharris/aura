@@ -1,6 +1,6 @@
 use crate::ast::{
     Arm, BinaryOp, Decl, Expr, FunctionDecl, LabeledClosureArg, MacroDecl, Param, Pattern, Program,
-    StaticArg, StaticParam, StaticParamKind, StaticValueExpr, TypeExpr, UseDecl,
+    StaticArg, StaticParam, StaticParamKind, StaticValueExpr, TypeExpr, UseBinding, UseDecl,
 };
 use crate::lexer::lex_with_comments;
 use crate::token::TokenKind;
@@ -212,7 +212,27 @@ impl<'a> Formatter<'a> {
     fn write_use(&mut self, use_decl: &UseDecl) {
         self.write_indent();
         self.out.push_str("use ");
-        self.out.push_str(&use_decl.target);
+        match &use_decl.binding {
+            UseBinding::Namespace(alias) => self.out.push_str(alias),
+            UseBinding::Fields(fields) => {
+                self.out.push('(');
+                for (idx, field) in fields.iter().enumerate() {
+                    if idx > 0 {
+                        self.out.push_str(", ");
+                    }
+                    if field.local_name != field.source_name {
+                        self.out.push_str(&field.local_name);
+                        self.out.push_str(" = ");
+                    }
+                    self.out.push_str(&field.source_name);
+                }
+                self.out.push(')');
+            }
+        }
+        self.out.push_str(" = ");
+        self.out.push('"');
+        self.out.push_str(&use_decl.source);
+        self.out.push('"');
         self.out.push(';');
     }
 

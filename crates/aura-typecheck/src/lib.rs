@@ -13,6 +13,7 @@ pub mod types;
 pub mod unify;
 
 use aura_diagnostics::{Diagnostic, Severity};
+use aura_diagnostics::TypeRef;
 use aura_frontend::ast::Program;
 use std::collections::HashMap;
 
@@ -34,6 +35,20 @@ pub struct CheckedModule {
     pub ir: checked_ir::CheckedIr,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportBinding {
+    pub source_name: String,
+    pub local_name: String,
+    pub link_name: String,
+    pub ty: TypeRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CheckContext {
+    pub imported_values: Vec<ImportBinding>,
+    pub namespaces: HashMap<String, Vec<ImportBinding>>,
+}
+
 #[derive(Debug, Clone)]
 pub struct CheckResult {
     pub module: Option<CheckedModule>,
@@ -41,15 +56,23 @@ pub struct CheckResult {
 }
 
 pub fn check_module(ast: &Program) -> CheckResult {
-    check_module_with_options(ast, CheckOptions::default())
+    check_module_with_context(ast, CheckContext::default(), CheckOptions::default())
 }
 
 pub fn check_module_with_options(ast: &Program, options: CheckOptions) -> CheckResult {
+    check_module_with_context(ast, CheckContext::default(), options)
+}
+
+pub fn check_module_with_context(
+    ast: &Program,
+    context: CheckContext,
+    options: CheckOptions,
+) -> CheckResult {
     let mut resolver = Resolver::new();
     let symbols = resolver.resolve_program(ast);
     let mut diagnostics = resolver.into_diagnostics();
 
-    let mut checker = TypeChecker::new(options);
+    let mut checker = TypeChecker::new(context, options);
     let value_types = checker.check_program(ast);
     let (types, checker_diagnostics, ir) = checker.into_parts();
     diagnostics.extend(checker_diagnostics);
@@ -60,7 +83,6 @@ pub fn check_module_with_options(ast: &Program, options: CheckOptions) -> CheckR
             diagnostics,
         };
     }
-
     CheckResult {
         module: Some(CheckedModule {
             symbols,

@@ -18,7 +18,7 @@ last_reviewed: 2026-04-21
 
 ## Purpose
 
-Provide the native runtime boundary required by generated code. The current exported surface includes process exit plus the first owned byte-buffer ABI used by Aura native code.
+Provide the native runtime boundary required by generated code and act as the single source of truth for host-callable ABI metadata consumed by the compiler.
 
 ## Current Export
 
@@ -28,6 +28,13 @@ Provide the native runtime boundary required by generated code. The current expo
 - `bytes_get`
 - `bytes_set`
 - `string_into`
+
+## ABI Ownership
+
+- `crates/aura-runtime-host/src/lib.rs` now owns both the Rust implementations and the shared ABI description for host exports.
+- `aura-typecheck` builds its runtime builtin signature registry from this shared metadata instead of maintaining an independent match table.
+- `aura-codegen` uses the same metadata when it needs to declare runtime functions for LLVM lowering.
+- The compiler core still knows about the native executable entry wrapper, but runtime callable names and signatures now live at this host edge.
 
 ## `Bytes` ABI
 
@@ -55,6 +62,7 @@ Bounds checks are intentionally absent right now; out-of-bounds `get`/`set` is U
 ## Native Linking Notes
 
 - `crates/aura-runtime-host` is produced as a Rust `staticlib` and linked into native Aura executables by `crates/aura-cli`.
+- Multi-module native project builds now link the entry module object plus any required library module objects together with this runtime-host staticlib.
 - On Windows, the CLI link step should not force CRT import libraries such as `msvcrt`, `ucrt`, or `vcruntime`.
 - The Rust staticlib already carries the correct CRT defaults for its own build, and overriding them from the CLI causes MSVC linker conflicts such as `LNK4098` (`libcmt` vs `msvcrt`).
 - The native link step still adds the non-CRT Windows system libraries that Rust `std` needs in this embedding path:

@@ -7,3 +7,4 @@ description = "Aura typechecker and semantic analysis"
 [dependencies]
 aura-frontend = { path = "../aura-frontend" }
 aura-diagnostics = { path = "../aura-diagnostics" }
+aura-runtime-host = { path = "../aura-runtime-host" }

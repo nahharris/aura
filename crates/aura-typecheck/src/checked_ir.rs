@@ -8,7 +8,10 @@ pub struct CheckedIr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedDecl {
     pub name: String,
+    pub link_name: String,
+    pub params: Vec<String>,
     pub ty: TyId,
+    pub is_extern: bool,
     pub value: CheckedExpr,
 }
 
@@ -156,7 +159,10 @@ mod tests {
         let ir = CheckedIr {
             declarations: vec![CheckedDecl {
                 name: "x".to_string(),
+                link_name: "x".to_string(),
+                params: Vec::new(),
                 ty: TyId(0),
+                is_extern: false,
                 value: CheckedExpr::If {
                     condition: Box::new(CheckedExpr::Ident("cond".to_string())),
                     then_branch: Box::new(CheckedExpr::Coerce {
@@ -182,7 +188,10 @@ mod tests {
         let ir = CheckedIr {
             declarations: vec![CheckedDecl {
                 name: "x".to_string(),
+                link_name: "x".to_string(),
+                params: Vec::new(),
                 ty: TyId(2),
+                is_extern: false,
                 value: CheckedExpr::BinaryOp {
                     op: BinaryOpKind::Add,
                     lhs: Box::new(CheckedExpr::Int("1".to_string())),

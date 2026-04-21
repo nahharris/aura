@@ -1,5 +1,76 @@
 use std::io::Write;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeTypeRef {
+    Int32,
+    ISize,
+    USize,
+    UInt8,
+    Void,
+    Bytes,
+    String,
+    Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeFunctionAbi {
+    pub name: &'static str,
+    pub params: &'static [RuntimeTypeRef],
+    pub ret: RuntimeTypeRef,
+}
+
+const SYSCALL_EXIT_PARAMS: [RuntimeTypeRef; 1] = [RuntimeTypeRef::Int32];
+const SYSCALL_WRITE_PARAMS: [RuntimeTypeRef; 2] = [RuntimeTypeRef::Int32, RuntimeTypeRef::Bytes];
+const BYTES_NEW_PARAMS: [RuntimeTypeRef; 1] = [RuntimeTypeRef::USize];
+const BYTES_GET_PARAMS: [RuntimeTypeRef; 2] = [RuntimeTypeRef::Bytes, RuntimeTypeRef::USize];
+const BYTES_SET_PARAMS: [RuntimeTypeRef; 3] = [
+    RuntimeTypeRef::Bytes,
+    RuntimeTypeRef::USize,
+    RuntimeTypeRef::UInt8,
+];
+const STRING_INTO_PARAMS: [RuntimeTypeRef; 1] = [RuntimeTypeRef::String];
+
+const RUNTIME_FUNCTIONS: [RuntimeFunctionAbi; 6] = [
+    RuntimeFunctionAbi {
+        name: "syscall_exit",
+        params: &SYSCALL_EXIT_PARAMS,
+        ret: RuntimeTypeRef::Never,
+    },
+    RuntimeFunctionAbi {
+        name: "syscall_write",
+        params: &SYSCALL_WRITE_PARAMS,
+        ret: RuntimeTypeRef::ISize,
+    },
+    RuntimeFunctionAbi {
+        name: "bytes_new",
+        params: &BYTES_NEW_PARAMS,
+        ret: RuntimeTypeRef::Bytes,
+    },
+    RuntimeFunctionAbi {
+        name: "bytes_get",
+        params: &BYTES_GET_PARAMS,
+        ret: RuntimeTypeRef::UInt8,
+    },
+    RuntimeFunctionAbi {
+        name: "bytes_set",
+        params: &BYTES_SET_PARAMS,
+        ret: RuntimeTypeRef::Void,
+    },
+    RuntimeFunctionAbi {
+        name: "string_into",
+        params: &STRING_INTO_PARAMS,
+        ret: RuntimeTypeRef::Bytes,
+    },
+];
+
+pub fn runtime_functions() -> &'static [RuntimeFunctionAbi] {
+    &RUNTIME_FUNCTIONS
+}
+
+pub fn runtime_function(name: &str) -> Option<&'static RuntimeFunctionAbi> {
+    RUNTIME_FUNCTIONS.iter().find(|abi| abi.name == name)
+}
+
 pub struct AuraBytes {
     len: usize,
     storage: Vec<u8>,

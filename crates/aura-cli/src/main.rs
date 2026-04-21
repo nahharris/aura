@@ -9,8 +9,10 @@ use std::process::ExitCode;
 use anstyle::{AnsiColor, Color, Effects, Style};
 use anyhow::{Context, Result};
 use aura_codegen::project::discover::discover_layout;
-use aura_codegen::project::manifest::{ProjectType, load_manifest};
-use aura_codegen::{emit_llvm_ir, emit_object_file};
+use aura_codegen::project::compile::{
+    ProjectBuild, ProjectCompileError, ProjectCompileOptions, compile_project,
+};
+use aura_codegen::{emit_llvm_ir, emit_object_file, emit_object_file_with_options};
 use aura_diagnostics::{Diagnostic, Severity, Span};
 use aura_frontend::ast::{Decl, Program};
 use aura_frontend::{FormatOptions, Parser, format_source, unified_diff};
@@ -415,7 +417,7 @@ fn build_single_file_cmd(
             emit_object_file(&module_name, module, &obj_path)
                 .map_err(|e| anyhow::anyhow!("object emission failed: {e}"))?;
 
-            link_native_binary(&obj_path, &executable_path)?;
+            link_native_binary(&[obj_path.clone()], &executable_path)?;
             println!("native executable emitted to {}", executable_path.display());
             println!("kept intermediate LLVM IR at {}", ll_path.display());
             println!("kept intermediate object file at {}", obj_path.display());
@@ -431,61 +433,189 @@ fn build_project_cmd(
     format: OutputFormat,
     diagnostics_format: DiagnosticsFormat,
 ) -> Result<ExitCode> {
-    let manifest = match load_manifest(build_file) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("manifest error: {e}");
+    let build = match compile_project(
+        build_file,
+        ProjectCompileOptions {
+            enforce_entry_main_signature: true,
+        },
+    ) {
+        Ok(build) => build,
+        Err(ProjectCompileError::ParseSource {
+            path,
+            source,
+            diagnostic,
+        }) => {
+            print_diagnostics(&[diagnostic], diagnostics_format, &path, &source)?;
+            return Ok(ExitCode::from(1));
+        }
+        Err(ProjectCompileError::Typecheck {
+            path,
+            source,
+            diagnostics,
+        }) => {
+            print_diagnostics(&diagnostics, diagnostics_format, &path, &source)?;
+            return Ok(ExitCode::from(1));
+        }
+        Err(error) => {
+            eprintln!("{error}");
             return Ok(ExitCode::from(1));
         }
     };
 
-    let project_root = build_file
-        .parent()
-        .context("build.aura should have a parent directory")?;
-    let src_main = project_root.join("src").join("main.aura");
-    if manifest.kind == ProjectType::Binary && !src_main.is_file() {
-        eprintln!(
-            "binary project '{}' does not have entry file '{}'",
-            manifest.name,
-            src_main.display()
-        );
-        return Ok(ExitCode::from(1));
-    }
-
     println!(
         "building project '{}' ({}) from {}",
-        manifest.name,
-        manifest.version,
+        build.manifest.name,
+        build.manifest.version,
         build_file.display()
     );
 
-    match manifest.kind {
-        ProjectType::Binary => {
-            let project_out = if out.is_none() {
-                Some(project_default_output_path(
-                    project_root,
-                    &manifest.name,
-                    format,
-                ))
-            } else {
-                None
-            };
-            build_single_file_cmd(
-                &src_main,
-                out.or(project_out.as_deref()),
-                format,
-                diagnostics_format,
-                true,
-            )
-        }
-        ProjectType::Library => {
-            println!(
-                "project '{}' is a library; skipping entrypoint build",
-                manifest.name
-            );
+    let project_out = out.map(PathBuf::from).unwrap_or_else(|| {
+        project_default_output_path(&build.root, &build.manifest.name, format)
+    });
+    match format {
+        OutputFormat::Auir => {
+            ensure_parent_dir(&project_out)?;
+            let rendered = render_project_ir_pretty(&build);
+            fs::write(&project_out, rendered).with_context(|| {
+                format!(
+                    "failed to write checked IR output '{}'",
+                    project_out.display()
+                )
+            })?;
+            println!("checked IR emitted to {}", project_out.display());
             Ok(ExitCode::SUCCESS)
         }
+        OutputFormat::Ll => {
+            ensure_parent_dir(&project_out)?;
+            let llvm_ir = render_project_llvm_ir(&build)?;
+            fs::write(&project_out, llvm_ir)
+                .with_context(|| format!("failed to write LLVM IR '{}'", project_out.display()))?;
+            println!("LLVM IR emitted to {}", project_out.display());
+            Ok(ExitCode::SUCCESS)
+        }
+        OutputFormat::Obj => build_project_objects(&build, &project_out),
+        OutputFormat::Native => {
+            if build.manifest.kind == aura_codegen::project::manifest::ProjectType::Library {
+                eprintln!("library projects cannot emit native executables; use --format obj");
+                return Ok(ExitCode::from(1));
+            }
+            build_project_native(&build, &project_out)
+        }
     }
+}
+
+fn render_project_ir_pretty(build: &ProjectBuild) -> String {
+    build.modules
+        .iter()
+        .map(|module| {
+            format!(
+                "// module: {}\n{}",
+                module.path.display(),
+                render_ir_pretty(&module.checked)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn render_project_llvm_ir(build: &ProjectBuild) -> Result<String> {
+    build.modules
+        .iter()
+        .map(|module| {
+            emit_llvm_ir(&module.module_name, &module.checked)
+                .map(|llvm_ir| format!("; module: {}\n{llvm_ir}", module.path.display()))
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "LLVM IR emission failed for '{}': {error}",
+                        module.path.display()
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(|chunks| chunks.join("\n\n"))
+}
+
+fn build_project_objects(build: &ProjectBuild, output_path: &Path) -> Result<ExitCode> {
+    ensure_parent_dir(output_path)?;
+    if build.modules.len() == 1 {
+        let module = &build.modules[0];
+        emit_object_file(&module.module_name, &module.checked, output_path)
+            .map_err(|error| anyhow::anyhow!("object emission failed: {error}"))?;
+        println!("object emitted to {}", output_path.display());
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let output_stem = output_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or(&build.manifest.name);
+    let output_dir = output_path
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    for module in &build.modules {
+        let module_obj = output_dir.join(format!("{output_stem}.{}.obj", module.module_name));
+        emit_object_file_with_options(&module.module_name, &module.checked, &module_obj, false)
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "object emission failed for '{}': {error}",
+                    module.path.display()
+                )
+            })?;
+        println!("object emitted to {}", module_obj.display());
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn build_project_native(build: &ProjectBuild, executable_path: &Path) -> Result<ExitCode> {
+    ensure_parent_dir(executable_path)?;
+    ensure_runtime_host_built()?;
+
+    let stem = executable_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&build.manifest.name);
+    let intermediates_dir = executable_path
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let mut object_paths = Vec::with_capacity(build.modules.len());
+    for module in &build.modules {
+        let ll_path = intermediates_dir.join(format!("{stem}.{}.ll", module.module_name));
+        let obj_path = intermediates_dir.join(format!("{stem}.{}.obj", module.module_name));
+
+        let llvm_ir = emit_llvm_ir(&module.module_name, &module.checked)
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "LLVM IR emission failed for '{}': {error}",
+                    module.path.display()
+                )
+            })?;
+        fs::write(&ll_path, llvm_ir)
+            .with_context(|| format!("failed to write LLVM IR '{}'", ll_path.display()))?;
+
+        let include_native_entry = module.path == build.entry_path;
+        emit_object_file_with_options(
+            &module.module_name,
+            &module.checked,
+            &obj_path,
+            include_native_entry,
+        )
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "object emission failed for '{}': {error}",
+                    module.path.display()
+                )
+            })?;
+        println!("kept intermediate LLVM IR at {}", ll_path.display());
+        println!("kept intermediate object file at {}", obj_path.display());
+        object_paths.push(obj_path);
+    }
+
+    link_native_binary(&object_paths, executable_path)?;
+    println!("native executable emitted to {}", executable_path.display());
+    Ok(ExitCode::SUCCESS)
 }
 
 fn project_default_output_path(
@@ -585,7 +715,7 @@ fn runtime_host_staticlib_path() -> Result<PathBuf> {
     Ok(path)
 }
 
-fn link_native_binary(obj_path: &Path, output_path: &Path) -> Result<()> {
+fn link_native_binary(obj_paths: &[PathBuf], output_path: &Path) -> Result<()> {
     let llvm_prefix = llvm_prefix_from_env()?;
     let clang = clang_path_from_prefix(&llvm_prefix);
     if !clang.is_file() {
@@ -593,8 +723,11 @@ fn link_native_binary(obj_path: &Path, output_path: &Path) -> Result<()> {
     }
 
     let runtime_staticlib = runtime_host_staticlib_path()?;
-    let status = Command::new(&clang)
-        .arg(obj_path)
+    let mut command = Command::new(&clang);
+    for obj_path in obj_paths {
+        command.arg(obj_path);
+    }
+    let status = command
         .arg(runtime_staticlib)
         // Let the Rust staticlib supply its own CRT defaults; forcing MSVCRT here
         // conflicts with the staticlib's runtime model and triggers LNK4098.
@@ -609,9 +742,14 @@ fn link_native_binary(obj_path: &Path, output_path: &Path) -> Result<()> {
         .status()
         .with_context(|| format!("failed to invoke '{}'", clang.display()))?;
     if !status.success() {
+        let rendered_objects = obj_paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         anyhow::bail!(
-            "native link failed (clang exit status {status}); object: '{}', output: '{}'",
-            obj_path.display(),
+            "native link failed (clang exit status {status}); objects: '{}', output: '{}'",
+            rendered_objects,
             output_path.display()
         );
     }
@@ -1322,12 +1460,14 @@ mod tests {
         assert!(root.join("build.aura").is_file());
         let manifest = fs::read_to_string(root.join("build.aura")).expect("manifest should exist");
         assert!(manifest.contains("type = .binary"));
+        assert!(manifest.contains("@stl"));
         assert!(root.join("src").join("main.aura").is_file());
         let main = fs::read_to_string(root.join("src").join("main.aura"))
             .expect("main source should exist");
-        assert!(main.contains("syscall_exit"));
-        assert!(main.contains("let exit_code = 0;"));
-        assert!(main.contains("syscall_exit(exit_code)"));
+        assert!(main.contains("use io = \"@stl/io\";"));
+        assert!(main.contains("print(\"Hello, \");"));
+        assert!(main.contains("io.println(\"world!\");"));
+        assert!(main.contains("exit(.success)"));
         assert!(root.join("target").is_dir());
         assert!(root.join(".gitignore").is_file());
         let gitignore =
