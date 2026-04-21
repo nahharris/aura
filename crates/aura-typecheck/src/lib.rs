@@ -31,6 +31,7 @@ pub struct CheckOptions {
 pub struct CheckedModule {
     pub symbols: resolver::ResolvedSymbols,
     pub value_types: HashMap<String, TyId>,
+    pub type_aliases: HashMap<String, TyId>,
     pub types: TyInterner,
     pub ir: checked_ir::CheckedIr,
 }
@@ -43,9 +44,17 @@ pub struct ImportBinding {
     pub ty: TypeRef,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeImportBinding {
+    pub source_name: String,
+    pub local_name: String,
+    pub ty: TypeRef,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CheckContext {
     pub imported_values: Vec<ImportBinding>,
+    pub imported_types: Vec<TypeImportBinding>,
     pub namespaces: HashMap<String, Vec<ImportBinding>>,
 }
 
@@ -73,7 +82,7 @@ pub fn check_module_with_context(
     let mut diagnostics = resolver.into_diagnostics();
 
     let mut checker = TypeChecker::new(context, options);
-    let value_types = checker.check_program(ast);
+    let (value_types, type_aliases) = checker.check_program(ast);
     let (types, checker_diagnostics, ir) = checker.into_parts();
     diagnostics.extend(checker_diagnostics);
 
@@ -84,12 +93,13 @@ pub fn check_module_with_context(
         };
     }
     CheckResult {
-        module: Some(CheckedModule {
-            symbols,
-            value_types,
-            types,
-            ir,
-        }),
+            module: Some(CheckedModule {
+                symbols,
+                value_types,
+                type_aliases,
+                types,
+                ir,
+            }),
         diagnostics,
     }
 }

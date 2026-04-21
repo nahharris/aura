@@ -14,6 +14,7 @@ pub enum AuraValueType {
     Float32,
     Float64,
     Pointer,
+    Aggregate(TyId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,20 +38,7 @@ pub fn classify_type(types: &TyInterner, ty_id: TyId) -> Result<AuraValueType, C
         Ty::Float32 => Ok(AuraValueType::Float32),
         Ty::Float64 => Ok(AuraValueType::Float64),
         Ty::Void => Ok(AuraValueType::Void),
-        Ty::Enum(variants)
-            if variants.len() == 2
-                && variants[0].0 == "ok"
-                && variants[0].1.is_none()
-                && matches!(
-                    variants[1],
-                    (ref name, Some(err_ty))
-                        if name == "err"
-                            && (matches!(types.get(err_ty), Some(Ty::UInt8))
-                                || matches!(types.get(err_ty), Some(Ty::Nominal(n)) if n == "UInt8"))
-                ) =>
-        {
-            Ok(AuraValueType::Int32)
-        }
+        Ty::Enum(_) => Ok(AuraValueType::Aggregate(ty_id)),
         Ty::Never
         | Ty::Any
         | Ty::Nominal(_)
@@ -62,7 +50,6 @@ pub fn classify_type(types: &TyInterner, ty_id: TyId) -> Result<AuraValueType, C
         | Ty::Tuple(_)
         | Ty::Struct(_)
         | Ty::Union(_)
-        | Ty::Enum(_)
         | Ty::GenericParam(_)
         | Ty::InferVar(_) => Ok(AuraValueType::Pointer),
     }
@@ -91,18 +78,22 @@ pub fn classify_function_type(
 
 #[cfg(feature = "llvm-backend")]
 mod llvm_lowering {
+    use aura_typecheck::{Ty, TyId, TyInterner};
     use inkwell::{
         AddressSpace,
         context::Context,
         types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType},
     };
 
-    use super::{AuraFunctionType, AuraValueType, CodegenError};
+    use super::{
+        AuraFunctionType, AuraValueType, CodegenError, classify_function_type, classify_type,
+    };
 
     impl AuraValueType {
         pub fn to_basic_type<'ctx>(
             self,
             context: &'ctx Context,
+            types: &TyInterner,
         ) -> Result<BasicTypeEnum<'ctx>, CodegenError> {
             let ty = match self {
                 AuraValueType::Int1 => context.bool_type().as_basic_type_enum(),
@@ -116,6 +107,7 @@ mod llvm_lowering {
                 AuraValueType::Pointer => context
                     .ptr_type(AddressSpace::default())
                     .as_basic_type_enum(),
+                AuraValueType::Aggregate(ty_id) => enum_basic_type(context, types, ty_id)?,
                 AuraValueType::Void => {
                     return Err(CodegenError::UnsupportedType(
                         "void cannot be lowered as a basic value type".to_string(),
@@ -128,8 +120,9 @@ mod llvm_lowering {
         pub fn to_metadata_type<'ctx>(
             self,
             context: &'ctx Context,
+            types: &TyInterner,
         ) -> Result<BasicMetadataTypeEnum<'ctx>, CodegenError> {
-            Ok(self.to_basic_type(context)?.into())
+            Ok(self.to_basic_type(context, types)?.into())
         }
     }
 
@@ -137,25 +130,158 @@ mod llvm_lowering {
         pub fn to_llvm_fn_type<'ctx>(
             &self,
             context: &'ctx Context,
+            types: &TyInterner,
             is_var_arg: bool,
         ) -> Result<FunctionType<'ctx>, CodegenError> {
             let params = self
                 .params
                 .iter()
-                .map(|ty| ty.to_metadata_type(context))
+                .map(|ty| ty.to_metadata_type(context, types))
                 .collect::<Result<Vec<_>, _>>()?;
 
             let fn_type = match self.ret {
                 AuraValueType::Void => context.void_type().fn_type(&params, is_var_arg),
                 _ => self
                     .ret
-                    .to_basic_type(context)?
+                    .to_basic_type(context, types)?
                     .fn_type(&params, is_var_arg),
             };
             Ok(fn_type)
         }
     }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct TypeLayout {
+        pub size: u64,
+        pub align: u64,
+    }
+
+    pub fn lower_basic_type<'ctx>(
+        context: &'ctx Context,
+        types: &TyInterner,
+        ty_id: TyId,
+    ) -> Result<BasicTypeEnum<'ctx>, CodegenError> {
+        classify_type(types, ty_id)?.to_basic_type(context, types)
+    }
+
+    pub fn lower_function_type<'ctx>(
+        context: &'ctx Context,
+        types: &TyInterner,
+        ty_id: TyId,
+        is_var_arg: bool,
+    ) -> Result<FunctionType<'ctx>, CodegenError> {
+        classify_function_type(types, ty_id)?.to_llvm_fn_type(context, types, is_var_arg)
+    }
+
+    pub fn enum_basic_type<'ctx>(
+        context: &'ctx Context,
+        types: &TyInterner,
+        ty_id: TyId,
+    ) -> Result<BasicTypeEnum<'ctx>, CodegenError> {
+        let Ty::Enum(variants) = types
+            .get(ty_id)
+            .ok_or(CodegenError::InvalidTypeId(ty_id.0))?
+        else {
+            return Err(CodegenError::UnsupportedType(format!(
+                "expected enum type for aggregate lowering, got {:?}",
+                types.get(ty_id)
+            )));
+        };
+
+        let payload_layout = variants
+            .iter()
+            .filter_map(|variant: &(String, Option<TyId>)| {
+                variant.1.map(|payload| type_layout(types, payload))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let max_payload_size = payload_layout.iter().map(|layout| layout.size).max().unwrap_or(0);
+        let max_payload_align = payload_layout
+            .iter()
+            .map(|layout| layout.align)
+            .max()
+            .unwrap_or(1);
+        let payload_field = payload_storage_type(context, max_payload_size, max_payload_align)?;
+        Ok(context
+            .struct_type(&[context.i32_type().into(), payload_field.into()], false)
+            .as_basic_type_enum())
+    }
+
+    pub fn type_layout(types: &TyInterner, ty_id: TyId) -> Result<TypeLayout, CodegenError> {
+        Ok(match classify_type(types, ty_id)? {
+            AuraValueType::Void => TypeLayout { size: 0, align: 1 },
+            AuraValueType::Int1 | AuraValueType::Int8 => TypeLayout { size: 1, align: 1 },
+            AuraValueType::Int16 => TypeLayout { size: 2, align: 2 },
+            AuraValueType::Int32 | AuraValueType::Float32 => TypeLayout { size: 4, align: 4 },
+            AuraValueType::Int64 | AuraValueType::Float64 | AuraValueType::Pointer => {
+                TypeLayout { size: 8, align: 8 }
+            }
+            AuraValueType::Int128 => TypeLayout { size: 16, align: 16 },
+            AuraValueType::Aggregate(enum_ty) => {
+                let Ty::Enum(variants) = types
+                    .get(enum_ty)
+                    .ok_or(CodegenError::InvalidTypeId(enum_ty.0))?
+                else {
+                    return Err(CodegenError::UnsupportedType("non-enum aggregate".to_string()));
+                };
+                let payload_layout = variants
+                    .iter()
+                    .filter_map(|variant: &(String, Option<TyId>)| {
+                        variant.1.map(|payload| type_layout(types, payload))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let max_payload_size =
+                    payload_layout.iter().map(|layout| layout.size).max().unwrap_or(0);
+                let max_payload_align =
+                    payload_layout.iter().map(|layout| layout.align).max().unwrap_or(1);
+                let payload_offset = align_to(4, max_payload_align.max(1));
+                let size = align_to(payload_offset + max_payload_size, 4.max(max_payload_align));
+                TypeLayout {
+                    size,
+                    align: 4.max(max_payload_align),
+                }
+            }
+        })
+    }
+
+    fn payload_storage_type<'ctx>(
+        context: &'ctx Context,
+        size: u64,
+        align: u64,
+    ) -> Result<BasicTypeEnum<'ctx>, CodegenError> {
+        if size == 0 {
+            return Ok(context.i8_type().array_type(0).as_basic_type_enum());
+        }
+
+        let cell_align = align.max(1).next_power_of_two();
+        let cell_ty = match cell_align {
+            1 => context.i8_type().as_basic_type_enum(),
+            2 => context.i16_type().as_basic_type_enum(),
+            4 => context.i32_type().as_basic_type_enum(),
+            8 => context.i64_type().as_basic_type_enum(),
+            16 => context.i128_type().as_basic_type_enum(),
+            other => {
+                return Err(CodegenError::UnsupportedType(format!(
+                    "enum payload alignment {other} is not supported"
+                )));
+            }
+        };
+        let cell_size = cell_align;
+        let cells = size.div_ceil(cell_size) as u32;
+        Ok(cell_ty.array_type(cells).as_basic_type_enum())
+    }
+
+    fn align_to(size: u64, align: u64) -> u64 {
+        if align <= 1 {
+            size
+        } else {
+            let rem = size % align;
+            if rem == 0 { size } else { size + (align - rem) }
+        }
+    }
 }
+
+#[cfg(feature = "llvm-backend")]
+pub use llvm_lowering::{enum_basic_type, lower_basic_type, lower_function_type, type_layout};
 
 #[cfg(test)]
 mod tests {
@@ -196,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_result_void_u8_as_int32_exit_code_abi() {
+    fn classify_enums_as_aggregate_values() {
         let mut types = TyInterner::new();
         let uint8 = types.intern(Ty::UInt8);
         let result_ty = types.intern(Ty::Enum(vec![
@@ -206,7 +332,7 @@ mod tests {
 
         assert_eq!(
             classify_type(&types, result_ty).expect("result type"),
-            AuraValueType::Int32
+            AuraValueType::Aggregate(result_ty)
         );
     }
 

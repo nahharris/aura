@@ -47,6 +47,11 @@ pub enum CheckedExpr {
     Float(String),
     Char(String),
     String(String),
+    EnumCtor {
+        enum_ty: TyId,
+        variant_index: usize,
+        payload: Option<Box<CheckedExpr>>,
+    },
     DotIdent {
         name: String,
         payload: Option<Box<CheckedExpr>>,
@@ -89,6 +94,13 @@ pub enum CheckedExpr {
         label: String,
         expr: Box<CheckedExpr>,
     },
+    EnumMatch {
+        scrutinee: Box<CheckedExpr>,
+        enum_ty: TyId,
+        result_ty: TyId,
+        arms: Vec<CheckedEnumArm>,
+        default_arm: Option<Box<CheckedExpr>>,
+    },
     MultiArm(Vec<CheckedExpr>),
     If {
         condition: Box<CheckedExpr>,
@@ -122,6 +134,13 @@ pub struct CheckedBinding {
     pub name: Option<String>,
     pub ty: TyId,
     pub value: CheckedExpr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedEnumArm {
+    pub variant_index: usize,
+    pub binding_name: Option<String>,
+    pub body: CheckedExpr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

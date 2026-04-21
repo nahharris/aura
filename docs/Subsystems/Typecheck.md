@@ -37,8 +37,10 @@ Resolve symbols, enforce type rules, and emit checked IR for downstream codegen.
 - Typechecking no longer relies on a hardcoded STL prelude injected at the compiler boundary.
 - Project/module resolution constructs a `CheckContext` before typechecking and supplies:
   - direct imported values with stable link names
+  - direct imported type aliases from dependency `src/lib.aura` entrypoints
   - namespace imports keyed by alias
 - Imported values are emitted into checked IR as extern declarations so downstream codegen can declare or link them without re-typechecking provider modules.
+- Imported type aliases stay in the type namespace only; they do not create extern runtime declarations.
 
 ## Runtime Surface
 
@@ -50,6 +52,11 @@ Resolve symbols, enforce type rules, and emit checked IR for downstream codegen.
 
 - Checked declarations now preserve both the source name and a separately assigned `link_name`.
 - Function declarations also carry parameter names so LLVM lowering can bind function arguments in emitted library objects.
+- `CheckedModule` now carries exported/local type aliases separately from runtime value exports.
+- Enum constructor forms lower to explicit `CheckedExpr::EnumCtor` nodes instead of ad hoc dot-expression placeholders.
+- Enum-driven multi-arm methods lower to `CheckedExpr::EnumMatch`, using the resolved enum variant table from the type alias definition.
+- Named constructor forms (`Type.variant`, `Type.variant(payload)`) resolve against the type namespace first.
+- Shorthand constructor forms (`.variant`, `.variant(payload)`) remain expected-type-driven and work for both local and imported enum aliases.
 
 ## Testing
 

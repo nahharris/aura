@@ -2300,6 +2300,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_type_member_payload_call_as_member_callee() {
+        let src = "def x = ExitCode.custom(100)";
+        let parsed = Parser::parse_source(src).expect("should parse member payload call");
+        let Decl::Assign { value, .. } = parsed.declarations.first().expect("expected decl") else {
+            panic!("expected assignment")
+        };
+        let Expr::Call { callee, args, .. } = u(value) else {
+            panic!("expected call")
+        };
+        assert!(matches!(
+            callee.as_ref(),
+            Expr::Member { field, .. } if field == "custom"
+        ));
+        assert_eq!(args.len(), 1);
+        assert!(matches!(u(&args[0]), Expr::Int(v) if v == "100"));
+    }
+
+    #[test]
     fn unlabeled_trailing_closure_is_not_a_call() {
         let src = "def x = foo { 1 }";
         let parsed = Parser::parse_source(src).expect("should parse as macro-style apply");

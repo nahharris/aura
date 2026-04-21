@@ -16,7 +16,7 @@ use super::expr::classify_expr_kind;
 #[cfg(feature = "llvm-backend")]
 use super::expr::lower_expr;
 #[cfg(feature = "llvm-backend")]
-use super::types::classify_type;
+use super::types::{classify_type, lower_basic_type};
 
 #[cfg(feature = "llvm-backend")]
 use inkwell::context::Context;
@@ -46,8 +46,8 @@ fn bind_function_params<'ctx, 'm>(
         let Some(value) = function.get_nth_param(index as u32) else {
             return Err(CodegenError::InvalidFunctionType(decl.name.clone()));
         };
-        let value_ty = classify_type(&cg.checked.types, *param_ty)?;
-        let basic_ty = value_ty.to_basic_type(cg.context)?;
+        let _value_ty = classify_type(&cg.checked.types, *param_ty)?;
+        let basic_ty = lower_basic_type(cg.context, &cg.checked.types, *param_ty)?;
         let slot = cg
             .builder
             .build_alloca(basic_ty, &format!("param_{param_name}"))
@@ -448,5 +448,29 @@ mod tests {
             "expected invalid non-void main to be rejected before codegen"
         );
         assert!(!checked.diagnostics.is_empty());
+    }
+
+    #[cfg(feature = "llvm-backend")]
+    #[test]
+    fn object_emission_supports_generic_enum_methods_and_calls() {
+        let src = r#"
+            def ExitCode = enum(success, failure, custom: Int);
+
+            def ExitCode.into(self: ExitCode) -> Int {
+                .success -> 0,
+                .failure -> 1,
+                .custom(code) -> code,
+            }
+
+            def exit_code() -> ExitCode { .custom(100) }
+            def main() -> Void { let code = exit_code(); code.into(); () }
+        "#;
+        let program = Parser::parse_source(src).expect("parse");
+        let checked = check_module(&program);
+        let module = checked.module.expect("checked module");
+        let out = std::env::temp_dir().join("aura-enum-generic.obj");
+        super::emit_object_file("enum_generic", &module, &out).expect("emit object");
+        assert!(out.exists());
+        let _ = std::fs::remove_file(out);
     }
 }

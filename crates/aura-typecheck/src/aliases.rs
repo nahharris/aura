@@ -18,6 +18,14 @@ impl TypeAliases {
     pub fn get(&self, name: &str) -> Option<TyId> {
         self.aliases.get(name).copied()
     }
+
+    pub fn insert(&mut self, name: impl Into<String>, ty: TyId) {
+        self.aliases.insert(name.into(), ty);
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.aliases.contains_key(name)
+    }
 }
 
 #[cfg(test)]

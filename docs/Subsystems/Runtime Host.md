@@ -35,6 +35,7 @@ Provide the native runtime boundary required by generated code and act as the si
 - `aura-typecheck` builds its runtime builtin signature registry from this shared metadata instead of maintaining an independent match table.
 - `aura-codegen` uses the same metadata when it needs to declare runtime functions for LLVM lowering.
 - The compiler core still knows about the native executable entry wrapper, but runtime callable names and signatures now live at this host edge.
+- Enum layout is not part of this host ABI. Aura enums are lowered by the compiler as tagged storage, and STL enums such as `ExitCode` reach the runtime host only after library code converts them to primitive host-callable values.
 
 ## `Bytes` ABI
 

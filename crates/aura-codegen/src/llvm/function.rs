@@ -3,10 +3,7 @@ use aura_typecheck::checked_ir::CheckedDecl;
 use super::error::CodegenError;
 
 #[cfg(feature = "llvm-backend")]
-use super::types::classify_function_type;
-
-#[cfg(feature = "llvm-backend")]
-use super::types::classify_type;
+use super::types::{classify_type, lower_basic_type, lower_function_type};
 
 #[cfg(feature = "llvm-backend")]
 use inkwell::module::Linkage;
@@ -31,9 +28,8 @@ pub fn declare_function_with_name<'ctx, 'm>(
     decl: &CheckedDecl,
     llvm_name: &str,
 ) -> Result<inkwell::values::FunctionValue<'ctx>, CodegenError> {
-    let lowered = classify_function_type(&cg.checked.types, decl.ty)
+    let fn_type = lower_function_type(cg.context, &cg.checked.types, decl.ty, false)
         .map_err(|_| CodegenError::InvalidFunctionType(decl.name.clone()))?;
-    let fn_type = lowered.to_llvm_fn_type(cg.context, false)?;
 
     let function = cg
         .module
@@ -49,7 +45,7 @@ pub fn declare_global_stub<'ctx, 'm>(
     let value_ty = classify_type(&cg.checked.types, decl.ty)?;
     let basic_ty = match value_ty {
         super::types::AuraValueType::Void => cg.context.i8_type().as_basic_type_enum(),
-        _ => value_ty.to_basic_type(cg.context)?,
+        _ => lower_basic_type(cg.context, &cg.checked.types, decl.ty)?,
     };
 
     let global = cg

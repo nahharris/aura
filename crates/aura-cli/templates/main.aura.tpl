@@ -1,3 +1,7 @@
+use io = "@stl/io";
+
 def main() -> Void {
-    println("Hello, world!");
+    print("Hello, ");
+    io.println("world!");
+    exit(.success)
 }

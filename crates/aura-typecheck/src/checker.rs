@@ -9,8 +9,8 @@ use aura_frontend::ast::{
 use crate::aliases::TypeAliases;
 use crate::builtins::{BuiltinRegistry, BuiltinTypeRef};
 use crate::checked_ir::{
-    BinaryOpKind, CheckedBinding, CheckedDecl, CheckedExpr, CheckedIr, CheckedStaticArg,
-    CheckedStaticValue, CheckedTypeExpr,
+    BinaryOpKind, CheckedBinding, CheckedDecl, CheckedEnumArm, CheckedExpr, CheckedIr,
+    CheckedStaticArg, CheckedStaticValue, CheckedTypeExpr,
 };
 use crate::interfaces::InterfaceRegistry;
 use crate::modules::ModuleChecker;
@@ -20,7 +20,7 @@ use crate::types::{Ty, TyId, TyInterner};
 use crate::unify::Unifier;
 
 use crate::generics::GenericConstraint;
-use crate::{CheckContext, CheckOptions, ImportBinding};
+use crate::{CheckContext, CheckOptions, ImportBinding, TypeImportBinding};
 
 #[derive(Debug, Clone)]
 pub struct TypeChecker {
@@ -42,7 +42,12 @@ pub struct TypeChecker {
     diagnostics: Vec<Diagnostic>,
     ir: CheckedIr,
     imported_values: HashMap<String, ImportBinding>,
+    imported_types: HashMap<String, TypeImportBinding>,
+    methods: HashMap<(TyId, String), MethodBinding>,
     namespaces: HashMap<String, HashMap<String, ImportBinding>>,
+    current_match_subject: Option<MatchSubject>,
+    resolved_enum_ctors: HashMap<String, ResolvedEnumCtor>,
+    resolved_method_calls: HashMap<String, String>,
     options: CheckOptions,
 }
 
@@ -50,6 +55,25 @@ pub struct TypeChecker {
 struct ValueBinding {
     ty: TyId,
     mutable: bool,
+}
+
+#[derive(Debug, Clone)]
+struct MethodBinding {
+    name: String,
+    link_name: String,
+    ty: TyId,
+}
+
+#[derive(Debug, Clone)]
+struct MatchSubject {
+    name: String,
+    ty: TyId,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResolvedEnumCtor {
+    enum_ty: TyId,
+    variant_index: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +170,11 @@ impl TypeChecker {
             .into_iter()
             .map(|binding| (binding.local_name.clone(), binding))
             .collect::<HashMap<_, _>>();
+        let imported_types = context
+            .imported_types
+            .into_iter()
+            .map(|binding| (binding.local_name.clone(), binding))
+            .collect::<HashMap<_, _>>();
         let mut checker = Self {
             interner,
             aliases,
@@ -165,7 +194,12 @@ impl TypeChecker {
             diagnostics: Vec::new(),
             ir: CheckedIr::empty(),
             imported_values,
+            imported_types,
+            methods: HashMap::new(),
             namespaces,
+            current_match_subject: None,
+            resolved_enum_ctors: HashMap::new(),
+            resolved_method_calls: HashMap::new(),
             options,
         };
 
@@ -195,6 +229,12 @@ impl TypeChecker {
                 is_extern: true,
                 value: CheckedExpr::Any,
             });
+        }
+
+        let imported_type_bindings = checker.imported_types.values().cloned().collect::<Vec<_>>();
+        for binding in imported_type_bindings {
+            let ty = checker.type_ref_to_ty(&binding.ty);
+            checker.aliases.insert(binding.local_name, ty);
         }
 
         checker
@@ -317,12 +357,80 @@ impl TypeChecker {
         self.imported_values.get(name)
     }
 
+    fn imported_type_binding(&self, name: &str) -> Option<&TypeImportBinding> {
+        self.imported_types.get(name)
+    }
+
     fn namespace_binding(&self, namespace: &str, field: &str) -> Option<&ImportBinding> {
         self.namespaces.get(namespace).and_then(|fields| fields.get(field))
     }
 
     fn namespace_alias_conflicts(&self, name: &str) -> bool {
         self.namespaces.contains_key(name)
+    }
+
+    fn expr_cache_key(expr: &Expr) -> String {
+        format!("{expr:?}")
+    }
+
+    fn enum_alias(&self, name: &str) -> Option<TyId> {
+        let ty = self.aliases.get(name)?;
+        matches!(self.interner.get(ty), Some(Ty::Enum(_))).then_some(ty)
+    }
+
+    fn enum_variant(
+        &self,
+        enum_ty: TyId,
+        name: &str,
+    ) -> Option<(usize, Option<TyId>)> {
+        let Ty::Enum(variants) = self.interner.get(enum_ty)? else {
+            return None;
+        };
+        variants
+            .iter()
+            .enumerate()
+            .find(|(_, (variant_name, _))| variant_name == name)
+            .map(|(index, (_, payload_ty))| (index, *payload_ty))
+    }
+
+    fn record_enum_ctor(&mut self, expr: &Expr, enum_ty: TyId, variant_index: usize) {
+        self.resolved_enum_ctors.insert(
+            Self::expr_cache_key(expr),
+            ResolvedEnumCtor {
+                enum_ty,
+                variant_index,
+            },
+        );
+    }
+
+    fn resolved_enum_ctor(&self, expr: &Expr) -> Option<ResolvedEnumCtor> {
+        self.resolved_enum_ctors
+            .get(&Self::expr_cache_key(expr))
+            .copied()
+    }
+
+    fn record_method_call(&mut self, expr: &Expr, link_name: String) {
+        self.resolved_method_calls
+            .insert(Self::expr_cache_key(expr), link_name);
+    }
+
+    fn resolved_method_call(&self, expr: &Expr) -> Option<&String> {
+        self.resolved_method_calls.get(&Self::expr_cache_key(expr))
+    }
+
+    fn lookup_method(&self, receiver_ty: TyId, name: &str) -> Option<&MethodBinding> {
+        self.methods.get(&(receiver_ty, name.to_string()))
+    }
+
+    fn register_method(&mut self, receiver_ty: TyId, name: String, link_name: String, ty: TyId) {
+        self.methods.insert(
+            (receiver_ty, name.clone()),
+            MethodBinding {
+                name,
+                link_name,
+                ty,
+            },
+        );
     }
 
     fn classify_builtin_member_call(object: &Expr, field: &str) -> Option<BuiltinMemberCall> {
@@ -501,12 +609,36 @@ impl TypeChecker {
         }
     }
 
-    pub fn check_program(&mut self, program: &Program) -> HashMap<String, TyId> {
+    pub fn check_program(
+        &mut self,
+        program: &Program,
+    ) -> (HashMap<String, TyId>, HashMap<String, TyId>) {
         let mut values = HashMap::new();
+        let mut type_aliases = HashMap::new();
         self.module_checker.check_program(program);
 
         for decl in &program.declarations {
             if let Decl::Assign { name, value, .. } = decl {
+                if let Expr::TypeExpr(type_expr) = value {
+                    if self.imported_binding(name).is_some()
+                        || self.imported_type_binding(name).is_some()
+                        || self.namespace_alias_conflicts(name)
+                    {
+                        self.diagnostics.push(
+                            self.typecheck_error(
+                                Issue::ResolveDuplicate,
+                                format!("type '{}' conflicts with an imported name", name),
+                            )
+                            .with_stage(Stage::Resolver)
+                            .with_hint("rename the type or adjust the imports"),
+                        );
+                        continue;
+                    }
+                    let ty = self.resolve_type_expr(type_expr);
+                    self.aliases.insert(name.clone(), ty);
+                    type_aliases.insert(name.clone(), ty);
+                    continue;
+                }
                 if self.imported_binding(name).is_some() || self.namespace_alias_conflicts(name) {
                     self.diagnostics.push(
                         self.typecheck_error(
@@ -581,9 +713,13 @@ impl TypeChecker {
                 self.current_expr_span = Expr::span(&function.body);
                 self.push_obligation(format!("checking function `{}`", function.name));
                 self.pending_constraints.clear();
-                if let Some(receiver) = &function.receiver {
-                    self.validate_method_receiver(receiver);
-                }
+                let receiver_ty = function
+                    .receiver
+                    .as_ref()
+                    .map(|receiver| {
+                        self.validate_method_receiver(receiver);
+                        self.resolve_type_expr(receiver)
+                    });
                 self.push_generic_scope();
                 for p in &function.static_params {
                     let t = self.interner.intern(Ty::GenericParam(p.name.clone()));
@@ -595,8 +731,17 @@ impl TypeChecker {
                     self.insert_value(param.name.clone(), param_ty, false);
                 }
                 if let Expr::MultiArm(arms) = TypeChecker::base_expr(&function.body) {
-                    self.diagnostics
-                        .extend(self.pattern_checker.validate_multi_arm_exhaustiveness(arms));
+                    if let Some(receiver_ty) = receiver_ty {
+                        if matches!(self.interner.get(receiver_ty), Some(Ty::Enum(_))) {
+                            self.validate_enum_multi_arm_patterns(arms, receiver_ty);
+                        } else {
+                            self.diagnostics
+                                .extend(self.pattern_checker.validate_multi_arm_exhaustiveness(arms));
+                        }
+                    } else {
+                        self.diagnostics
+                            .extend(self.pattern_checker.validate_multi_arm_exhaustiveness(arms));
+                    }
                     self.diagnostics
                         .extend(self.pattern_checker.validate_redundancy(arms));
                 }
@@ -608,10 +753,18 @@ impl TypeChecker {
                     .collect();
                 let expected_ret = self.resolve_type_expr(&function.return_type);
                 self.validate_main_signature(function);
+                let previous_match_subject = self.current_match_subject.clone();
+                if let (Some(receiver_ty), Some(first_param)) = (receiver_ty, function.params.first()) {
+                    self.current_match_subject = Some(MatchSubject {
+                        name: first_param.name.clone(),
+                        ty: receiver_ty,
+                    });
+                }
                 let actual_ret = self.infer_expr_with_expected(&function.body, expected_ret);
                 self.require_assignable(expected_ret, actual_ret, "function return");
                 self.solve_constraints();
                 let lowered_function_body = self.lower_expr(&function.body);
+                self.current_match_subject = previous_match_subject;
                 let lowered_body = self.coerce_or_cast_for_ir(
                     expected_ret,
                     actual_ret,
@@ -634,6 +787,14 @@ impl TypeChecker {
                 self.pop_scope();
                 self.pop_generic_scope();
                 self.insert_value(function.name.clone(), func_ty, false);
+                if let Some(receiver_ty) = receiver_ty {
+                    self.register_method(
+                        receiver_ty,
+                        function.name.clone(),
+                        function.name.clone(),
+                        func_ty,
+                    );
+                }
                 if !function.static_params.is_empty() {
                     self.function_generics.insert(
                         function.name.clone(),
@@ -707,7 +868,7 @@ impl TypeChecker {
         self.diagnostics
             .extend(std::mem::take(&mut self.module_checker).into_diagnostics());
 
-        values
+        (values, type_aliases)
     }
 
     pub fn into_parts(self) -> (TyInterner, Vec<Diagnostic>, CheckedIr) {
@@ -889,6 +1050,59 @@ impl TypeChecker {
                 ..
             } => {
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
+                    if let Expr::Ident(type_name) = TypeChecker::base_expr(object) {
+                        if let Some(enum_ty) = self.enum_alias(type_name) {
+                            if let Some((variant_index, payload_ty)) =
+                                self.enum_variant(enum_ty, field)
+                            {
+                                if payload_ty.is_none() && args.is_empty() {
+                                    self.record_enum_ctor(expr, enum_ty, variant_index);
+                                    return enum_ty;
+                                }
+                                if let (Some(expected_payload_ty), Some(payload)) =
+                                    (payload_ty, args.first())
+                                {
+                                    if args.len() == 1 {
+                                        let actual_payload = self
+                                            .infer_expr_with_expected(payload, expected_payload_ty);
+                                        self.require_assignable(
+                                            expected_payload_ty,
+                                            actual_payload,
+                                            "enum variant payload",
+                                        );
+                                        self.record_enum_ctor(expr, enum_ty, variant_index);
+                                        return enum_ty;
+                                    }
+                                }
+                                self.diagnostics.push(
+                                    self.typecheck_error(
+                                        Issue::TypeMismatch {
+                                            context: TypingContext::Custom(
+                                                "enum constructor".to_string(),
+                                            ),
+                                            expected: ty_to_ref(
+                                                self.interner
+                                                    .get(enum_ty)
+                                                    .unwrap_or(&Ty::Any),
+                                                &self.interner,
+                                            ),
+                                            actual: TypeRef::Unknown,
+                                        },
+                                        format!(
+                                            "enum constructor '{}.{}' has the wrong payload arity",
+                                            type_name, field
+                                        ),
+                                    )
+                                    .with_hint(
+                                        "call payload variants with one argument and unit variants with none",
+                                    ),
+                                );
+                                return self.unknown_ty();
+                            }
+                        }
+                    }
+                }
+                if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
                     if let Expr::Ident(namespace) = TypeChecker::base_expr(object) {
                         if let Some(binding) = self.namespace_binding(namespace, field).cloned() {
                             let callee_ty = self.type_ref_to_ty(&binding.ty);
@@ -901,6 +1115,24 @@ impl TypeChecker {
                                 None,
                             );
                         }
+                    }
+                }
+                if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
+                    let receiver_ty = self.infer_expr(object);
+                    let receiver_ty = self.unifier.resolve(receiver_ty);
+                    if let Some(method) = self.lookup_method(receiver_ty, field).cloned() {
+                        self.record_method_call(expr, method.link_name.clone());
+                        self.record_method_call(callee.as_ref(), method.link_name.clone());
+                        let mut method_args = vec![object.as_ref().clone()];
+                        method_args.extend(args.iter().cloned());
+                        return self.infer_call_expr(
+                            method.ty,
+                            Some(method.name.as_str()),
+                            static_args,
+                            &method_args,
+                            trailing,
+                            None,
+                        );
                     }
                 }
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
@@ -969,6 +1201,38 @@ impl TypeChecker {
             }
             Expr::Binary { op, lhs, rhs } => self.infer_binary_expr(*op, lhs, rhs),
             Expr::Member { object, field } => match TypeChecker::base_expr(object) {
+                Expr::Ident(name) if self.enum_alias(name).is_some() => {
+                    let enum_ty = self.enum_alias(name).expect("enum alias should exist");
+                    match self.enum_variant(enum_ty, field) {
+                        Some((variant_index, None)) => {
+                            self.record_enum_ctor(expr, enum_ty, variant_index);
+                            enum_ty
+                        }
+                        Some((_, Some(_))) => {
+                            self.diagnostics.push(
+                                self.typecheck_error(
+                                    Issue::TypeMismatch {
+                                        context: TypingContext::Custom(
+                                            "enum constructor".to_string(),
+                                        ),
+                                        expected: ty_to_ref(
+                                            self.interner.get(enum_ty).unwrap_or(&Ty::Any),
+                                            &self.interner,
+                                        ),
+                                        actual: TypeRef::Unknown,
+                                    },
+                                    format!(
+                                        "payload enum variant '{}.{}' must be called with an argument",
+                                        name, field
+                                    ),
+                                )
+                                .with_hint("use form `Type.variant(value)` for payload variants"),
+                            );
+                            self.unknown_ty()
+                        }
+                        None => self.unknown_ty(),
+                    }
+                }
                 Expr::Ident(namespace) => {
                     let _ = self.infer_expr(object);
                     self.namespace_binding(namespace, field)
@@ -1236,6 +1500,111 @@ impl TypeChecker {
                 _,
             ) => {
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
+                    if let Expr::Ident(type_name) = TypeChecker::base_expr(object) {
+                        if let Some(enum_ty) = self.enum_alias(type_name) {
+                            if let Some((variant_index, payload_ty)) =
+                                self.enum_variant(enum_ty, field)
+                            {
+                                if payload_ty.is_none() && args.is_empty() {
+                                    self.record_enum_ctor(expr, enum_ty, variant_index);
+                                    self.require_assignable(
+                                        expected,
+                                        enum_ty,
+                                        "bidirectional expected type",
+                                    );
+                                    return enum_ty;
+                                }
+                                if let (Some(expected_payload_ty), Some(payload)) =
+                                    (payload_ty, args.first())
+                                {
+                                    if args.len() == 1 {
+                                        let payload_ty = self
+                                            .infer_expr_with_expected(payload, expected_payload_ty);
+                                        self.require_assignable(
+                                            expected_payload_ty,
+                                            payload_ty,
+                                            "enum variant payload",
+                                        );
+                                        self.record_enum_ctor(expr, enum_ty, variant_index);
+                                        self.require_assignable(
+                                            expected,
+                                            enum_ty,
+                                            "bidirectional expected type",
+                                        );
+                                        return enum_ty;
+                                    }
+                                }
+                                self.emit_type_mismatch(
+                                    expected,
+                                    enum_ty,
+                                    "assignment",
+                                    "enum variant payload arity does not match expected type",
+                                );
+                                return self.unknown_ty();
+                            }
+                        }
+                    }
+                }
+                if let Some(Ty::Enum(variants)) = self.interner.get(expected).cloned() {
+                    if let Expr::DotIdent { name, payload } =
+                        TypeChecker::base_expr(callee.as_ref())
+                    {
+                        let variant = variants
+                            .iter()
+                            .enumerate()
+                            .find(|(_, (variant_name, _))| variant_name == name);
+                        if let Some((variant_index, (_, variant_payload))) = variant {
+                            match (args.as_slice(), payload.as_deref(), variant_payload) {
+                                ([], None, None) => {
+                                    self.record_enum_ctor(expr, expected, variant_index);
+                                    return expected;
+                                }
+                                ([payload_expr], None, Some(expected_payload_ty)) => {
+                                    let payload_ty = self
+                                        .infer_expr_with_expected(payload_expr, *expected_payload_ty);
+                                    self.require_assignable(
+                                        *expected_payload_ty,
+                                        payload_ty,
+                                        "enum variant payload",
+                                    );
+                                    self.record_enum_ctor(expr, expected, variant_index);
+                                    return expected;
+                                }
+                                _ => {
+                                    let actual = self.infer_expr(expr);
+                                    self.emit_type_mismatch(
+                                        expected,
+                                        actual,
+                                        "assignment",
+                                        "enum variant payload arity does not match expected type",
+                                    );
+                                    return self.unknown_ty();
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
+                    let receiver_ty = self.infer_expr(object);
+                    let receiver_ty = self.unifier.resolve(receiver_ty);
+                    if let Some(method) = self.lookup_method(receiver_ty, field).cloned() {
+                        self.record_method_call(expr, method.link_name.clone());
+                        self.record_method_call(callee.as_ref(), method.link_name.clone());
+                        let mut method_args = vec![object.as_ref().clone()];
+                        method_args.extend(args.iter().cloned());
+                        let actual = self.infer_call_expr(
+                            method.ty,
+                            Some(method.name.as_str()),
+                            static_args,
+                            &method_args,
+                            trailing,
+                            Some(expected),
+                        );
+                        self.require_assignable(expected, actual, "bidirectional expected type");
+                        return actual;
+                    }
+                }
+                if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
                     if let Expr::Ident(namespace) = TypeChecker::base_expr(object) {
                         if let Some(binding) = self.namespace_binding(namespace, field).cloned() {
                             let callee_ty = self.type_ref_to_ty(&binding.ty);
@@ -1390,8 +1759,9 @@ impl TypeChecker {
             (Expr::DotIdent { name, payload }, Some(Ty::Enum(variants))) => {
                 let variant = variants
                     .iter()
-                    .find(|(variant_name, _)| variant_name == name);
-                let Some((_, variant_payload)) = variant else {
+                    .enumerate()
+                    .find(|(_, (variant_name, _))| variant_name == name);
+                let Some((variant_index, (_, variant_payload))) = variant else {
                     let actual = self.infer_expr(expr);
                     self.emit_type_mismatch(
                         expected,
@@ -1410,8 +1780,11 @@ impl TypeChecker {
                             payload_ty,
                             "enum variant payload",
                         );
+                        self.record_enum_ctor(expr, expected, variant_index);
                     }
-                    (None, None) => {}
+                    (None, None) => {
+                        self.record_enum_ctor(expr, expected, variant_index);
+                    }
                     (Some(_), None) | (None, Some(_)) => {
                         let actual = self.infer_expr(expr);
                         self.emit_type_mismatch(
@@ -1424,45 +1797,6 @@ impl TypeChecker {
                     }
                 }
                 expected
-            }
-            (Expr::DotIdent { name, payload }, Some(Ty::Nominal(result_name)))
-                if result_name == "Result" =>
-            {
-                match name.as_str() {
-                    "ok" => {
-                        if let Some(inner) = payload.as_ref() {
-                            let _ = self.infer_expr(inner);
-                        }
-                        expected
-                    }
-                    "err" => {
-                        let err_expected = self.interner.intern(Ty::UInt8);
-                        if let Some(inner) = payload.as_ref() {
-                            let err_actual = self.infer_expr_with_expected(inner, err_expected);
-                            self.require_assignable(err_expected, err_actual, "result err payload");
-                            expected
-                        } else {
-                            let void_ty = self.interner.intern(Ty::Void);
-                            self.emit_type_mismatch(
-                                err_expected,
-                                void_ty,
-                                "result err payload",
-                                "Result.err requires an error payload",
-                            );
-                            self.unknown_ty()
-                        }
-                    }
-                    _ => {
-                        let actual = self.infer_expr(expr);
-                        self.emit_type_mismatch(
-                            expected,
-                            actual,
-                            "assignment",
-                            "unknown Result variant",
-                        );
-                        self.unknown_ty()
-                    }
-                }
             }
             (Expr::DotIdent { payload, .. }, Some(Ty::Union(members))) => {
                 if let Some(inner) = payload {
@@ -3202,6 +3536,45 @@ impl TypeChecker {
         self.require_assignable(bool_ty, guard_ty, "arm guard");
     }
 
+    fn validate_enum_multi_arm_patterns(&mut self, arms: &[aura_frontend::ast::Arm], enum_ty: TyId) {
+        let Some(Ty::Enum(variants)) = self.interner.get(enum_ty).cloned() else {
+            return;
+        };
+        let mut seen = std::collections::HashSet::new();
+        let mut has_fallback = false;
+
+        for arm in arms {
+            let Some(first) = arm.patterns.first() else {
+                has_fallback = true;
+                continue;
+            };
+            match first {
+                Pattern::Wildcard => has_fallback = true,
+                Pattern::DotVariant { name, .. } => {
+                    if variants.iter().all(|(variant, _)| variant != name) {
+                        self.diagnostics.push(
+                            self.typecheck_error(
+                                Issue::PatternNonExhaustive,
+                                format!("unknown enum variant pattern '.{name}'"),
+                            )
+                            .with_hint("use a variant that exists on the matched enum type"),
+                        );
+                    } else {
+                        seen.insert(name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !has_fallback && seen.len() < variants.len() {
+            self.diagnostics.push(
+                Diagnostic::error(Issue::PatternNonExhaustive)
+                    .with_hint("add `_ -> ...` or include the missing variant patterns"),
+            );
+        }
+    }
+
     fn bind_pattern(&mut self, pattern: &Pattern) {
         match pattern {
             Pattern::Ident(name) if name != "true" && name != "false" => {
@@ -3287,6 +3660,32 @@ impl TypeChecker {
     }
 
     fn lower_expr(&mut self, expr: &Expr) -> CheckedExpr {
+        if let Some(resolved) = self.resolved_enum_ctor(expr) {
+            match TypeChecker::base_expr(expr) {
+                Expr::DotIdent { payload, .. } => {
+                    return CheckedExpr::EnumCtor {
+                        enum_ty: resolved.enum_ty,
+                        variant_index: resolved.variant_index,
+                        payload: payload.as_ref().map(|p| Box::new(self.lower_expr(p))),
+                    };
+                }
+                Expr::Call { args, .. } => {
+                    return CheckedExpr::EnumCtor {
+                        enum_ty: resolved.enum_ty,
+                        variant_index: resolved.variant_index,
+                        payload: args.first().map(|arg| Box::new(self.lower_expr(arg))),
+                    };
+                }
+                Expr::Member { .. } => {
+                    return CheckedExpr::EnumCtor {
+                        enum_ty: resolved.enum_ty,
+                        variant_index: resolved.variant_index,
+                        payload: None,
+                    };
+                }
+                _ => {}
+            }
+        }
         match expr {
             Expr::Spanned { expr, .. } => self.lower_expr(expr),
             Expr::Ident(v) => CheckedExpr::Ident(
@@ -3298,10 +3697,20 @@ impl TypeChecker {
             Expr::Float(v) => CheckedExpr::Float(v.clone()),
             Expr::Char(v) => CheckedExpr::Char(v.clone()),
             Expr::String(v) => CheckedExpr::String(v.clone()),
-            Expr::DotIdent { name, payload } => CheckedExpr::DotIdent {
-                name: name.clone(),
-                payload: payload.as_ref().map(|p| Box::new(self.lower_expr(p))),
-            },
+            Expr::DotIdent { name, payload } => {
+                if let Some(resolved) = self.resolved_enum_ctor(expr) {
+                    CheckedExpr::EnumCtor {
+                        enum_ty: resolved.enum_ty,
+                        variant_index: resolved.variant_index,
+                        payload: payload.as_ref().map(|p| Box::new(self.lower_expr(p))),
+                    }
+                } else {
+                    CheckedExpr::DotIdent {
+                        name: name.clone(),
+                        payload: payload.as_ref().map(|p| Box::new(self.lower_expr(p))),
+                    }
+                }
+            }
             Expr::Tuple(items) => {
                 CheckedExpr::Tuple(items.iter().map(|item| self.lower_expr(item)).collect())
             }
@@ -3338,6 +3747,26 @@ impl TypeChecker {
                     .collect(),
             ),
             Expr::Call { callee, args, .. } => {
+                let resolved_method = self
+                    .resolved_method_call(expr)
+                    .cloned()
+                    .or_else(|| self.resolved_method_call(callee.as_ref()).cloned());
+                if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
+                    let method_link_name = resolved_method.or_else(|| {
+                        let receiver_ty = self.preview_expr_ty(object);
+                        let receiver_ty = self.unifier.resolve(receiver_ty);
+                        self.lookup_method(receiver_ty, field)
+                            .map(|method| method.link_name.clone())
+                    });
+                    if let Some(method_link_name) = method_link_name {
+                        let mut lowered_args = vec![self.lower_expr(object)];
+                        lowered_args.extend(args.iter().map(|a| self.lower_expr(a)));
+                        return CheckedExpr::Call {
+                            callee: Box::new(CheckedExpr::Ident(method_link_name)),
+                            args: lowered_args,
+                        };
+                    }
+                }
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
                     if let Expr::Ident(namespace) = TypeChecker::base_expr(object) {
                         if let Some(binding) = self.namespace_binding(namespace, field) {
@@ -3511,12 +3940,56 @@ impl TypeChecker {
                 label: label.clone(),
                 expr: Box::new(self.lower_expr(expr)),
             },
-            Expr::MultiArm(arms) => CheckedExpr::MultiArm(
-                arms.iter()
-                    .map(|arm| self.lower_expr(&arm.body))
-                    .collect::<Vec<_>>(),
-            ),
+            Expr::MultiArm(arms) => {
+                if let Some(subject) = self.current_match_subject.clone() {
+                    if let Some(Ty::Enum(_)) = self.interner.get(subject.ty) {
+                        let mut lowered_arms = Vec::new();
+                        let mut default_arm = None;
+                        for arm in arms {
+                            match arm.patterns.first() {
+                                Some(Pattern::DotVariant { name, payload }) => {
+                                    if let Some((variant_index, _)) =
+                                        self.enum_variant(subject.ty, name)
+                                    {
+                                        let binding_name = match payload.as_deref() {
+                                            Some(Pattern::Ident(name)) => Some(name.clone()),
+                                            _ => None,
+                                        };
+                                        lowered_arms.push(CheckedEnumArm {
+                                            variant_index,
+                                            binding_name,
+                                            body: self.lower_expr(&arm.body),
+                                        });
+                                    }
+                                }
+                                Some(Pattern::Wildcard) | None => {
+                                    default_arm = Some(Box::new(self.lower_expr(&arm.body)));
+                                }
+                                _ => {}
+                            }
+                        }
+                        if !lowered_arms.is_empty() || default_arm.is_some() {
+                            return CheckedExpr::EnumMatch {
+                                scrutinee: Box::new(CheckedExpr::Ident(subject.name)),
+                                enum_ty: subject.ty,
+                                result_ty: self.preview_expr_ty(expr),
+                                arms: lowered_arms,
+                                default_arm,
+                            };
+                        }
+                    }
+                }
+                CheckedExpr::MultiArm(
+                    arms.iter()
+                        .map(|arm| self.lower_expr(&arm.body))
+                        .collect::<Vec<_>>(),
+                )
+            }
             Expr::Member { object, field } => match TypeChecker::base_expr(object) {
+                Expr::Ident(type_name) if self.enum_alias(type_name).is_some() => CheckedExpr::DotIdent {
+                    name: field.clone(),
+                    payload: Some(Box::new(self.lower_expr(object))),
+                },
                 Expr::Ident(namespace) => self
                     .namespace_binding(namespace, field)
                     .map(|binding| CheckedExpr::Ident(binding.link_name.clone()))

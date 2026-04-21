@@ -9,7 +9,8 @@ use aura_frontend::Parser;
 use aura_typecheck::checked_ir::{CheckedDecl, CheckedExpr};
 use aura_typecheck::types::{Ty, TyInterner};
 use aura_typecheck::{
-    CheckContext, CheckOptions, CheckedModule, ImportBinding, check_module_with_context,
+    CheckContext, CheckOptions, CheckedModule, ImportBinding, TypeImportBinding,
+    check_module_with_context,
 };
 
 use super::discover::find_project_root;
@@ -109,12 +110,19 @@ struct ExportBinding {
 }
 
 #[derive(Debug, Clone)]
+struct TypeExportBinding {
+    owner_path: PathBuf,
+    binding: TypeImportBinding,
+}
+
+#[derive(Debug, Clone)]
 struct ModuleRecord {
     path: PathBuf,
     package_root: PathBuf,
     logical_name: String,
     checked: CheckedModule,
-    exports: Vec<ExportBinding>,
+    value_exports: Vec<ExportBinding>,
+    type_exports: Vec<TypeExportBinding>,
 }
 
 #[derive(Debug, Default)]
@@ -263,7 +271,7 @@ impl ProjectCompiler {
             }
         })?;
 
-        let (context, explicit_reexports, namespace_bindings) =
+        let (context, explicit_value_reexports, explicit_type_reexports, namespace_bindings) =
             self.build_check_context(&package_root, &path, &program, entry_path, options)?;
         let enforce_main_signature =
             options.enforce_entry_main_signature && path.as_path() == entry_path;
@@ -325,7 +333,7 @@ impl ProjectCompiler {
             });
         }
 
-        let mut exports = checked
+        let mut value_exports = checked
             .ir
             .declarations
             .iter()
@@ -340,7 +348,20 @@ impl ProjectCompiler {
                 },
             })
             .collect::<Vec<_>>();
-        exports.extend(explicit_reexports);
+        value_exports.extend(explicit_value_reexports);
+        let mut type_exports = checked
+            .type_aliases
+            .iter()
+            .map(|(name, ty)| TypeExportBinding {
+                owner_path: path.clone(),
+                binding: TypeImportBinding {
+                    source_name: name.clone(),
+                    local_name: name.clone(),
+                    ty: ty_to_type_ref(&checked.types, *ty),
+                },
+            })
+            .collect::<Vec<_>>();
+        type_exports.extend(explicit_type_reexports);
 
         self.loading_modules.remove(&path);
         self.module_order.push(path.clone());
@@ -351,7 +372,8 @@ impl ProjectCompiler {
                 package_root,
                 logical_name,
                 checked,
-                exports,
+                value_exports,
+                type_exports,
             },
         );
         Ok(())
@@ -364,15 +386,25 @@ impl ProjectCompiler {
         program: &Program,
         entry_path: &Path,
         options: ProjectCompileOptions,
-    ) -> Result<(CheckContext, Vec<ExportBinding>, Vec<ImportBinding>), ProjectCompileError> {
+    ) -> Result<
+        (
+            CheckContext,
+            Vec<ExportBinding>,
+            Vec<TypeExportBinding>,
+            Vec<ImportBinding>,
+        ),
+        ProjectCompileError,
+    > {
         let package = self
             .packages
             .get(package_root)
             .expect("package should be loaded")
             .clone();
         let mut context = CheckContext::default();
-        let mut explicit_reexports = Vec::new();
+        let mut explicit_value_reexports = Vec::new();
+        let mut explicit_type_reexports = Vec::new();
         let mut imported_origins = HashMap::<String, String>::new();
+        let mut imported_type_origins = HashMap::<String, String>::new();
         let mut namespace_origins = HashMap::<String, String>::new();
         let logical_name = module_logical_name(package_root, importer_path)?;
 
@@ -384,6 +416,7 @@ impl ProjectCompiler {
                 self.import_library_exports(
                     &mut context,
                     &mut imported_origins,
+                    &mut imported_type_origins,
                     &mut namespace_origins,
                     importer_path,
                     &lib_path,
@@ -402,6 +435,7 @@ impl ProjectCompiler {
             self.import_library_exports(
                 &mut context,
                 &mut imported_origins,
+                &mut imported_type_origins,
                 &mut namespace_origins,
                 importer_path,
                 &lib_path,
@@ -416,7 +450,8 @@ impl ProjectCompiler {
             let import_path =
                 self.resolve_import_path(&package, importer_path, &use_decl.source)?;
             self.ensure_module(&import_path, entry_path, options)?;
-            let exports = self.module_exports(&import_path)?;
+            let value_exports = self.module_value_exports(&import_path)?;
+            let type_exports = self.module_type_exports(&import_path)?;
             match &use_decl.binding {
                 UseBinding::Namespace(alias) => {
                     self.insert_namespace(
@@ -425,7 +460,7 @@ impl ProjectCompiler {
                         &mut namespace_origins,
                         importer_path,
                         alias,
-                        exports
+                        value_exports
                             .iter()
                             .map(|binding| binding.binding.clone())
                             .collect::<Vec<_>>(),
@@ -434,35 +469,62 @@ impl ProjectCompiler {
                 }
                 UseBinding::Fields(fields) => {
                     for field in fields {
-                        let export =
-                            exports
-                                .iter()
-                                .find(|binding| binding.binding.source_name == field.source_name)
-                                .ok_or_else(|| ProjectCompileError::Resolve {
-                                    path: Some(importer_path.to_path_buf()),
-                                    message: format!(
-                                        "module '{}' does not export '{}'",
-                                        use_decl.source, field.source_name
-                                    ),
-                                })?;
-                        let binding = ImportBinding {
-                            source_name: field.source_name.clone(),
-                            local_name: field.local_name.clone(),
-                            link_name: export.binding.link_name.clone(),
-                            ty: export.binding.ty.clone(),
-                        };
-                        self.insert_imported_value(
-                            &mut context,
-                            &mut imported_origins,
-                            &namespace_origins,
-                            importer_path,
-                            binding.clone(),
-                            format!("field import from {}", use_decl.source),
-                        )?;
-                        explicit_reexports.push(ExportBinding {
-                            owner_path: export.owner_path.clone(),
-                            binding,
-                        });
+                        let mut found = false;
+                        if let Some(export) = value_exports
+                            .iter()
+                            .find(|binding| binding.binding.source_name == field.source_name)
+                        {
+                            let binding = ImportBinding {
+                                source_name: field.source_name.clone(),
+                                local_name: field.local_name.clone(),
+                                link_name: export.binding.link_name.clone(),
+                                ty: export.binding.ty.clone(),
+                            };
+                            self.insert_imported_value(
+                                &mut context,
+                                &mut imported_origins,
+                                &namespace_origins,
+                                importer_path,
+                                binding.clone(),
+                                format!("field import from {}", use_decl.source),
+                            )?;
+                            explicit_value_reexports.push(ExportBinding {
+                                owner_path: export.owner_path.clone(),
+                                binding,
+                            });
+                            found = true;
+                        }
+                        if let Some(export) = type_exports
+                            .iter()
+                            .find(|binding| binding.binding.source_name == field.source_name)
+                        {
+                            let binding = TypeImportBinding {
+                                source_name: field.source_name.clone(),
+                                local_name: field.local_name.clone(),
+                                ty: export.binding.ty.clone(),
+                            };
+                            self.insert_imported_type(
+                                &mut context,
+                                &mut imported_type_origins,
+                                importer_path,
+                                binding.clone(),
+                                format!("field import from {}", use_decl.source),
+                            )?;
+                            explicit_type_reexports.push(TypeExportBinding {
+                                owner_path: export.owner_path.clone(),
+                                binding,
+                            });
+                            found = true;
+                        }
+                        if !found {
+                            return Err(ProjectCompileError::Resolve {
+                                path: Some(importer_path.to_path_buf()),
+                                message: format!(
+                                    "module '{}' does not export '{}'",
+                                    use_decl.source, field.source_name
+                                ),
+                            });
+                        }
                     }
                 }
             }
@@ -474,23 +536,38 @@ impl ProjectCompiler {
             .flat_map(|bindings| bindings.iter().cloned())
             .collect::<Vec<_>>();
 
-        Ok((context, explicit_reexports, namespace_bindings))
+        Ok((
+            context,
+            explicit_value_reexports,
+            explicit_type_reexports,
+            namespace_bindings,
+        ))
     }
 
     fn import_library_exports(
         &self,
         context: &mut CheckContext,
         imported_origins: &mut HashMap<String, String>,
+        imported_type_origins: &mut HashMap<String, String>,
         namespace_origins: &mut HashMap<String, String>,
         importer_path: &Path,
         lib_path: &Path,
         origin_label: &str,
     ) -> Result<(), ProjectCompileError> {
-        for export in self.module_exports(lib_path)? {
+        for export in self.module_value_exports(lib_path)? {
             self.insert_imported_value(
                 context,
                 imported_origins,
                 namespace_origins,
+                importer_path,
+                export.binding.clone(),
+                format!("{origin_label} ({})", lib_path.display()),
+            )?;
+        }
+        for export in self.module_type_exports(lib_path)? {
+            self.insert_imported_type(
+                context,
+                imported_type_origins,
                 importer_path,
                 export.binding.clone(),
                 format!("{origin_label} ({})", lib_path.display()),
@@ -528,6 +605,28 @@ impl ProjectCompiler {
         }
         imported_origins.insert(binding.local_name.clone(), origin);
         context.imported_values.push(binding);
+        Ok(())
+    }
+
+    fn insert_imported_type(
+        &self,
+        context: &mut CheckContext,
+        imported_type_origins: &mut HashMap<String, String>,
+        importer_path: &Path,
+        binding: TypeImportBinding,
+        origin: String,
+    ) -> Result<(), ProjectCompileError> {
+        if let Some(existing) = imported_type_origins.get(&binding.local_name) {
+            return Err(ProjectCompileError::Resolve {
+                path: Some(importer_path.to_path_buf()),
+                message: format!(
+                    "type import '{}' is provided by both {existing} and {origin}",
+                    binding.local_name
+                ),
+            });
+        }
+        imported_type_origins.insert(binding.local_name.clone(), origin);
+        context.imported_types.push(binding);
         Ok(())
     }
 
@@ -592,10 +691,23 @@ impl ProjectCompiler {
         canonicalize_existing(&target)
     }
 
-    fn module_exports(&self, path: &Path) -> Result<Vec<ExportBinding>, ProjectCompileError> {
+    fn module_value_exports(&self, path: &Path) -> Result<Vec<ExportBinding>, ProjectCompileError> {
         self.modules
             .get(path)
-            .map(|module| module.exports.clone())
+            .map(|module| module.value_exports.clone())
+            .ok_or_else(|| ProjectCompileError::Resolve {
+                path: Some(path.to_path_buf()),
+                message: "module was not loaded before export lookup".to_string(),
+            })
+    }
+
+    fn module_type_exports(
+        &self,
+        path: &Path,
+    ) -> Result<Vec<TypeExportBinding>, ProjectCompileError> {
+        self.modules
+            .get(path)
+            .map(|module| module.type_exports.clone())
             .ok_or_else(|| ProjectCompileError::Resolve {
                 path: Some(path.to_path_buf()),
                 message: "module was not loaded before export lookup".to_string(),
@@ -607,7 +719,7 @@ impl ProjectCompiler {
         let link_owners = self
             .modules
             .values()
-            .flat_map(|module| module.exports.iter())
+            .flat_map(|module| module.value_exports.iter())
             .map(|binding| (binding.binding.link_name.clone(), binding.owner_path.clone()))
             .collect::<HashMap<_, _>>();
 
@@ -872,6 +984,11 @@ fn collect_expr_external_link_names(
                 out.insert(name.clone());
             }
         }
+        CheckedExpr::EnumCtor { payload, .. } => {
+            if let Some(payload) = payload.as_deref() {
+                collect_expr_external_link_names(payload, extern_links, out);
+            }
+        }
         CheckedExpr::DotIdent { payload, .. } => {
             if let Some(payload) = payload.as_deref() {
                 collect_expr_external_link_names(payload, extern_links, out);
@@ -917,6 +1034,20 @@ fn collect_expr_external_link_names(
         }
         CheckedExpr::Label { expr, .. } => {
             collect_expr_external_link_names(expr, extern_links, out);
+        }
+        CheckedExpr::EnumMatch {
+            scrutinee,
+            arms,
+            default_arm,
+            ..
+        } => {
+            collect_expr_external_link_names(scrutinee, extern_links, out);
+            for arm in arms {
+                collect_expr_external_link_names(&arm.body, extern_links, out);
+            }
+            if let Some(default_arm) = default_arm.as_deref() {
+                collect_expr_external_link_names(default_arm, extern_links, out);
+            }
         }
         CheckedExpr::If {
             condition,
@@ -1109,6 +1240,81 @@ mod tests {
             .declarations
             .iter()
             .any(|decl| decl.name == "hidden"));
+
+        fs::remove_dir_all(root).expect("cleanup should succeed");
+    }
+
+    #[test]
+    fn exported_type_aliases_from_lib_are_visible_to_consumers() {
+        let root = temp_test_dir("lib_type_alias_auto_import");
+        let dependency_root = root.join("vendor").join("stl");
+
+        create_file(
+            &dependency_root.join("build.aura"),
+            r#"
+                def project = (
+                    name = "stl",
+                    version = "0.1.0",
+                    type = .library,
+                    dependencies = [],
+                );
+            "#,
+        );
+        create_file(
+            &dependency_root.join("src").join("lib.aura"),
+            r#"
+                def ExitCode = enum(success, custom: Int);
+                def exit(code: ExitCode) -> Void { () }
+            "#,
+        );
+
+        create_file(
+            &root.join("build.aura"),
+            r#"
+                def project = (
+                    name = "app",
+                    version = "0.1.0",
+                    type = .binary,
+                    dependencies = [
+                        "@stl" = "path:vendor/stl",
+                    ],
+                );
+            "#,
+        );
+        create_file(
+            &root.join("src").join("main.aura"),
+            r#"
+                def main() -> Void {
+                    exit(.custom(100))
+                }
+            "#,
+        );
+
+        let build = compile_project(
+            &root.join("build.aura"),
+            ProjectCompileOptions {
+                enforce_entry_main_signature: false,
+            },
+        )
+        .expect("project should compile");
+
+        let main_module = build
+            .modules
+            .iter()
+            .find(|module| module.path.ends_with(Path::new("src").join("main.aura")))
+            .expect("main module should be present");
+        assert!(main_module
+            .checked
+            .ir
+            .declarations
+            .iter()
+            .any(|decl| decl.is_extern && decl.name == "exit"));
+        assert!(!main_module
+            .checked
+            .ir
+            .declarations
+            .iter()
+            .any(|decl| decl.is_extern && decl.name == "ExitCode"));
 
         fs::remove_dir_all(root).expect("cleanup should succeed");
     }
