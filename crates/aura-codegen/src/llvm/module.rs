@@ -333,6 +333,38 @@ mod tests {
 
     #[cfg(feature = "llvm-backend")]
     #[test]
+    fn object_emission_supports_syscall_write_with_string_into() {
+        let src =
+            "def main() -> Void { syscall_write(1, \"Hello, world!\".into()); syscall_exit(0) }";
+        let program = Parser::parse_source(src).expect("parse");
+        let checked = check_module(&program);
+        let module = checked.module.expect("checked module");
+        let out = std::env::temp_dir().join("aura-main-hello-world.obj");
+        super::emit_object_file("main_hello_world", &module, &out).expect("emit object");
+        assert!(out.exists());
+        let _ = std::fs::remove_file(out);
+    }
+
+    #[cfg(feature = "llvm-backend")]
+    #[test]
+    fn llvm_ir_declares_runtime_bytes_and_write_symbols() {
+        let src =
+            "def main() -> Void { syscall_write(1, \"Hello, world!\".into()); syscall_exit(0) }";
+        let program = Parser::parse_source(src).expect("parse");
+        let checked = check_module(&program);
+        let module = checked.module.expect("checked module");
+
+        let ir = super::emit_module_stub("main_hello_world", &module).expect("emit ir");
+
+        assert!(ir.contains("declare i64 @syscall_write(i32, ptr)"));
+        assert!(ir.contains("declare ptr @string_into(ptr)"));
+        assert!(ir.contains("declare void @syscall_exit(i32)"));
+        assert!(ir.contains("call ptr @string_into(ptr"));
+        assert!(ir.contains("call i64 @syscall_write(i32 1, ptr"));
+    }
+
+    #[cfg(feature = "llvm-backend")]
+    #[test]
     fn non_void_main_is_rejected_before_codegen() {
         let src = "def main() -> Result[Void, UInt8] { .err(7) }";
         let program = Parser::parse_source(src).expect("parse");

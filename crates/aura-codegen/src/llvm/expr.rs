@@ -345,10 +345,18 @@ fn runtime_builtin_function_type<'ctx, 'm>(
     name: &str,
 ) -> Option<inkwell::types::FunctionType<'ctx>> {
     let i32_ty = cg.context.i32_type();
+    let i64_ty = cg.context.i64_type();
+    let i8_ty = cg.context.i8_type();
+    let ptr_ty = cg.context.ptr_type(AddressSpace::default());
     let void_ty = cg.context.void_type();
 
     let ty = match name {
         "syscall_exit" => void_ty.fn_type(&[i32_ty.into()], false),
+        "syscall_write" => i64_ty.fn_type(&[i32_ty.into(), ptr_ty.into()], false),
+        "bytes_new" => ptr_ty.fn_type(&[i64_ty.into()], false),
+        "bytes_get" => i8_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        "bytes_set" => void_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i8_ty.into()], false),
+        "string_into" => ptr_ty.fn_type(&[ptr_ty.into()], false),
         _ => return None,
     };
     Some(ty)

@@ -26,8 +26,6 @@ pub enum Ty {
     Void,
     Never,
     Any,
-    Ptr(TyId),
-    Slice(TyId),
     Nominal(String),
     List(TyId),
     Dict { key: TyId, value: TyId },

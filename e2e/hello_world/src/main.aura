@@ -1,0 +1,4 @@
+def main() -> Void {
+    syscall_write(1, "Hello, world!".into());
+    syscall_exit(0);
+}

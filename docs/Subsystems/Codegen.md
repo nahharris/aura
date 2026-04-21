@@ -15,7 +15,7 @@ related_contracts:
   - "Contracts/Typecheck IR"
 related_notes:
   - "Architecture/Build And Dev Workflow"
-last_reviewed: 2026-04-18
+last_reviewed: 2026-04-21
 ---
 
 # Codegen
@@ -30,7 +30,20 @@ Turn checked Aura modules into backend artifacts, currently centered on the LLVM
 - `emit_object_file`
 - project discovery under `project/`
 
+## Runtime Lowering Notes
+
+LLVM lowering currently treats runtime-backed nominal values such as `Bytes` as pointer-shaped values at the ABI boundary.
+
+For the first byte-buffer path, checked member calls are lowered to runtime symbols:
+
+- `Bytes.new(size)` -> `bytes_new(size)`
+- `bytes.get(index)` -> `bytes_get(bytes, index)`
+- `bytes.set(index, value)` -> `bytes_set(bytes, index, value)`
+- `string.into()` -> `string_into(string_ptr)`
+- `syscall_write(fd, bytes)` -> direct external runtime call
+
+String literals still lower to global NUL-terminated byte storage on the LLVM side. `String.into()` is what materializes owned mutable `Bytes` by copying from that literal/runtime string storage in the runtime host.
+
 ## Testing
 
 LLVM-specific validation runs through `cargo xtask llvm ...`.
-
