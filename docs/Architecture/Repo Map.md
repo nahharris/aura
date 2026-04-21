@@ -14,7 +14,7 @@ tags:
 - `aura-stl/` contains the Aura standard library package written in Aura, including `src/lib.aura` as the package entrypoint and `src/runtime.aura` as the thin host-ABI binding layer.
 - `e2e/` contains project-shaped end-to-end fixtures, including `hello-world-stl` for the current direct-library auto-import flow and `exit-stl` for enum-driven process exit.
 - `examples/` contains positive and negative sample programs used to exercise frontend and pipeline behavior.
-- `tool/` contains editor integrations and the Tree-sitter grammar.
+- `tool/` contains editor integrations, the Tree-sitter grammar, and companion tooling repos such as the AUON phase-1 spec submodule.
 - `xtask/` contains project automation and LLVM toolchain management.
 - `docs/` is the Obsidian second brain for the repo.
 
@@ -28,6 +28,7 @@ tags:
 ## Main Navigation Paths
 
 - Language rules: [[Language/Design Overview]] and [[Language/Syntax And Semantics]]
+- AUON notation spec: [[Language/AUON]]
 - Compiler subsystems: [[Subsystems/Frontend]], [[Subsystems/Typecheck]], [[Subsystems/Codegen]]
 - Developer workflows: [[Architecture/Build And Dev Workflow]] and [[Architecture/Testing Strategy]]
 - Current IR contract: [[Contracts/Typecheck IR]]

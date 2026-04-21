@@ -18,6 +18,11 @@ This note is a reader's map into `DESIGN.md`, not a replacement for it.
 - `if` and `cases` are inline function calls, not dedicated parser special cases
 - trailing closure call arguments are labeled
 
+## Alias Note
+
+- `true`, `false`, and `null` are not reserved keywords; Aura treats them as runtime aliases, matching `.true`, `.false`, and `.null`
+- AUON phase 1 reuses those alias spellings as source-level conveniences and normalizes them to dot-variant values
+
 ## Where These Rules Land In Code
 
 - tokenization: `crates/aura-frontend/src/token.rs`
