@@ -1367,17 +1367,34 @@ Runtime boundary integer and pointer conventions:
 - lengths/counts: `USize`
 - read/write byte count returns: `ISize`
 - file offsets: `Int64`
-- raw pointers: `Ptr[T]`
-- raw spans: `Slice[T]`
+- opaque runtime byte buffers: `Bytes`
 
-`Slice[T]` is the canonical pair shape:
+`Bytes` is the current kernel-facing buffer type. It is an owned opaque runtime object with:
+
+- `len: USize`
+- contiguous mutable byte storage
+
+The public builtin surface for byte-oriented host I/O is:
 
 ```aura
-def[T] Slice = (ptr: Ptr[T], len: USize);
+syscall_write(fd: Int32, bytes: Bytes) -> ISize
+
+Bytes.new(size: USize) -> Bytes
+Bytes.get(self: Bytes, index: USize) -> UInt8
+Bytes.set(self: Bytes, index: USize, value: UInt8) -> Void
+
+String.into(self: String) -> Bytes
 ```
 
-Kernel builtins remain low-level (`Ptr`/`Slice` + fixed-width ints); STL layers provide
-typed ergonomic wrappers (`String`, `List[UInt8]`, `Array[UInt8, N]`) on top.
+`syscall_write` writes the contents of `bytes` to the host file descriptor and returns the number
+of bytes written. The current host implementation recognizes `1` as stdout and `2` as stderr; it
+returns `-1` on host write failure.
+
+`Bytes.get` and `Bytes.set` are intentionally unchecked for now. Out-of-bounds access is undefined
+behavior until panic handlers exist.
+
+`String` remains the public string-literal type; converting it to a writeable buffer requires
+`String.into()`, which copies the UTF-8 bytes into a fresh owned `Bytes` value.
 
 ---
 

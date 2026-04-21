@@ -103,6 +103,14 @@ enum ConversionDecision {
     Incompatible,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuiltinMemberCall {
+    BytesNew,
+    BytesGet,
+    BytesSet,
+    StringInto,
+}
+
 #[derive(Debug, Clone)]
 struct FunctionGenericInfo {
     name: String,
@@ -139,7 +147,7 @@ impl TypeChecker {
             options,
         };
 
-        if let Some(sig) = checker.builtins.get("syscall_exit").cloned() {
+        for sig in checker.builtins.signatures().cloned().collect::<Vec<_>>() {
             let param_tys = sig
                 .params
                 .iter()
@@ -150,7 +158,7 @@ impl TypeChecker {
                 params: param_tys,
                 ret,
             });
-            checker.insert_value("syscall_exit".to_string(), func_ty, false);
+            checker.insert_value(sig.name, func_ty, false);
         }
 
         checker
@@ -166,6 +174,142 @@ impl TypeChecker {
 
     fn is_placeholder_expr(expr: &Expr) -> bool {
         matches!(Self::base_expr(expr), Expr::Placeholder)
+    }
+
+    fn nominal_ty(&mut self, name: &str) -> TyId {
+        self.interner.intern(Ty::Nominal(name.to_string()))
+    }
+
+    fn classify_builtin_member_call(object: &Expr, field: &str) -> Option<BuiltinMemberCall> {
+        match (Self::base_expr(object), field) {
+            (Expr::Ident(name), "new") if name == "Bytes" => Some(BuiltinMemberCall::BytesNew),
+            (_, "get") => Some(BuiltinMemberCall::BytesGet),
+            (_, "set") => Some(BuiltinMemberCall::BytesSet),
+            (_, "into") => Some(BuiltinMemberCall::StringInto),
+            _ => None,
+        }
+    }
+
+    fn emit_builtin_method_arity_error(&mut self, name: &str, expected: usize, actual: usize) {
+        self.diagnostics.push(
+            self.typecheck_error(
+                Issue::BuiltinForm,
+                format!(
+                    "builtin method '{name}' expects {expected} runtime arguments, got {actual}"
+                ),
+            )
+            .with_hint("adjust the runtime argument count to match the builtin method"),
+        );
+    }
+
+    fn infer_builtin_member_call(
+        &mut self,
+        object: &Expr,
+        field: &str,
+        args: &[Expr],
+        trailing: &[LabeledClosureArg],
+        expected_ret: Option<TyId>,
+    ) -> Option<TyId> {
+        let kind = Self::classify_builtin_member_call(object, field)?;
+        if !trailing.is_empty() {
+            self.diagnostics.push(
+                self.typecheck_error(
+                    Issue::BuiltinForm,
+                    format!("builtin method '{field}' does not accept trailing closures"),
+                )
+                .with_hint("pass only positional runtime arguments to this builtin method"),
+            );
+            return Some(self.unknown_ty());
+        }
+
+        let usize_ty = self.interner.intern(Ty::USize);
+        let uint8_ty = self.interner.intern(Ty::UInt8);
+        let void_ty = self.interner.intern(Ty::Void);
+        let bytes_ty = self.nominal_ty("Bytes");
+        let string_ty = self.nominal_ty("String");
+
+        let actual = match kind {
+            BuiltinMemberCall::BytesNew => {
+                if args.len() != 1 {
+                    self.emit_builtin_method_arity_error("Bytes.new", 1, args.len());
+                    return Some(self.unknown_ty());
+                }
+                let size_ty = self.infer_expr_with_expected(&args[0], usize_ty);
+                self.require_assignable(usize_ty, size_ty, "Bytes.new size");
+                bytes_ty
+            }
+            BuiltinMemberCall::BytesGet => {
+                if args.len() != 1 {
+                    self.emit_builtin_method_arity_error("Bytes.get", 1, args.len());
+                    return Some(self.unknown_ty());
+                }
+                let receiver_ty = self.infer_expr(object);
+                self.require_assignable(bytes_ty, receiver_ty, "Bytes.get receiver");
+                let index_ty = self.infer_expr_with_expected(&args[0], usize_ty);
+                self.require_assignable(usize_ty, index_ty, "Bytes.get index");
+                uint8_ty
+            }
+            BuiltinMemberCall::BytesSet => {
+                if args.len() != 2 {
+                    self.emit_builtin_method_arity_error("Bytes.set", 2, args.len());
+                    return Some(self.unknown_ty());
+                }
+                let receiver_ty = self.infer_expr(object);
+                self.require_assignable(bytes_ty, receiver_ty, "Bytes.set receiver");
+                let index_ty = self.infer_expr_with_expected(&args[0], usize_ty);
+                self.require_assignable(usize_ty, index_ty, "Bytes.set index");
+                let value_ty = self.infer_expr_with_expected(&args[1], uint8_ty);
+                self.require_assignable(uint8_ty, value_ty, "Bytes.set value");
+                void_ty
+            }
+            BuiltinMemberCall::StringInto => {
+                if !args.is_empty() {
+                    self.emit_builtin_method_arity_error("String.into", 0, args.len());
+                    return Some(self.unknown_ty());
+                }
+                let receiver_ty = self.infer_expr(object);
+                self.require_assignable(string_ty, receiver_ty, "String.into receiver");
+                bytes_ty
+            }
+        };
+
+        if let Some(expected) = expected_ret {
+            self.require_assignable(expected, actual, "builtin method return");
+        }
+
+        Some(actual)
+    }
+
+    fn lower_builtin_member_call(
+        &mut self,
+        object: &Expr,
+        field: &str,
+        args: &[Expr],
+    ) -> Option<CheckedExpr> {
+        let kind = Self::classify_builtin_member_call(object, field)?;
+        let (name, lowered_args): (&str, Vec<CheckedExpr>) = match kind {
+            BuiltinMemberCall::BytesNew => {
+                ("bytes_new", args.iter().map(|arg| self.lower_expr(arg)).collect())
+            }
+            BuiltinMemberCall::BytesGet => (
+                "bytes_get",
+                std::iter::once(self.lower_expr(object))
+                    .chain(args.iter().map(|arg| self.lower_expr(arg)))
+                    .collect(),
+            ),
+            BuiltinMemberCall::BytesSet => (
+                "bytes_set",
+                std::iter::once(self.lower_expr(object))
+                    .chain(args.iter().map(|arg| self.lower_expr(arg)))
+                    .collect(),
+            ),
+            BuiltinMemberCall::StringInto => ("string_into", vec![self.lower_expr(object)]),
+        };
+
+        Some(CheckedExpr::Call {
+            callee: Box::new(CheckedExpr::Ident(name.to_string())),
+            args: lowered_args,
+        })
     }
 
     fn pipe_to_call_expr(lhs: &Expr, rhs: &Expr) -> Expr {
@@ -549,6 +693,13 @@ impl TypeChecker {
                 trailing,
                 ..
             } => {
+                if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
+                    if let Some(ret) =
+                        self.infer_builtin_member_call(object, field, args, trailing, None)
+                    {
+                        return ret;
+                    }
+                }
                 let callee_name = match TypeChecker::base_expr(callee.as_ref()) {
                     Expr::Ident(name) => Some(name.clone()),
                     _ => None,
@@ -859,12 +1010,20 @@ impl TypeChecker {
                 Expr::Call {
                     callee,
                     static_args,
-                    args,
-                    trailing,
-                    ..
+                args,
+                trailing,
+                ..
                 },
                 _,
             ) => {
+                if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
+                    if let Some(actual) = self
+                        .infer_builtin_member_call(object, field, args, trailing, Some(expected))
+                    {
+                        self.require_assignable(expected, actual, "bidirectional expected type");
+                        return actual;
+                    }
+                }
                 let callee_name = match TypeChecker::base_expr(callee.as_ref()) {
                     Expr::Ident(name) => Some(name.clone()),
                     _ => None,
@@ -948,6 +1107,42 @@ impl TypeChecker {
                             "integer literal is out of range for UInt8",
                         )
                         .with_hint("use a value between 0 and 255 for UInt8"),
+                    );
+                    self.unknown_ty()
+                }
+            }
+            (Expr::Int(value), Some(Ty::USize)) => {
+                if value.parse::<usize>().is_ok() {
+                    expected
+                } else {
+                    self.diagnostics.push(
+                        self.typecheck_error(
+                            Issue::TypeMismatch {
+                                context: TypingContext::Custom("integer literal".to_string()),
+                                expected: TypeRef::Primitive(PrimitiveType::USize),
+                                actual: TypeRef::Primitive(PrimitiveType::Int32),
+                            },
+                            "integer literal is out of range for USize",
+                        )
+                        .with_hint("use a non-negative integer that fits in the target pointer width"),
+                    );
+                    self.unknown_ty()
+                }
+            }
+            (Expr::Int(value), Some(Ty::ISize)) => {
+                if value.parse::<isize>().is_ok() {
+                    expected
+                } else {
+                    self.diagnostics.push(
+                        self.typecheck_error(
+                            Issue::TypeMismatch {
+                                context: TypingContext::Custom("integer literal".to_string()),
+                                expected: TypeRef::Primitive(PrimitiveType::ISize),
+                                actual: TypeRef::Primitive(PrimitiveType::Int32),
+                            },
+                            "integer literal is out of range for ISize",
+                        )
+                        .with_hint("use an integer that fits in the target pointer width"),
                     );
                     self.unknown_ty()
                 }
@@ -1215,6 +1410,12 @@ impl TypeChecker {
     fn intern_builtin_type(&mut self, ty: &BuiltinTypeRef) -> TyId {
         match ty {
             BuiltinTypeRef::Int32 => self.interner.intern(Ty::Int32),
+            BuiltinTypeRef::ISize => self.interner.intern(Ty::ISize),
+            BuiltinTypeRef::USize => self.interner.intern(Ty::USize),
+            BuiltinTypeRef::UInt8 => self.interner.intern(Ty::UInt8),
+            BuiltinTypeRef::Void => self.interner.intern(Ty::Void),
+            BuiltinTypeRef::Bytes => self.nominal_ty("Bytes"),
+            BuiltinTypeRef::String => self.nominal_ty("String"),
             BuiltinTypeRef::Never => self.interner.intern(Ty::Never),
         }
     }
@@ -1608,19 +1809,13 @@ impl TypeChecker {
                         self.enforce_exact_type_arity("Any", args, 0);
                         self.interner.intern(Ty::Any)
                     }
-                    "Ptr" => {
-                        self.enforce_exact_type_arity("Ptr", args, 1);
-                        let item = self.resolve_required_type_arg(args, 0, "Ptr", "item");
-                        self.interner.intern(Ty::Ptr(item))
-                    }
-                    "Slice" => {
-                        self.enforce_exact_type_arity("Slice", args, 1);
-                        let item = self.resolve_required_type_arg(args, 0, "Slice", "item");
-                        self.interner.intern(Ty::Slice(item))
+                    "Bytes" => {
+                        self.enforce_exact_type_arity("Bytes", args, 0);
+                        self.nominal_ty("Bytes")
                     }
                     "String" => {
                         self.enforce_exact_type_arity("String", args, 0);
-                        self.interner.intern(Ty::Nominal("String".to_string()))
+                        self.nominal_ty("String")
                     }
                     "List" => {
                         self.enforce_exact_type_arity("List", args, 1);
@@ -2071,14 +2266,6 @@ impl TypeChecker {
                 .get(&name)
                 .copied()
                 .unwrap_or_else(|| self.interner.intern(Ty::GenericParam(name))),
-            Ty::Ptr(item) => {
-                let i = self.substitute_ty_id(item, subst);
-                self.interner.intern(Ty::Ptr(i))
-            }
-            Ty::Slice(item) => {
-                let i = self.substitute_ty_id(item, subst);
-                self.interner.intern(Ty::Slice(i))
-            }
             Ty::Nominal(name) => subst
                 .get(&name)
                 .copied()
@@ -2455,10 +2642,7 @@ impl TypeChecker {
                     | Ty::Nominal(_)
             ),
             "Iterable" => matches!(ty, Ty::List(_) | Ty::Array { .. } | Ty::Set(_)),
-            "From" => matches!(
-                ty,
-                Ty::Func { .. } | Ty::Nominal(_) | Ty::Ptr(_) | Ty::Slice(_)
-            ),
+            "From" => matches!(ty, Ty::Func { .. } | Ty::Nominal(_)),
             _ => false,
         }
     }
@@ -2592,9 +2776,7 @@ impl TypeChecker {
         };
 
         match (expected_ty, actual_ty) {
-            (Ty::Ptr(a), Ty::Ptr(b))
-            | (Ty::Slice(a), Ty::Slice(b))
-            | (Ty::List(a), Ty::List(b)) => self.structurally_equivalent(*a, *b),
+            (Ty::List(a), Ty::List(b)) => self.structurally_equivalent(*a, *b),
             (Ty::Dict { key: ak, value: av }, Ty::Dict { key: bk, value: bv }) => {
                 self.structurally_equivalent(*ak, *bk) && self.structurally_equivalent(*av, *bv)
             }
@@ -2911,10 +3093,17 @@ impl TypeChecker {
                     .map(|(k, v)| (self.lower_expr(k), self.lower_expr(v)))
                     .collect(),
             ),
-            Expr::Call { callee, args, .. } => CheckedExpr::Call {
-                callee: Box::new(self.lower_expr(callee)),
-                args: args.iter().map(|a| self.lower_expr(a)).collect(),
-            },
+            Expr::Call { callee, args, .. } => {
+                if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
+                    if let Some(lowered) = self.lower_builtin_member_call(object, field, args) {
+                        return lowered;
+                    }
+                }
+                CheckedExpr::Call {
+                    callee: Box::new(self.lower_expr(callee)),
+                    args: args.iter().map(|a| self.lower_expr(a)).collect(),
+                }
+            }
             Expr::MacroApply {
                 macro_name,
                 operand,
@@ -3311,20 +3500,6 @@ fn ty_to_ref(ty: &Ty, interner: &TyInterner) -> TypeRef {
         Ty::Void => TypeRef::Primitive(PrimitiveType::Void),
         Ty::Never => TypeRef::Primitive(PrimitiveType::Never),
         Ty::Any => TypeRef::Primitive(PrimitiveType::Any),
-        Ty::Ptr(item) => {
-            let item_ref = interner
-                .get(*item)
-                .map(|t| ty_to_ref(t, interner))
-                .unwrap_or(TypeRef::Unknown);
-            TypeRef::Ptr(Box::new(item_ref))
-        }
-        Ty::Slice(item) => {
-            let item_ref = interner
-                .get(*item)
-                .map(|t| ty_to_ref(t, interner))
-                .unwrap_or(TypeRef::Unknown);
-            TypeRef::Slice(Box::new(item_ref))
-        }
         Ty::Nominal(name) => TypeRef::Nominal(name.clone()),
         Ty::List(item) => {
             let item_ref = interner
@@ -6252,6 +6427,65 @@ mod tests {
             "expected module, got diagnostics: {:?}",
             checked.diagnostics
         );
+    }
+
+    #[test]
+    fn bytes_new_and_get_calls_typecheck() {
+        let program = Parser::parse_source("def b = Bytes.new(4); def x = b.get(0)")
+            .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+
+        let module = checked.module.expect("module should exist");
+        let b_ty = module.value_types.get("b").expect("b should exist");
+        let x_ty = module.value_types.get("x").expect("x should exist");
+        assert!(matches!(module.types.get(*b_ty), Some(Ty::Nominal(name)) if name == "Bytes"));
+        assert!(matches!(module.types.get(*x_ty), Some(Ty::UInt8)));
+    }
+
+    #[test]
+    fn bytes_set_returns_void() {
+        let program = Parser::parse_source("def v = { let b = Bytes.new(1); b.set(0, 65) }")
+            .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+
+        let module = checked.module.expect("module should exist");
+        let v_ty = module.value_types.get("v").expect("v should exist");
+        assert!(matches!(module.types.get(*v_ty), Some(Ty::Void)));
+    }
+
+    #[test]
+    fn string_into_and_syscall_write_typecheck() {
+        let program =
+            Parser::parse_source("def main() -> Void { syscall_write(1, \"Hello\".into()); syscall_exit(0) }")
+                .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+
+        let module = checked.module.expect("module should exist");
+        let main_decl = module
+            .ir
+            .declarations
+            .iter()
+            .find(|decl| decl.name == "main" || decl.name == "aura_user_main")
+            .expect("main declaration should exist");
+        assert!(matches!(module.types.get(main_decl.ty), Some(Ty::Func { .. })));
     }
 
     #[test]
