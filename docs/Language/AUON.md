@@ -15,13 +15,15 @@ AUON is Aura Object Notation: Aura-shaped serialized data, not full Aura evaluat
 
 - authoritative spec lives in `tool/auon/SPEC.md`
 - formal grammar lives in `tool/auon/grammar/auon.ebnf`
-- current repo work is spec-first only
-- parser, compiler integration, schema language, and tooling support come later
+- Aura project manifests now use AUON via `project.auon`
+- broader schema language and editor tooling still come later
 
 ## Ecosystem Surfaces
 
 - `tool/auon/` carries normative AUON language spec and examples
 - `tool/auon-rs/` carries serde-compatible Rust parser/serializer support for AUON
+- `tool/auon-py/` carries Python parser/serializer support with Pydantic-first typed decoding
+- `tool/auon-ts/` carries ESM-first TypeScript parser/serializer support with schema-based typed decoding
 
 ## Core Rules
 
@@ -51,6 +53,28 @@ Current Rust support surface in `tool/auon-rs` exposes:
 - parser entrypoints for raw AUON text
 - serde encode/decode entrypoints for typed Rust data
 - compact and pretty AUON emitters using document-friendly top-level omission where unambiguous
+
+## Current Integration
+
+- project roots are discovered by `project.auon`
+- `crates/aura-codegen/src/project/manifest.rs` loads manifests through `tool/auon-rs`
+- project manifests use an AUON root struct with fields such as `name`, `version`, `kind`, and `dependencies`
+
+Current Python support surface in `tool/auon-py` exposes:
+
+- public AUON DOM values with separate `Int` and `Float`
+- `parse_value` / `loads` / `load`
+- `dumps` / `dump`
+- `to_value` / `encode` and `from_value` / `decode`
+- typed decoding for Pydantic v2 plus straightforward dataclass and typing-hint shapes
+
+Current TypeScript support surface in `tool/auon-ts` exposes:
+
+- public discriminated-union AUON `Value` with separate `Int` and `Float`
+- `parseValue` / `parse`
+- `stringify` / `stringifyPretty`
+- `toValue` / `fromValue`
+- schema-driven typed decoding via Zod-style `parse` / `safeParse` objects
 
 ## Related Notes
 

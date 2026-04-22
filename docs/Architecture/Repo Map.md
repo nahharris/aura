@@ -14,13 +14,13 @@ tags:
 - `aura-stl/` contains the Aura standard library package written in Aura, including `src/lib.aura` as the package entrypoint and `src/runtime.aura` as the thin host-ABI binding layer.
 - `e2e/` contains project-shaped end-to-end fixtures, including `hello-world-stl` for the current direct-library auto-import flow and `exit-stl` for enum-driven process exit.
 - `examples/` contains positive and negative sample programs used to exercise frontend and pipeline behavior.
-- `tool/` contains editor integrations, the Tree-sitter grammar, and companion tooling repos such as the AUON phase-1 spec submodule and the Rust AUON serde crate.
+- `tool/` contains editor integrations, the Tree-sitter grammar, and companion tooling repos such as the AUON phase-1 spec submodule plus AUON runtime support crates/packages for Rust, Python, and TypeScript.
 - `xtask/` contains project automation and LLVM toolchain management.
 - `docs/` is the Obsidian second brain for the repo.
 
 ## Project Build Edges
 
-- `crates/aura-codegen/src/project/manifest.rs` parses `build.aura`, including `path:` dependencies alongside vendored Git dependencies.
+- `crates/aura-codegen/src/project/manifest.rs` parses `project.auon` through `auon-rs`, validates the AUON manifest schema, and decodes structured dependency sources for project loading.
 - `crates/aura-codegen/src/project/compile.rs` resolves module imports, loads dependency `src/lib.aura` entrypoints, assigns stable link names, and builds the typed project module graph ahead of codegen.
 - The same project compile layer also carries exported type alias metadata so consumers can resolve imported library enums and aliases without turning them into fake runtime symbols.
 - `crates/aura-cli/src/main.rs` now emits and links multiple object files for native project builds instead of treating dependencies as a single-file special case.

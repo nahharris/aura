@@ -2,7 +2,7 @@
 title: Test Inventory
 kind: generated
 generated_by: cargo xtask docs sync
-generated_at: 2026-04-21T21:53:17.9822801Z
+generated_at: 2026-04-22T01:19:30.0391611Z
 ---
 
 # Test Inventory
@@ -15,5 +15,7 @@ generated_at: 2026-04-21T21:53:17.9822801Z
 | `sandbox-e2e/vendor/stl/option.test.aura` | other |
 | `sandbox-e2e/vendor/stl/result.test.aura` | other |
 | `sandbox-e2e/vendor/stl/seq.test.aura` | other |
+| `tool/auon-py/tests/test_dom.py` | other |
+| `tool/auon-py/tests/test_typed.py` | other |
 | `tool/auon-rs/tests/api.rs` | other |
 
