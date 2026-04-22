@@ -184,6 +184,13 @@
   "lastOpenFiles": [
     "Architecture/Repo Map.md",
     "Architecture/Build And Dev Workflow.md",
+    "Templates/ADR.md",
+    "Templates/Subsystem Note.md",
+    "Subsystems/Xtask.md",
+    "Subsystems/Runtime Host.md",
+    "Subsystems/Diagnostics.md",
+    "Language/AUON.md",
+    "Architecture/Testing Strategy.md",
     "Bases/Subsystems.base",
     "Bases/Decisions.base",
     "Contracts/Typecheck IR.md",

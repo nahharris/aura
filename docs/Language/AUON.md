@@ -5,6 +5,7 @@ tags:
   - aura
   - auon
   - data-format
+last_reviewed: 2026-04-22
 ---
 
 # AUON
@@ -16,7 +17,7 @@ AUON is Aura Object Notation: Aura-shaped serialized data, not full Aura evaluat
 - authoritative spec lives in `tool/auon/SPEC.md`
 - formal grammar lives in `tool/auon/grammar/auon.ebnf`
 - Aura project manifests now use AUON via `project.auon`
-- broader schema language and editor tooling still come later
+- editor tooling now treats `.auon` as its own language identity instead of folding it into Aura source mode
 
 ## Ecosystem Surfaces
 
@@ -59,6 +60,14 @@ Current Rust support surface in `tool/auon-rs` exposes:
 - project roots are discovered by `project.auon`
 - `crates/aura-codegen/src/project/manifest.rs` loads manifests through `tool/auon-rs`
 - project manifests use an AUON root struct with fields such as `name`, `version`, `kind`, and `dependencies`
+- `tool/tree-sitter-aura/` parses AUON documents alongside Aura source so Zed and Neovim can reuse one parser backend
+- `tool/aura-vscode/` ships separate AUON TextMate grammar, snippets, and language configuration for `.auon`
+
+## Editor Direction
+
+- `.auon` should open as `auon`, not as generic Aura source
+- AUON highlighting should stay data-only: no declarations, calls, interpolation, or type-annotation assumptions
+- document-level root omission is first-class and should highlight cleanly in manifest-style files like `project.auon`
 
 Current Python support surface in `tool/auon-py` exposes:
 
