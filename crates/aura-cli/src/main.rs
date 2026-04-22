@@ -241,10 +241,10 @@ fn create_project_scaffold(project_root: &Path, project_name: &str) -> Result<()
         .with_context(|| format!("failed to create '{}'", target_dir.display()))?;
 
     let manifest =
-        include_str!("../templates/build.aura.tpl").replace("{{project_name}}", project_name);
-    let build_file = project_root.join("build.aura");
-    fs::write(&build_file, manifest)
-        .with_context(|| format!("failed to write '{}'", build_file.display()))?;
+        include_str!("../templates/project.auon.tpl").replace("{{project_name}}", project_name);
+    let manifest_file = project_root.join("project.auon");
+    fs::write(&manifest_file, manifest)
+        .with_context(|| format!("failed to write '{}'", manifest_file.display()))?;
 
     let main_file = src_dir.join("main.aura");
     let main_template = include_str!("../templates/main.aura.tpl");
@@ -305,7 +305,7 @@ fn build_cmd(
         .unwrap_or(std::env::current_dir().context("failed to read current directory")?);
 
     if let Some(layout) = discover_layout(&start) {
-        return build_project_cmd(&layout.build_file, out, format, diagnostics_format);
+        return build_project_cmd(&layout.manifest_file, out, format, diagnostics_format);
     }
 
     build_single_file_cmd(&start, out, format, diagnostics_format, false)
@@ -428,13 +428,13 @@ fn build_single_file_cmd(
 }
 
 fn build_project_cmd(
-    build_file: &Path,
+    manifest_file: &Path,
     out: Option<&Path>,
     format: OutputFormat,
     diagnostics_format: DiagnosticsFormat,
 ) -> Result<ExitCode> {
     let build = match compile_project(
-        build_file,
+        manifest_file,
         ProjectCompileOptions {
             enforce_entry_main_signature: true,
         },
@@ -466,7 +466,7 @@ fn build_project_cmd(
         "building project '{}' ({}) from {}",
         build.manifest.name,
         build.manifest.version,
-        build_file.display()
+        manifest_file.display()
     );
 
     let project_out = out.map(PathBuf::from).unwrap_or_else(|| {
@@ -1457,10 +1457,11 @@ mod tests {
 
         create_project_scaffold(&root, "demo").expect("scaffold should succeed");
 
-        assert!(root.join("build.aura").is_file());
-        let manifest = fs::read_to_string(root.join("build.aura")).expect("manifest should exist");
-        assert!(manifest.contains("type = .binary"));
-        assert!(manifest.contains("@stl"));
+        assert!(root.join("project.auon").is_file());
+        let manifest =
+            fs::read_to_string(root.join("project.auon")).expect("manifest should exist");
+        assert!(manifest.contains("kind = .binary"));
+        assert!(manifest.contains("\"stl\" = .path(\"../aura-stl\")"));
         assert!(root.join("src").join("main.aura").is_file());
         let main = fs::read_to_string(root.join("src").join("main.aura"))
             .expect("main source should exist");

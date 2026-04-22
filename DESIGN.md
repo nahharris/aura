@@ -1398,42 +1398,41 @@ behavior until panic handlers exist.
 
 ---
 
-## Projects and `build.aura`
+## Projects and `project.auon`
 
-Aura is project-oriented. A project root contains `build.aura` and standard folders:
+Aura is project-oriented. A project root contains `project.auon` and standard folders:
 
 - `src/` — project source modules
 - `vendor/` — vendored dependencies (including STL)
 - `target/` — build artifacts
 
-`build.aura` is a regular Aura module that exports a manifest value:
+`project.auon` is an AUON root struct document:
 
-```aura
-def project = (
-    name = "hello",
-    version = "0.1.0",
-    type = .binary,
-    dependencies = [
-        "@json" = "github.com/acme/aura-json@v1.2.3",
-    ],
-);
+```auon
+name = "hello",
+version = "0.1.0",
+kind = .binary,
+dependencies = [
+    "json" = .git((url = "github.com/acme/aura-json", ref = "v1.2.3")),
+]
 ```
 
 Manifest field contract:
 
 - `name: String`
 - `version: String`
-- `type: enum(binary, library)`
-- `dependencies: Dict[String, String]`
+- `kind: enum(binary, library)`
+- `dependencies: Dict[String, DependencySource]`
 
 Dependency source forms:
 
-- `<git-url>@<tag>`
+- `.path(String)`
+- `.git((url = String, ref = String))`
 
 > [!NOTE]
-> Dependencies placed directly in the `vendor/` do not need to be specified in the `build.aura` manifest.
+> Vendored dependencies still need to be declared in `project.auon`; `.git(...)` sources resolve to `vendor/<alias>/...`, while `.path(...)` may point into `vendor/` or outside the project tree.
 
-Dependencies are mapped by alias (`@alias`) and resolved into `vendor/<alias>/...`.
+Dependencies are declared under bare aliases (`"json"`, `"stl"`). Aura source code keeps the `@alias` prefix in `use` paths, and import resolution maps that prefix back to the declared manifest alias.
 
 Module imports using alias paths:
 

@@ -4,7 +4,7 @@ kind: subsystem
 status: active
 owner: repo
 source_paths:
-  - "aura-stl/build.aura"
+  - "aura-stl/project.auon"
   - "aura-stl/src/"
 depends_on:
   []
@@ -23,7 +23,7 @@ Hold the Aura standard library package as Aura source rather than Rust implement
 
 ## Package Entry
 
-- `aura-stl/build.aura` is a real Aura library manifest.
+- `aura-stl/project.auon` is the STL's AUON project manifest.
 - `aura-stl/src/lib.aura` is the entrypoint surface for the package.
 - Only names exported from `src/lib.aura` participate in direct-library auto-import for consuming projects.
 

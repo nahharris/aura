@@ -8,6 +8,7 @@ default = []
 llvm-backend = ["dep:inkwell"]
 
 [dependencies]
+auon = { path = "../../tool/auon-rs" }
 aura-diagnostics = { path = "../aura-diagnostics" }
 aura-frontend = { path = "../aura-frontend" }
 aura-runtime-host = { path = "../aura-runtime-host" }

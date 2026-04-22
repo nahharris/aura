@@ -1,0 +1,4 @@
+name = "sandbox-e2e",
+version = "0.1.0",
+kind = .binary,
+dependencies = []

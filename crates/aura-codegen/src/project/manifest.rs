@@ -3,8 +3,7 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
-use aura_frontend::Parser;
-use aura_frontend::ast::{Decl, Expr};
+use auon::{Value, parse_value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
@@ -29,14 +28,13 @@ pub struct Dependency {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DependencySource {
     Path { path: String },
-    Git { url: String, tag: String },
+    Git { url: String, reference: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestError {
     ReadFailed(String),
     ParseFailed(String),
-    MissingProjectDecl,
     ProjectMustBeStructType,
     MissingField(&'static str),
     DuplicateField(&'static str),
@@ -53,15 +51,14 @@ pub enum ManifestError {
 impl fmt::Display for ManifestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ManifestError::ReadFailed(message) => write!(f, "failed reading build.aura: {message}"),
-            ManifestError::ParseFailed(message) => {
-                write!(f, "failed parsing build.aura: {message}")
+            ManifestError::ReadFailed(message) => {
+                write!(f, "failed reading project.auon: {message}")
             }
-            ManifestError::MissingProjectDecl => {
-                write!(f, "build.aura must contain `def project = (...)`")
+            ManifestError::ParseFailed(message) => {
+                write!(f, "failed parsing project.auon: {message}")
             }
             ManifestError::ProjectMustBeStructType => {
-                write!(f, "project declaration must be a struct literal")
+                write!(f, "project.auon must contain a root struct document")
             }
             ManifestError::MissingField(field) => {
                 write!(f, "manifest field `{field}` is required")
@@ -76,16 +73,16 @@ impl fmt::Display for ManifestError {
                 write!(f, "unknown manifest field `{field}`")
             }
             ManifestError::InvalidDependencyAlias(alias) => {
-                write!(f, "dependency alias `{alias}` must start with '@'")
+                write!(
+                    f,
+                    "dependency alias `{alias}` must be non-empty and must not include `@`"
+                )
             }
             ManifestError::DuplicateDependencyAlias(alias) => {
                 write!(f, "dependency alias `{alias}` is duplicated")
             }
             ManifestError::InvalidDependencySource(source) => {
-                write!(
-                    f,
-                    "dependency source `{source}` must have `<git-url>@<tag>`"
-                )
+                write!(f, "invalid dependency source: {source}")
             }
         }
     }
@@ -100,19 +97,9 @@ pub fn load_manifest(path: &Path) -> Result<Manifest, ManifestError> {
 }
 
 pub fn parse_manifest_source(source: &str) -> Result<Manifest, ManifestError> {
-    let parsed =
-        Parser::parse_source(source).map_err(|d| ManifestError::ParseFailed(format!("{d:?}")))?;
+    let parsed = parse_value(source).map_err(|err| ManifestError::ParseFailed(err.to_string()))?;
 
-    let project_expr = parsed
-        .declarations
-        .iter()
-        .find_map(|decl| match decl {
-            Decl::Assign { name, value, .. } if name == "project" => Some(value),
-            _ => None,
-        })
-        .ok_or(ManifestError::MissingProjectDecl)?;
-
-    let Expr::Struct(fields) = unspan_expr(project_expr) else {
+    let Value::Struct(fields) = parsed else {
         return Err(ManifestError::ProjectMustBeStructType);
     };
 
@@ -121,7 +108,7 @@ pub fn parse_manifest_source(source: &str) -> Result<Manifest, ManifestError> {
     let mut kind: Option<ProjectType> = None;
     let mut dependencies: Option<Vec<Dependency>> = None;
 
-    for (field_name, field_value) in fields {
+    for (field_name, field_value) in &fields {
         match field_name.as_str() {
             "name" => {
                 if name.is_some() {
@@ -135,9 +122,9 @@ pub fn parse_manifest_source(source: &str) -> Result<Manifest, ManifestError> {
                 }
                 version = Some(expect_string(field_value, "version")?);
             }
-            "type" => {
+            "kind" => {
                 if kind.is_some() {
-                    return Err(ManifestError::DuplicateField("type"));
+                    return Err(ManifestError::DuplicateField("kind"));
                 }
                 kind = Some(parse_project_type(field_value)?);
             }
@@ -154,21 +141,21 @@ pub fn parse_manifest_source(source: &str) -> Result<Manifest, ManifestError> {
     Ok(Manifest {
         name: name.ok_or(ManifestError::MissingField("name"))?,
         version: version.ok_or(ManifestError::MissingField("version"))?,
-        kind: kind.ok_or(ManifestError::MissingField("type"))?,
+        kind: kind.ok_or(ManifestError::MissingField("kind"))?,
         dependencies: dependencies.ok_or(ManifestError::MissingField("dependencies"))?,
     })
 }
 
-fn parse_project_type(value: &Expr) -> Result<ProjectType, ManifestError> {
-    let Expr::DotIdent { name, payload } = unspan_expr(value) else {
+fn parse_project_type(value: &Value) -> Result<ProjectType, ManifestError> {
+    let Value::Variant { name, payload } = value else {
         return Err(ManifestError::InvalidFieldType {
-            field: "type",
+            field: "kind",
             expected: "a dot variant: .binary or .library",
         });
     };
     if payload.is_some() {
         return Err(ManifestError::InvalidFieldType {
-            field: "type",
+            field: "kind",
             expected: "a unit dot variant: .binary or .library",
         });
     }
@@ -176,20 +163,20 @@ fn parse_project_type(value: &Expr) -> Result<ProjectType, ManifestError> {
         "binary" => Ok(ProjectType::Binary),
         "library" => Ok(ProjectType::Library),
         _ => Err(ManifestError::InvalidFieldType {
-            field: "type",
+            field: "kind",
             expected: "one of: .binary, .library",
         }),
     }
 }
 
-fn parse_dependencies(value: &Expr) -> Result<Vec<Dependency>, ManifestError> {
-    let entries = match unspan_expr(value) {
-        Expr::Dict(entries) => entries,
-        Expr::List(items) if items.is_empty() => return Ok(Vec::new()),
+fn parse_dependencies(value: &Value) -> Result<Vec<Dependency>, ManifestError> {
+    let entries = match value {
+        Value::Dict(entries) => entries,
+        Value::List(items) if items.is_empty() => return Ok(Vec::new()),
         _ => {
             return Err(ManifestError::InvalidFieldType {
                 field: "dependencies",
-                expected: "a dictionary literal like [\"@a\" = \"url@tag\"]",
+                expected: "a dictionary literal like [\"a\" = .path(\"vendor/a\")]",
             });
         }
     };
@@ -199,45 +186,109 @@ fn parse_dependencies(value: &Expr) -> Result<Vec<Dependency>, ManifestError> {
 
     for (alias_expr, source_expr) in entries {
         let alias = expect_string(alias_expr, "dependencies")?;
-        if !alias.starts_with('@') || alias.len() < 2 {
+        if alias.is_empty() || alias.contains('@') {
             return Err(ManifestError::InvalidDependencyAlias(alias));
         }
         if !aliases.insert(alias.clone()) {
             return Err(ManifestError::DuplicateDependencyAlias(alias));
         }
 
-        let source_raw = expect_string(source_expr, "dependencies")?;
-        let source = parse_dependency_source(&source_raw)?;
+        let source = parse_dependency_source(source_expr)?;
         out.push(Dependency { alias, source });
     }
 
     Ok(out)
 }
 
-fn parse_dependency_source(value: &str) -> Result<DependencySource, ManifestError> {
-    if let Some(path) = value.strip_prefix("path:") {
-        if path.is_empty() {
-            return Err(ManifestError::InvalidDependencySource(value.to_string()));
-        }
-        return Ok(DependencySource::Path {
-            path: path.to_string(),
-        });
-    }
-    let Some((url, tag)) = value.rsplit_once('@') else {
-        return Err(ManifestError::InvalidDependencySource(value.to_string()));
+fn parse_dependency_source(value: &Value) -> Result<DependencySource, ManifestError> {
+    let Value::Variant { name, payload } = value else {
+        return Err(ManifestError::InvalidDependencySource(
+            "dependency sources must be .path(...) or .git((url = ..., ref = ...))".to_string(),
+        ));
     };
-    if url.is_empty() || tag.is_empty() {
-        return Err(ManifestError::InvalidDependencySource(value.to_string()));
+
+    match name.as_str() {
+        "path" => {
+            let Some(payload) = payload.as_deref() else {
+                return Err(ManifestError::InvalidDependencySource(
+                    ".path must carry a string payload".to_string(),
+                ));
+            };
+            let path = expect_string(payload, "dependencies")?;
+            if path.is_empty() {
+                return Err(ManifestError::InvalidDependencySource(
+                    ".path payload must be a non-empty string".to_string(),
+                ));
+            }
+            Ok(DependencySource::Path { path })
+        }
+        "git" => parse_git_source(payload.as_deref()),
+        other => Err(ManifestError::InvalidDependencySource(format!(
+            ".{other} is not a supported dependency source"
+        ))),
     }
-    Ok(DependencySource::Git {
-        url: url.to_string(),
-        tag: tag.to_string(),
-    })
 }
 
-fn expect_string(expr: &Expr, field: &'static str) -> Result<String, ManifestError> {
-    match unspan_expr(expr) {
-        Expr::String(s) => Ok(s.clone()),
+fn parse_git_source(payload: Option<&Value>) -> Result<DependencySource, ManifestError> {
+    let Some(payload) = payload else {
+        return Err(ManifestError::InvalidDependencySource(
+            ".git must carry a struct payload".to_string(),
+        ));
+    };
+    let Value::Struct(fields) = payload else {
+        return Err(ManifestError::InvalidDependencySource(
+            ".git must carry a struct payload".to_string(),
+        ));
+    };
+
+    let mut url: Option<String> = None;
+    let mut reference: Option<String> = None;
+
+    for (field_name, field_value) in fields {
+        match field_name.as_str() {
+            "url" => {
+                if url.is_some() {
+                    return Err(ManifestError::InvalidDependencySource(
+                        ".git field `url` appears more than once".to_string(),
+                    ));
+                }
+                url = Some(expect_string(field_value, "dependencies")?);
+            }
+            "ref" => {
+                if reference.is_some() {
+                    return Err(ManifestError::InvalidDependencySource(
+                        ".git field `ref` appears more than once".to_string(),
+                    ));
+                }
+                reference = Some(expect_string(field_value, "dependencies")?);
+            }
+            other => {
+                return Err(ManifestError::InvalidDependencySource(format!(
+                    ".git does not support field `{other}`"
+                )));
+            }
+        }
+    }
+
+    let url = url.ok_or_else(|| {
+        ManifestError::InvalidDependencySource(".git requires `url`".to_string())
+    })?;
+    let reference = reference.ok_or_else(|| {
+        ManifestError::InvalidDependencySource(".git requires `ref`".to_string())
+    })?;
+
+    if url.is_empty() || reference.is_empty() {
+        return Err(ManifestError::InvalidDependencySource(
+            ".git `url` and `ref` must be non-empty strings".to_string(),
+        ));
+    }
+
+    Ok(DependencySource::Git { url, reference })
+}
+
+fn expect_string(value: &Value, field: &'static str) -> Result<String, ManifestError> {
+    match value {
+        Value::String(s) => Ok(s.clone()),
         _ => Err(ManifestError::InvalidFieldType {
             field,
             expected: "a string literal",
@@ -245,86 +296,88 @@ fn expect_string(expr: &Expr, field: &'static str) -> Result<String, ManifestErr
     }
 }
 
-fn unspan_expr(expr: &Expr) -> &Expr {
-    let mut current = expr;
-    while let Expr::Spanned { expr, .. } = current {
-        current = expr.as_ref();
-    }
-    current
-}
-
 #[cfg(test)]
 mod tests {
     use super::{DependencySource, ManifestError, ProjectType, parse_manifest_source};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_manifest_path(prefix: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock must be after unix epoch")
+            .as_nanos();
+        path.push(format!("aura_manifest_{prefix}_{nanos}.auon"));
+        path
+    }
 
     #[test]
-    fn parses_struct_manifest_shape() {
+    fn parses_auon_manifest_shape() {
         let src = r#"
-            def project = (
-                name = "hello",
-                version = "0.1.0",
-                type = .binary,
-                dependencies = [
-                    "@json" = "https://github.com/acme/aura-json@v1.2.3",
-                ],
-            );
+            name = "hello",
+            version = "0.1.0",
+            kind = .binary,
+            dependencies = [
+                "json" = .git((url = "https://github.com/acme/aura-json", ref = "v1.2.3")),
+            ],
         "#;
         let manifest = parse_manifest_source(src).expect("must parse");
         assert_eq!(manifest.name, "hello");
         assert_eq!(manifest.version, "0.1.0");
         assert_eq!(manifest.kind, ProjectType::Binary);
         assert_eq!(manifest.dependencies.len(), 1);
-        assert_eq!(manifest.dependencies[0].alias, "@json");
+        assert_eq!(manifest.dependencies[0].alias, "json");
         assert!(matches!(
-            manifest.dependencies[0].source,
-            DependencySource::Git { ref url, ref tag } if url == "https://github.com/acme/aura-json" && tag == "v1.2.3"
+            &manifest.dependencies[0].source,
+            DependencySource::Git { url, reference } if url == "https://github.com/acme/aura-json" && reference == "v1.2.3"
         ));
     }
 
     #[test]
     fn parses_path_dependency_sources() {
         let src = r#"
-            def project = (
-                name = "hello",
-                version = "0.1.0",
-                type = .binary,
-                dependencies = [
-                    "@stl" = "path:../../aura-stl",
-                ],
-            );
+            name = "hello",
+            version = "0.1.0",
+            kind = .binary,
+            dependencies = [
+                "stl" = .path("../../aura-stl"),
+            ],
         "#;
         let manifest = parse_manifest_source(src).expect("must parse");
         assert_eq!(manifest.dependencies.len(), 1);
-        assert_eq!(manifest.dependencies[0].alias, "@stl");
+        assert_eq!(manifest.dependencies[0].alias, "stl");
         assert!(matches!(
-            manifest.dependencies[0].source,
-            DependencySource::Path { ref path } if path == "../../aura-stl"
+            &manifest.dependencies[0].source,
+            DependencySource::Path { path } if path == "../../aura-stl"
         ));
     }
 
     #[test]
     fn rejects_non_struct_project_value() {
-        let src = "def project = [\"name\" = \"x\"];";
+        let src = "[\"name\" = \"x\"]";
         let err = parse_manifest_source(src).expect_err("must fail");
         assert!(matches!(err, ManifestError::ProjectMustBeStructType));
     }
 
     #[test]
-    fn rejects_missing_project_decl() {
-        let src = "def x = 1;";
+    fn rejects_missing_name_field() {
+        let src = r#"
+            version = "0.1.0",
+            kind = .binary,
+            dependencies = [],
+        "#;
         let err = parse_manifest_source(src).expect_err("must fail");
-        assert!(matches!(err, ManifestError::MissingProjectDecl));
+        assert!(matches!(err, ManifestError::MissingField("name")));
     }
 
     #[test]
     fn rejects_dependencies_as_non_dict() {
         let src = r#"
-            def project = (
-                name = "hello",
-                version = "0.1.0",
-                type = .binary,
-                dependencies = "bad",
-            );
+            name = "hello",
+            version = "0.1.0",
+            kind = .binary,
+            dependencies = "bad",
         "#;
         let err = parse_manifest_source(src).expect_err("must fail");
         assert!(matches!(
@@ -337,85 +390,84 @@ mod tests {
     }
 
     #[test]
-    fn rejects_alias_without_at() {
+    fn rejects_empty_alias() {
         let src = r#"
-            def project = (
-                name = "hello",
-                version = "0.1.0",
-                type = .binary,
-                dependencies = [
-                    "json" = "https://github.com/acme/aura-json@v1.2.3",
-                ],
-            );
+            name = "hello",
+            version = "0.1.0",
+            kind = .binary,
+            dependencies = [
+                "" = .git((url = "https://github.com/acme/aura-json", ref = "v1.2.3")),
+            ],
         "#;
         let err = parse_manifest_source(src).expect_err("must fail");
-        assert!(matches!(err, ManifestError::InvalidDependencyAlias(alias) if alias == "json"));
+        assert!(matches!(err, ManifestError::InvalidDependencyAlias(alias) if alias.is_empty()));
     }
 
     #[test]
-    fn rejects_git_source_without_tag() {
+    fn rejects_git_source_without_ref() {
         let src = r#"
-            def project = (
-                name = "hello",
-                version = "0.1.0",
-                type = .binary,
-                dependencies = [
-                    "@json" = "https://github.com/acme/aura-json",
-                ],
-            );
+            name = "hello",
+            version = "0.1.0",
+            kind = .binary,
+            dependencies = [
+                "json" = .git((url = "https://github.com/acme/aura-json")),
+            ],
         "#;
         let err = parse_manifest_source(src).expect_err("must fail");
-        assert!(
-            matches!(err, ManifestError::InvalidDependencySource(v) if v == "https://github.com/acme/aura-json")
-        );
+        assert!(matches!(err, ManifestError::InvalidDependencySource(source) if source.contains("git")));
     }
 
     #[test]
     fn rejects_empty_path_dependency_source() {
         let src = r#"
-            def project = (
-                name = "hello",
-                version = "0.1.0",
-                type = .binary,
-                dependencies = [
-                    "@stl" = "path:",
-                ],
-            );
+            name = "hello",
+            version = "0.1.0",
+            kind = .binary,
+            dependencies = [
+                "stl" = .path(""),
+            ],
         "#;
         let err = parse_manifest_source(src).expect_err("must fail");
         assert!(matches!(
             err,
-            ManifestError::InvalidDependencySource(v) if v == "path:"
+            ManifestError::InvalidDependencySource(v) if v.contains("path")
         ));
     }
 
     #[test]
-    fn rejects_missing_type_field() {
+    fn rejects_missing_kind_field() {
         let src = r#"
-            def project = (
-                name = "hello",
-                version = "0.1.0",
-                dependencies = [],
-            );
+            name = "hello",
+            version = "0.1.0",
+            dependencies = [],
         "#;
         let err = parse_manifest_source(src).expect_err("must fail");
-        assert!(matches!(err, ManifestError::MissingField("type")));
+        assert!(matches!(err, ManifestError::MissingField("kind")));
     }
 
     #[test]
-    fn rejects_invalid_type_variant() {
+    fn rejects_invalid_kind_variant() {
         let src = r#"
-            def project = (
-                name = "hello",
-                version = "0.1.0",
-                type = .plugin,
-                dependencies = [],
-            );
+            name = "hello",
+            version = "0.1.0",
+            kind = .plugin,
+            dependencies = [],
         "#;
         let err = parse_manifest_source(src).expect_err("must fail");
         assert!(matches!(
             err,
-            ManifestError::InvalidFieldType { field: "type", .. }
+            ManifestError::InvalidFieldType { field: "kind", .. }
         ));
+    }
+
+    #[test]
+    fn load_manifest_reports_project_auon_for_parse_errors() {
+        let path = temp_manifest_path("parse_error");
+        fs::write(&path, "name = \"hello\", kind = .binary, dependencies = [").expect("write");
+
+        let err = super::load_manifest(&path).expect_err("must fail");
+        assert!(err.to_string().contains("project.auon"));
+
+        fs::remove_file(path).expect("cleanup");
     }
 }

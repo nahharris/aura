@@ -134,16 +134,16 @@ struct ProjectCompiler {
 }
 
 pub fn compile_project(
-    build_file: &Path,
+    manifest_file: &Path,
     options: ProjectCompileOptions,
 ) -> Result<ProjectBuild, ProjectCompileError> {
     let mut compiler = ProjectCompiler::default();
     let root = canonicalize_existing(
-        build_file
+        manifest_file
             .parent()
             .ok_or_else(|| ProjectCompileError::Resolve {
-                path: Some(build_file.to_path_buf()),
-                message: "build.aura should have a parent directory".to_string(),
+                path: Some(manifest_file.to_path_buf()),
+                message: "project.auon should have a parent directory".to_string(),
             })?,
     )?;
     compiler.ensure_package(&root)?;
@@ -196,9 +196,9 @@ impl ProjectCompiler {
             return Ok(());
         }
 
-        let build_file = root.join("build.aura");
-        let manifest = load_manifest(&build_file).map_err(|error| ProjectCompileError::Manifest {
-            path: build_file.clone(),
+        let manifest_file = root.join("project.auon");
+        let manifest = load_manifest(&manifest_file).map_err(|error| ProjectCompileError::Manifest {
+            path: manifest_file.clone(),
             error,
         })?;
 
@@ -214,10 +214,9 @@ impl ProjectCompiler {
                     };
                     canonicalize_existing(&resolved)?
                 }
-                DependencySource::Git { .. } => {
-                    let alias = dependency.alias.trim_start_matches('@');
-                    canonicalize_existing(&root.join("vendor").join(alias))?
-                }
+                DependencySource::Git { .. } => canonicalize_existing(
+                    &root.join("vendor").join(&dependency.alias),
+                )?,
             };
             self.ensure_package(&dependency_root)?;
             dependencies.insert(dependency.alias.clone(), dependency_root);
@@ -1117,14 +1116,12 @@ mod tests {
         let dependency_root = root.join("vendor").join("dep");
 
         create_file(
-            &dependency_root.join("build.aura"),
+            &dependency_root.join("project.auon"),
             r#"
-                def project = (
-                    name = "dep",
-                    version = "0.1.0",
-                    type = .library,
-                    dependencies = [],
-                );
+                name = "dep",
+                version = "0.1.0",
+                kind = .library,
+                dependencies = [],
             "#,
         );
         create_file(
@@ -1137,16 +1134,14 @@ mod tests {
         );
 
         create_file(
-            &root.join("build.aura"),
+            &root.join("project.auon"),
             r#"
-                def project = (
-                    name = "app",
-                    version = "0.1.0",
-                    type = .binary,
-                    dependencies = [
-                        "@dep" = "path:vendor/dep",
-                    ],
-                );
+                name = "app",
+                version = "0.1.0",
+                kind = .binary,
+                dependencies = [
+                    "dep" = .path("vendor/dep"),
+                ],
             "#,
         );
         create_file(
@@ -1155,7 +1150,7 @@ mod tests {
         );
 
         let build = compile_project(
-            &root.join("build.aura"),
+            &root.join("project.auon"),
             ProjectCompileOptions {
                 enforce_entry_main_signature: false,
             },
@@ -1181,14 +1176,12 @@ mod tests {
         let dependency_root = root.join("vendor").join("dep");
 
         create_file(
-            &dependency_root.join("build.aura"),
+            &dependency_root.join("project.auon"),
             r#"
-                def project = (
-                    name = "dep",
-                    version = "0.1.0",
-                    type = .library,
-                    dependencies = [],
-                );
+                name = "dep",
+                version = "0.1.0",
+                kind = .library,
+                dependencies = [],
             "#,
         );
         create_file(
@@ -1198,16 +1191,14 @@ mod tests {
         create_file(&dependency_root.join("src").join("lib.aura"), "def exported = 1;");
 
         create_file(
-            &root.join("build.aura"),
+            &root.join("project.auon"),
             r#"
-                def project = (
-                    name = "app",
-                    version = "0.1.0",
-                    type = .binary,
-                    dependencies = [
-                        "@dep" = "path:vendor/dep",
-                    ],
-                );
+                name = "app",
+                version = "0.1.0",
+                kind = .binary,
+                dependencies = [
+                    "dep" = .path("vendor/dep"),
+                ],
             "#,
         );
         create_file(
@@ -1216,7 +1207,7 @@ mod tests {
         );
 
         let build = compile_project(
-            &root.join("build.aura"),
+            &root.join("project.auon"),
             ProjectCompileOptions {
                 enforce_entry_main_signature: false,
             },
@@ -1250,14 +1241,12 @@ mod tests {
         let dependency_root = root.join("vendor").join("stl");
 
         create_file(
-            &dependency_root.join("build.aura"),
+            &dependency_root.join("project.auon"),
             r#"
-                def project = (
-                    name = "stl",
-                    version = "0.1.0",
-                    type = .library,
-                    dependencies = [],
-                );
+                name = "stl",
+                version = "0.1.0",
+                kind = .library,
+                dependencies = [],
             "#,
         );
         create_file(
@@ -1269,16 +1258,14 @@ mod tests {
         );
 
         create_file(
-            &root.join("build.aura"),
+            &root.join("project.auon"),
             r#"
-                def project = (
-                    name = "app",
-                    version = "0.1.0",
-                    type = .binary,
-                    dependencies = [
-                        "@stl" = "path:vendor/stl",
-                    ],
-                );
+                name = "app",
+                version = "0.1.0",
+                kind = .binary,
+                dependencies = [
+                    "stl" = .path("vendor/stl"),
+                ],
             "#,
         );
         create_file(
@@ -1291,7 +1278,7 @@ mod tests {
         );
 
         let build = compile_project(
-            &root.join("build.aura"),
+            &root.join("project.auon"),
             ProjectCompileOptions {
                 enforce_entry_main_signature: false,
             },

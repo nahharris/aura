@@ -1,0 +1,6 @@
+name = "{{project_name}}",
+version = "0.1.0",
+kind = .binary,
+dependencies = [
+    "stl" = .path("../aura-stl"),
+]

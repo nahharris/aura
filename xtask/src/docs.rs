@@ -1013,7 +1013,7 @@ fn render_stdlib_note(_: &RepoInventory) -> String {
     subsystem_note(
         "Stdlib",
         "active",
-        &["aura-stl/build.aura", "aura-stl/src/"],
+        &["aura-stl/project.auon", "aura-stl/src/"],
         &[],
         &[],
         &["Language/Examples Index"],

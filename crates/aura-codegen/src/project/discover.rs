@@ -10,7 +10,7 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     };
 
     loop {
-        if current.join("build.aura").is_file() {
+        if current.join("project.auon").is_file() {
             return Some(current);
         }
         match current.parent() {
@@ -23,7 +23,7 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
 pub fn discover_layout(start: &Path) -> Option<ProjectLayout> {
     let root = find_project_root(start)?;
     Some(ProjectLayout {
-        build_file: root.join("build.aura"),
+        manifest_file: root.join("project.auon"),
         src_dir: root.join("src"),
         vendor_dir: root.join("vendor"),
         target_dir: root.join("target"),
@@ -61,7 +61,7 @@ mod tests {
         let root = temp_test_dir("find_root_nested");
         let nested = root.join("src").join("app").join("feature");
         fs::create_dir_all(&nested).expect("should create nested dirs");
-        create_file(&root.join("build.aura"), "def project = [];");
+        create_file(&root.join("project.auon"), "name = \"demo\", version = \"0.1.0\", kind = .binary, dependencies = [],");
 
         let discovered = find_project_root(&nested).expect("must discover project root");
         assert_eq!(discovered, root);
@@ -73,7 +73,7 @@ mod tests {
     fn finds_root_from_file_path() {
         let root = temp_test_dir("find_root_file");
         let file = root.join("src").join("main.aura");
-        create_file(&root.join("build.aura"), "def project = [];");
+        create_file(&root.join("project.auon"), "name = \"demo\", version = \"0.1.0\", kind = .binary, dependencies = [],");
         create_file(&file, "def main = 1;");
 
         let discovered = find_project_root(&file).expect("must discover from file path");
@@ -83,7 +83,7 @@ mod tests {
     }
 
     #[test]
-    fn returns_none_when_no_build_file_exists() {
+    fn returns_none_when_no_manifest_file_exists() {
         let root = temp_test_dir("find_root_none");
         let nested = root.join("src");
         fs::create_dir_all(&nested).expect("should create dir");
@@ -97,11 +97,11 @@ mod tests {
     #[test]
     fn discovers_standard_layout_paths() {
         let root = temp_test_dir("layout");
-        create_file(&root.join("build.aura"), "def project = [];");
+        create_file(&root.join("project.auon"), "name = \"demo\", version = \"0.1.0\", kind = .binary, dependencies = [],");
 
         let layout = discover_layout(&root).expect("must discover layout");
         assert_eq!(layout.root, root);
-        assert_eq!(layout.build_file, root.join("build.aura"));
+        assert_eq!(layout.manifest_file, root.join("project.auon"));
         assert_eq!(layout.src_dir, root.join("src"));
         assert_eq!(layout.vendor_dir, root.join("vendor"));
         assert_eq!(layout.target_dir, root.join("target"));

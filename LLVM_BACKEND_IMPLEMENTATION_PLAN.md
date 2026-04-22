@@ -4,9 +4,9 @@ This plan is executed in strict order: each step is completed in full before mov
 
 ## Phase 1 - Project Infrastructure
 
-- [x] 1.1 Define `build.aura` manifest schema in `DESIGN.md` using Aura syntax
+- [x] 1.1 Define `project.auon` manifest schema in `DESIGN.md` using AUON syntax
 - [x] 1.2 Create new `crates/aura-codegen` crate and add it to workspace
-- [x] 1.3 Implement project discovery (`build.aura` root, `src/`, `vendor/`, `target/`)
+- [x] 1.3 Implement project discovery (`project.auon` root, `src/`, `vendor/`, `target/`)
 - [x] 1.4 Implement manifest parsing and validation in code
 - [x] 1.5 Extend CLI with project-aware `build` flow (no codegen yet)
 - [x] 1.6 Add `aura init` to scaffold project layout and vendor STL

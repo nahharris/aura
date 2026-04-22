@@ -17,7 +17,7 @@ Verification:
 
 ## 1) Project Discovery and Manifest Layer
 
-- [ ] `aura-cli build` consistently discovers `build.aura` and resolves project root.
+- [ ] `aura-cli build` consistently discovers `project.auon` and resolves project root.
 - [ ] Binary/library project modes are correctly distinguished.
 - [ ] Entrypoint resolution (`src/main.aura`) is explicit, validated, and error messages are clear.
 - [ ] Manifest diagnostics include source location and remediation hints.
