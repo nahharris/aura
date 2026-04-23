@@ -29,6 +29,7 @@ Hold the Aura standard library package as Aura source rather than Rust implement
 
 ## Current Scope
 
+- `core.aura` builtin stubs for runtime externs and compiler-lowered control-flow forms
 - I/O helpers such as `print`, `println`, `printerr`, and `printerrln`
 - process-exit helpers exported through `os.aura`
 - prelude exports such as `Option`, `Result`, `ExitCode`, `print`, and `exit`
@@ -37,8 +38,9 @@ Hold the Aura standard library package as Aura source rather than Rust implement
 ## Internal Structure
 
 - `src/runtime.aura` is the only Aura source file in the STL that names host ABI symbols directly.
+- `src/core.aura` owns `defstub` declarations for `syscall_*`, byte/string runtime helpers, and builtin forms such as `if`, `cases`, `loop`, `return`, `break`, and `continue`.
 - `src/io.aura` and `src/os.aura` call through `runtime.aura` instead of binding `syscall_*` or `string_into` themselves.
-- `src/lib.aura` re-exports the prelude-like surface consumed by programs.
+- `src/lib.aura` re-exports the prelude-like surface consumed by programs, including the `core.aura` stub surface.
 - `src/os.aura` now defines the real `ExitCode = enum(success, failure, custom: Int)` surface and `ExitCode.into(self)` as ordinary Aura declarations.
 
 ## Import Behavior

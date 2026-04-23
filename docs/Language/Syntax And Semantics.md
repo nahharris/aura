@@ -17,11 +17,20 @@ This note is a reader's map into `DESIGN.md`, not a replacement for it.
 - Macro application consumes a single operand and chains right-associatively
 - `if` and `cases` are inline function calls, not dedicated parser special cases
 - trailing closure call arguments are labeled
+- `defstub` declares typed extern or builtin contracts at top level; same-name overloads are allowed only for stubs
+- `Macro[...]` is valid in `defstub` for declaration-only builtin forms such as `return`, `break`, and `continue`
+- `Func[...]` parameter shapes preserve names/labels so builtins such as `if`, `cases`, and `loop` can type labeled trailing closures
 
 ## Alias Note
 
 - `true`, `false`, and `null` are not reserved keywords; Aura treats them as runtime aliases, matching `.true`, `.false`, and `.null`
 - AUON phase 1 reuses those alias spellings as source-level conveniences and normalizes them to dot-variant values
+
+## Control Flow Surface
+
+- `if`, `cases`, and `loop` resolve as callable forms whose signatures are provided by `aura-stl/src/core.aura` stubs re-exported from `aura-stl/src/lib.aura`.
+- `return`, `break`, and `continue` resolve as macro-shaped builtin forms with compiler-checked targets; invalid usage outside a function or loop is a typecheck error.
+- The checker lowers control flow to dedicated checked-IR nodes, and LLVM lowering emits branches/blocks rather than runtime calls for these forms.
 
 ## Where These Rules Land In Code
 

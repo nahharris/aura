@@ -41,6 +41,7 @@ impl Resolver {
         for decl in &program.declarations {
             match decl {
                 Decl::Assign { name, .. } => self.declare(name, SymbolKind::Value),
+                Decl::Stub(s) => self.declare_stub(&s.name, SymbolKind::Value),
                 Decl::Macro(m) => self.declare(&m.name, SymbolKind::Function),
                 Decl::Function(f) => self.declare(&f.name, SymbolKind::Function),
                 Decl::Use(u) => match &u.binding {
@@ -82,6 +83,25 @@ impl Resolver {
             scope: self.current_scope,
         });
         self.resolved.by_name.insert(key, symbol_id);
+    }
+
+    fn declare_stub(&mut self, name: &str, kind: SymbolKind) {
+        let key = (self.current_scope, name.to_string());
+        let already_declared = self.resolved.by_name.contains_key(&key);
+
+        let symbol_id = SymbolId(self.next_symbol_id);
+        self.next_symbol_id += 1;
+
+        self.resolved.symbols.push(Symbol {
+            id: symbol_id,
+            name: name.to_string(),
+            kind,
+            scope: self.current_scope,
+        });
+
+        if !already_declared {
+            self.resolved.by_name.insert(key, symbol_id);
+        }
     }
 
     #[allow(dead_code)]
@@ -133,10 +153,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_RESOLVE_DUP"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_RESOLVE_DUP")
+        );
     }
 
     #[test]

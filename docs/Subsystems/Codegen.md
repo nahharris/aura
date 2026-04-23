@@ -34,6 +34,12 @@ Turn checked Aura modules into backend artifacts, currently centered on the LLVM
 
 LLVM lowering currently treats runtime-backed nominal values such as `Bytes` as pointer-shaped values at the ABI boundary.
 
+Checked-IR control-flow nodes lower directly to LLVM block/branch structures:
+
+- `If` and `Cases` produce conditional branches plus merge blocks/result slots when needed.
+- `Loop` produces condition/body/break blocks and records loop targets for nested jumps.
+- `Return`, `Break`, and `Continue` emit direct control transfer using resolved checked-IR targets.
+
 For the first byte-buffer path, checked member calls are lowered to runtime symbols:
 
 - `Bytes.new(size)` -> `bytes_new(size)`

@@ -4,6 +4,35 @@ use std::collections::HashMap;
 pub struct TyId(pub usize);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FuncParam {
+    pub name: Option<String>,
+    pub label: Option<String>,
+    pub trailing: bool,
+    pub ty: TyId,
+}
+
+impl FuncParam {
+    pub fn positional(ty: TyId) -> Self {
+        Self {
+            name: None,
+            label: None,
+            trailing: false,
+            ty,
+        }
+    }
+
+    pub fn named(name: impl Into<String>, ty: TyId) -> Self {
+        let name = name.into();
+        Self {
+            label: Some(name.clone()),
+            name: Some(name),
+            trailing: false,
+            ty,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Ty {
     InferVar(u32),
     GenericParam(String),
@@ -31,7 +60,8 @@ pub enum Ty {
     Dict { key: TyId, value: TyId },
     Set(TyId),
     Array { item: TyId, size: u64 },
-    Func { params: Vec<TyId>, ret: TyId },
+    Func { params: Vec<FuncParam>, ret: TyId },
+    Macro { params: Vec<FuncParam>, ret: TyId },
     Tuple(Vec<TyId>),
     Struct(Vec<(String, TyId)>),
     Union(Vec<TyId>),

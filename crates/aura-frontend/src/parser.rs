@@ -2,8 +2,8 @@
 
 use crate::ast::{
     Arm, BinaryOp, Binding, Decl, DocAttribute, Expr, FunctionDecl, LabeledClosureArg, MacroDecl,
-    Param, Pattern, Program, StaticArg, StaticParam, StaticParamKind, StaticValueExpr, SymbolDoc,
-    TypeExpr, UseBinding, UseDecl, UseField,
+    Param, Pattern, Program, StaticArg, StaticParam, StaticParamKind, StaticValueExpr, StubDecl,
+    SymbolDoc, TypeExpr, UseBinding, UseDecl, UseField,
 };
 use crate::lexer::lex;
 use crate::static_eval::{MinimalStaticChecker, StaticSatisfies};
@@ -12,7 +12,8 @@ use aura_diagnostics::{Diagnostic, Issue, Stage};
 use std::collections::HashSet;
 
 const BUILTIN_MACROS: &[&str] = &[
-    "def", "let", "const", "inline", "builtin", "return", "break", "continue", "loop", "doc",
+    "def", "defstub", "let", "const", "inline", "builtin", "return", "break", "continue", "loop",
+    "doc",
 ];
 
 const KNOWN_GENERIC_RECEIVERS: &[&str] = &[
@@ -124,6 +125,17 @@ where
             return self.parse_use_decl();
         }
 
+        if self.peek_ident_is("defstub") {
+            if pending_doc.is_some() {
+                return Err(self.error_here(
+                    "doc attribute can only annotate a `def` declaration",
+                    vec!["def"],
+                    Some("use `doc[...] def ...`".to_string()),
+                ));
+            }
+            return self.parse_stub_decl();
+        }
+
         if self.peek_ident_is("def") && self.looks_like_function_decl() {
             return self.parse_function_decl(pending_doc);
         }
@@ -144,10 +156,31 @@ where
         }
 
         Err(self.error_here(
-            "top-level scope only allows static declarations (def/defmacro/use)",
-            vec!["def", "defmacro", "use"],
+            "top-level scope only allows static declarations (def/defstub/defmacro/use)",
+            vec!["def", "defstub", "defmacro", "use"],
             Some("move runtime code inside a function body".to_string()),
         ))
+    }
+
+    fn parse_stub_decl(&mut self) -> Result<Decl, ParseError> {
+        self.expect_ident_exact("defstub")?;
+        let static_params = if self.peek_is(&TokenKind::LBracket) {
+            self.parse_static_params()?
+        } else {
+            Vec::new()
+        };
+        let name = self.expect_ident("expected stub name after 'defstub'")?;
+        self.expect_simple(
+            &TokenKind::Colon,
+            "expected ':' in defstub declaration",
+            vec![":"],
+        )?;
+        let ty = self.parse_type_expr()?;
+        Ok(Decl::Stub(StubDecl {
+            static_params,
+            name,
+            ty,
+        }))
     }
 
     fn parse_static_def_assignment_decl(
@@ -784,7 +817,26 @@ where
     }
 
     fn parse_static_arg(&mut self) -> Result<StaticArg, ParseError> {
+        if self.starts_type_expr() {
+            let ty = self.parse_type_expr()?;
+            return Ok(StaticArg::Type(ty));
+        }
+
         match self.peek() {
+            TokenKind::Dot if matches!(self.peek_n(1), Some(TokenKind::Ident(_))) => {
+                self.bump();
+                let label =
+                    self.expect_ident("expected label name after '.' in static argument")?;
+                let value = StaticValueExpr::Label(label);
+                if !self.static_checker.is_compile_time_known(&value) {
+                    return Err(self.error_here(
+                        "static value is not compile-time known",
+                        vec!["compile_time_value"],
+                        None,
+                    ));
+                }
+                Ok(StaticArg::Value(value))
+            }
             TokenKind::Int(raw) => {
                 let raw = raw.clone();
                 self.bump();
@@ -838,33 +890,17 @@ where
                 Ok(StaticArg::Value(value))
             }
             TokenKind::Ident(name) => {
-                if name == "static"
-                    || name == "_"
-                    || name
-                        .chars()
-                        .next()
-                        .map(|ch| ch.is_ascii_uppercase())
-                        .unwrap_or(false)
-                {
-                    let ty = self.parse_type_expr()?;
-                    Ok(StaticArg::Type(ty))
-                } else {
-                    let name = name.clone();
-                    self.bump();
-                    let value = StaticValueExpr::Ident(name);
-                    if !self.static_checker.is_compile_time_known(&value) {
-                        return Err(self.error_here(
-                            "static value is not compile-time known",
-                            vec!["compile_time_value"],
-                            None,
-                        ));
-                    }
-                    Ok(StaticArg::Value(value))
+                let name = name.clone();
+                self.bump();
+                let value = StaticValueExpr::Ident(name);
+                if !self.static_checker.is_compile_time_known(&value) {
+                    return Err(self.error_here(
+                        "static value is not compile-time known",
+                        vec!["compile_time_value"],
+                        None,
+                    ));
                 }
-            }
-            TokenKind::Underscore => {
-                let ty = self.parse_type_expr()?;
-                Ok(StaticArg::Type(ty))
+                Ok(StaticArg::Value(value))
             }
             _ => Err(self.error_here(
                 "expected static argument",
@@ -1906,7 +1942,8 @@ fn collect_macro_symbols(tokens: &[Token]) -> HashSet<String> {
 #[cfg(test)]
 mod tests {
     use crate::ast::{
-        BinaryOp, Decl, Expr, Pattern, StaticArg, StaticParamKind, TypeExpr, UseBinding, UseDecl,
+        BinaryOp, Decl, Expr, Pattern, StaticArg, StaticParamKind, StaticValueExpr, TypeExpr,
+        UseBinding, UseDecl,
     };
     use crate::parser::Parser;
 
@@ -2395,9 +2432,10 @@ mod tests {
         let src = "def foo() -> Int { 1 }; defmacro foo(node: Expr[Int]) -> Expr[Int] { node }";
         let err =
             Parser::parse_source(src).expect_err("should reject function shadowing macro symbol");
-        assert!(err
-            .message
-            .contains("function name 'foo' cannot shadow final macro symbol"));
+        assert!(
+            err.message
+                .contains("function name 'foo' cannot shadow final macro symbol")
+        );
     }
 
     #[test]
@@ -2405,9 +2443,10 @@ mod tests {
         let src = "defmacro foo(node: Expr[Int]) -> Expr[Int] { node }; def foo() -> Int { 1 }";
         let err =
             Parser::parse_source(src).expect_err("should reject function shadowing macro symbol");
-        assert!(err
-            .message
-            .contains("function name 'foo' cannot shadow final macro symbol"));
+        assert!(
+            err.message
+                .contains("function name 'foo' cannot shadow final macro symbol")
+        );
     }
 
     #[test]
@@ -2466,8 +2505,8 @@ mod tests {
     #[test]
     fn parse_function_body_with_multiple_expressions() {
         let src = "def main() -> Void { 0; syscall_exit(0) }";
-        let parsed =
-            Parser::parse_source(src).expect("should parse function body with multiple expressions");
+        let parsed = Parser::parse_source(src)
+            .expect("should parse function body with multiple expressions");
         let Decl::Function(function) = &parsed.declarations[0] else {
             panic!("expected function declaration")
         };
@@ -2999,6 +3038,39 @@ mod tests {
         let src = "doc[\"# io\"] use io = \"./io\"";
         let err = Parser::parse_source(src).expect_err("doc should only annotate def");
         assert!(err.message.contains("doc attribute"));
+    }
+
+    #[test]
+    fn parse_defstub_value_declaration() {
+        let src = "defstub syscall_exit: Func[(code: Int), Never]";
+        let parsed = Parser::parse_source(src).expect("should parse defstub value declaration");
+        assert_eq!(parsed.declarations.len(), 1);
+    }
+
+    #[test]
+    fn parse_defstub_func_and_macro_signatures() {
+        let src = "defstub[T] if: Func[(cond: Bool, then: Func[(), T], else: Func[(), T]), T]; defstub return: Macro[Int, Never]";
+        let parsed =
+            Parser::parse_source(src).expect("should parse defstub function and macro signatures");
+        assert_eq!(parsed.declarations.len(), 2);
+    }
+
+    #[test]
+    fn parse_dot_label_static_argument() {
+        let src = "def main() -> Int { return[.main] 1 }";
+        let parsed = Parser::parse_source(src).expect("should parse label static argument");
+        let Decl::Function(function) = parsed.declarations.first().expect("expected function")
+        else {
+            panic!("expected function declaration")
+        };
+        let Expr::MacroApply { static_args, .. } = u(&function.body) else {
+            panic!("expected macro application")
+        };
+
+        assert!(matches!(
+            static_args.first(),
+            Some(StaticArg::Value(StaticValueExpr::Label(label))) if label == "main"
+        ));
     }
 
     #[test]

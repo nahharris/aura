@@ -92,6 +92,7 @@ fn semantically_checked_ir_has_no_any_nodes_for_core_operator_path() {
             }
             CheckedExpr::MultiArm(arms) => arms.iter().any(contains_any),
             CheckedExpr::If {
+                result_ty: _,
                 condition,
                 then_branch,
                 else_branch,
@@ -103,14 +104,25 @@ fn semantically_checked_ir_has_no_any_nodes_for_core_operator_path() {
                         .map(|e| contains_any(e))
                         .unwrap_or(false)
             }
-            CheckedExpr::Cases { arms } => arms.iter().any(contains_any),
-            CheckedExpr::Return { value } => contains_any(value),
-            CheckedExpr::Break { value } => {
+            CheckedExpr::Cases { result_ty: _, arms } => arms
+                .iter()
+                .any(|arm| contains_any(&arm.guard) || contains_any(&arm.body)),
+            CheckedExpr::Loop {
+                condition, body, ..
+            } => {
+                condition
+                    .as_ref()
+                    .map(|expr| contains_any(expr))
+                    .unwrap_or(false)
+                    || contains_any(body)
+            }
+            CheckedExpr::Return { value, .. } => contains_any(value),
+            CheckedExpr::Break { value, .. } => {
                 value.as_ref().map(|v| contains_any(v)).unwrap_or(false)
             }
             CheckedExpr::Coerce { expr, .. } => contains_any(expr),
             CheckedExpr::Cast { expr, .. } => contains_any(expr),
-            CheckedExpr::Continue
+            CheckedExpr::Continue { .. }
             | CheckedExpr::Ident(_)
             | CheckedExpr::Int(_)
             | CheckedExpr::Float(_)
@@ -120,11 +132,13 @@ fn semantically_checked_ir_has_no_any_nodes_for_core_operator_path() {
         }
     }
 
-    assert!(!module
-        .ir
-        .declarations
-        .iter()
-        .any(|d| contains_any(&d.value)));
+    assert!(
+        !module
+            .ir
+            .declarations
+            .iter()
+            .any(|d| contains_any(&d.value))
+    );
 }
 
 #[test]
@@ -211,6 +225,7 @@ fn pipe_operator_consumes_placeholder_in_rhs_call_without_any_nodes() {
             }
             CheckedExpr::MultiArm(arms) => arms.iter().any(contains_any),
             CheckedExpr::If {
+                result_ty: _,
                 condition,
                 then_branch,
                 else_branch,
@@ -222,14 +237,25 @@ fn pipe_operator_consumes_placeholder_in_rhs_call_without_any_nodes() {
                         .map(|e| contains_any(e))
                         .unwrap_or(false)
             }
-            CheckedExpr::Cases { arms } => arms.iter().any(contains_any),
-            CheckedExpr::Return { value } => contains_any(value),
-            CheckedExpr::Break { value } => {
+            CheckedExpr::Cases { result_ty: _, arms } => arms
+                .iter()
+                .any(|arm| contains_any(&arm.guard) || contains_any(&arm.body)),
+            CheckedExpr::Loop {
+                condition, body, ..
+            } => {
+                condition
+                    .as_ref()
+                    .map(|expr| contains_any(expr))
+                    .unwrap_or(false)
+                    || contains_any(body)
+            }
+            CheckedExpr::Return { value, .. } => contains_any(value),
+            CheckedExpr::Break { value, .. } => {
                 value.as_ref().map(|v| contains_any(v)).unwrap_or(false)
             }
             CheckedExpr::Coerce { expr, .. } => contains_any(expr),
             CheckedExpr::Cast { expr, .. } => contains_any(expr),
-            CheckedExpr::Continue
+            CheckedExpr::Continue { .. }
             | CheckedExpr::Ident(_)
             | CheckedExpr::Int(_)
             | CheckedExpr::Float(_)
@@ -299,6 +325,7 @@ fn enum_constructor_forms_typecheck_without_any_nodes() {
             }
             CheckedExpr::MultiArm(arms) => arms.iter().any(contains_any),
             CheckedExpr::If {
+                result_ty: _,
                 condition,
                 then_branch,
                 else_branch,
@@ -310,14 +337,25 @@ fn enum_constructor_forms_typecheck_without_any_nodes() {
                         .map(|e| contains_any(e))
                         .unwrap_or(false)
             }
-            CheckedExpr::Cases { arms } => arms.iter().any(contains_any),
-            CheckedExpr::Return { value } => contains_any(value),
-            CheckedExpr::Break { value } => {
+            CheckedExpr::Cases { result_ty: _, arms } => arms
+                .iter()
+                .any(|arm| contains_any(&arm.guard) || contains_any(&arm.body)),
+            CheckedExpr::Loop {
+                condition, body, ..
+            } => {
+                condition
+                    .as_ref()
+                    .map(|expr| contains_any(expr))
+                    .unwrap_or(false)
+                    || contains_any(body)
+            }
+            CheckedExpr::Return { value, .. } => contains_any(value),
+            CheckedExpr::Break { value, .. } => {
                 value.as_ref().map(|v| contains_any(v)).unwrap_or(false)
             }
             CheckedExpr::Coerce { expr, .. } => contains_any(expr),
             CheckedExpr::Cast { expr, .. } => contains_any(expr),
-            CheckedExpr::Continue
+            CheckedExpr::Continue { .. }
             | CheckedExpr::Ident(_)
             | CheckedExpr::Int(_)
             | CheckedExpr::Float(_)
@@ -346,7 +384,10 @@ fn enum_constructor_forms_typecheck_without_any_nodes() {
             .iter()
             .find(|decl| decl.name == name)
             .expect("function declaration should exist");
-        assert!(!contains_any(&decl.value), "{name} should not lower through Any");
+        assert!(
+            !contains_any(&decl.value),
+            "{name} should not lower through Any"
+        );
         let CheckedExpr::EnumCtor {
             variant_index,
             payload,
@@ -355,7 +396,10 @@ fn enum_constructor_forms_typecheck_without_any_nodes() {
         else {
             panic!("{name} should lower to EnumCtor, got {:?}", decl.value);
         };
-        assert_eq!(*variant_index, expected_variant, "{name} lowered wrong variant");
+        assert_eq!(
+            *variant_index, expected_variant,
+            "{name} lowered wrong variant"
+        );
         assert_eq!(
             payload.is_some(),
             expects_payload,

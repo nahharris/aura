@@ -1,6 +1,6 @@
-use aura_typecheck::CheckedModule;
 #[cfg(feature = "llvm-backend")]
 use aura_runtime_host::runtime_function;
+use aura_typecheck::CheckedModule;
 #[cfg(feature = "llvm-backend")]
 use aura_typecheck::Ty;
 #[cfg(feature = "llvm-backend")]
@@ -42,12 +42,12 @@ fn bind_function_params<'ctx, 'm>(
         return Err(CodegenError::InvalidFunctionType(decl.name.clone()));
     }
 
-    for (index, (param_name, param_ty)) in decl.params.iter().zip(params.iter()).enumerate() {
+    for (index, (param_name, param)) in decl.params.iter().zip(params.iter()).enumerate() {
         let Some(value) = function.get_nth_param(index as u32) else {
             return Err(CodegenError::InvalidFunctionType(decl.name.clone()));
         };
-        let _value_ty = classify_type(&cg.checked.types, *param_ty)?;
-        let basic_ty = lower_basic_type(cg.context, &cg.checked.types, *param_ty)?;
+        let _value_ty = classify_type(&cg.checked.types, param.ty)?;
+        let basic_ty = lower_basic_type(cg.context, &cg.checked.types, param.ty)?;
         let slot = cg
             .builder
             .build_alloca(basic_ty, &format!("param_{param_name}"))
@@ -59,7 +59,7 @@ fn bind_function_params<'ctx, 'm>(
             param_name.clone(),
             super::context::LocalSlot {
                 ptr: slot,
-                ty: *param_ty,
+                ty: param.ty,
             },
         );
     }
@@ -354,11 +354,13 @@ mod tests {
     use aura_frontend::Parser;
     #[cfg(not(feature = "llvm-backend"))]
     use aura_frontend::Parser;
-    #[cfg(feature = "llvm-backend")]
-    use aura_typecheck::{CheckOptions, check_module, check_module_with_options};
     #[cfg(not(feature = "llvm-backend"))]
     use aura_typecheck::check_module;
+    #[cfg(feature = "llvm-backend")]
+    use aura_typecheck::{CheckOptions, check_module, check_module_with_options};
 
+    #[cfg(feature = "llvm-backend")]
+    use super::CodegenError;
     #[cfg(not(feature = "llvm-backend"))]
     use super::emit_module_stub;
 
@@ -390,7 +392,8 @@ mod tests {
     #[cfg(feature = "llvm-backend")]
     #[test]
     fn object_emission_supports_local_assignment_before_exit() {
-        let src = "def main() -> Void { let exit_code = 0; exit_code = 0; syscall_exit(exit_code) }";
+        let src = "defstub syscall_exit: Func[(code: Int), Never]; \
+                   def main() -> Void { let exit_code = 0; exit_code = 0; syscall_exit(exit_code) }";
         let program = Parser::parse_source(src).expect("parse");
         let checked = check_module(&program);
         let module = checked.module.expect("checked module");
@@ -403,8 +406,10 @@ mod tests {
     #[cfg(feature = "llvm-backend")]
     #[test]
     fn object_emission_supports_syscall_write_with_string_into() {
-        let src =
-            "def main() -> Void { syscall_write(1, \"Hello, world!\".into()); syscall_exit(0) }";
+        let src = "defstub syscall_exit: Func[(code: Int), Never]; \
+                   defstub syscall_write: Func[(fd: Int, bytes: Bytes), ISize]; \
+                   defstub string_into: Func[(text: String), Bytes]; \
+                   def main() -> Void { syscall_write(1, \"Hello, world!\".into()); syscall_exit(0) }";
         let program = Parser::parse_source(src).expect("parse");
         let checked = check_module(&program);
         let module = checked.module.expect("checked module");
@@ -417,8 +422,10 @@ mod tests {
     #[cfg(feature = "llvm-backend")]
     #[test]
     fn llvm_ir_declares_runtime_bytes_and_write_symbols() {
-        let src =
-            "def main() -> Void { syscall_write(1, \"Hello, world!\".into()); syscall_exit(0) }";
+        let src = "defstub syscall_exit: Func[(code: Int), Never]; \
+                   defstub syscall_write: Func[(fd: Int, bytes: Bytes), ISize]; \
+                   defstub string_into: Func[(text: String), Bytes]; \
+                   def main() -> Void { syscall_write(1, \"Hello, world!\".into()); syscall_exit(0) }";
         let program = Parser::parse_source(src).expect("parse");
         let checked = check_module(&program);
         let module = checked.module.expect("checked module");
@@ -443,11 +450,15 @@ mod tests {
                 enforce_main_signature: false,
             },
         );
-        assert!(
-            checked.module.is_none(),
-            "expected invalid non-void main to be rejected before codegen"
-        );
-        assert!(!checked.diagnostics.is_empty());
+        let module = checked
+            .module
+            .expect("typechecking should allow Result main");
+        let out = std::env::temp_dir().join("aura-non-void-main.obj");
+        let err = super::emit_object_file("non_void_main", &module, &out)
+            .expect_err("native entry lowering should reject non-Void main");
+
+        assert!(matches!(err, CodegenError::MainLowering(_)));
+        let _ = std::fs::remove_file(out);
     }
 
     #[cfg(feature = "llvm-backend")]

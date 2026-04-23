@@ -1,10 +1,11 @@
+use crate::Parser;
 use crate::ast::{
     Arm, BinaryOp, Decl, Expr, FunctionDecl, LabeledClosureArg, MacroDecl, Param, Pattern, Program,
-    StaticArg, StaticParam, StaticParamKind, StaticValueExpr, TypeExpr, UseBinding, UseDecl,
+    StaticArg, StaticParam, StaticParamKind, StaticValueExpr, StubDecl, TypeExpr, UseBinding,
+    UseDecl,
 };
 use crate::lexer::lex_with_comments;
 use crate::token::TokenKind;
-use crate::Parser;
 
 pub struct FormatOptions {
     pub indent_width: usize,
@@ -203,6 +204,7 @@ impl<'a> Formatter<'a> {
                 self.write_expr(value, false);
                 self.out.push(';');
             }
+            Decl::Stub(stub) => self.write_stub(stub),
             Decl::Function(fun) => self.write_function(fun),
             Decl::Macro(mac) => self.write_macro(mac),
             Decl::Use(use_decl) => self.write_use(use_decl),
@@ -268,6 +270,17 @@ impl<'a> Formatter<'a> {
         self.write_type_expr(&mac.return_type);
         self.out.push(' ');
         self.write_block_expr(&mac.body, false);
+    }
+
+    fn write_stub(&mut self, stub: &StubDecl) {
+        self.write_indent();
+        self.out.push_str("defstub");
+        self.write_static_params(&stub.static_params);
+        self.out.push(' ');
+        self.out.push_str(&stub.name);
+        self.out.push_str(": ");
+        self.write_type_expr(&stub.ty);
+        self.out.push(';');
     }
 
     fn write_static_params(&mut self, params: &[StaticParam]) {
@@ -572,6 +585,10 @@ impl<'a> Formatter<'a> {
             | StaticValueExpr::Ident(s)
             | StaticValueExpr::String(s)
             | StaticValueExpr::Char(s) => self.out.push_str(s),
+            StaticValueExpr::Label(s) => {
+                self.out.push('.');
+                self.out.push_str(s);
+            }
         }
     }
 
@@ -768,7 +785,7 @@ fn escape_string_literal(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_source, FormatOptions};
+    use super::{FormatOptions, format_source};
 
     #[test]
     fn preserves_trailing_closure_continuation_on_same_line() {
@@ -821,5 +838,12 @@ mod tests {
         let src = "def x = f(5, _)\n";
         let out = format_source(src, &FormatOptions::default());
         assert!(out.contains("f(5, _)"));
+    }
+
+    #[test]
+    fn formats_defstub_declaration() {
+        let src = "defstub[T] if: Func[(cond: Bool, then: Func[(), T], else: Func[(), T]), T]\n";
+        let out = format_source(src, &FormatOptions::default());
+        assert!(out.contains("defstub[T] if: Func["));
     }
 }

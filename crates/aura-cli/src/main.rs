@@ -8,10 +8,10 @@ use std::process::ExitCode;
 
 use anstyle::{AnsiColor, Color, Effects, Style};
 use anyhow::{Context, Result};
-use aura_codegen::project::discover::discover_layout;
 use aura_codegen::project::compile::{
     ProjectBuild, ProjectCompileError, ProjectCompileOptions, compile_project,
 };
+use aura_codegen::project::discover::discover_layout;
 use aura_codegen::{emit_llvm_ir, emit_object_file, emit_object_file_with_options};
 use aura_diagnostics::{Diagnostic, Severity, Span};
 use aura_frontend::ast::{Decl, Program};
@@ -211,6 +211,7 @@ fn collect_docs(program: &Program) -> BTreeMap<String, String> {
                 }
             }
             Decl::Macro(_) => {}
+            Decl::Stub(_) => {}
             Decl::Use(_) => {}
         }
     }
@@ -469,9 +470,9 @@ fn build_project_cmd(
         manifest_file.display()
     );
 
-    let project_out = out.map(PathBuf::from).unwrap_or_else(|| {
-        project_default_output_path(&build.root, &build.manifest.name, format)
-    });
+    let project_out = out
+        .map(PathBuf::from)
+        .unwrap_or_else(|| project_default_output_path(&build.root, &build.manifest.name, format));
     match format {
         OutputFormat::Auir => {
             ensure_parent_dir(&project_out)?;
@@ -505,7 +506,8 @@ fn build_project_cmd(
 }
 
 fn render_project_ir_pretty(build: &ProjectBuild) -> String {
-    build.modules
+    build
+        .modules
         .iter()
         .map(|module| {
             format!(
@@ -519,7 +521,8 @@ fn render_project_ir_pretty(build: &ProjectBuild) -> String {
 }
 
 fn render_project_llvm_ir(build: &ProjectBuild) -> Result<String> {
-    build.modules
+    build
+        .modules
         .iter()
         .map(|module| {
             emit_llvm_ir(&module.module_name, &module.checked)
@@ -585,13 +588,12 @@ fn build_project_native(build: &ProjectBuild, executable_path: &Path) -> Result<
         let ll_path = intermediates_dir.join(format!("{stem}.{}.ll", module.module_name));
         let obj_path = intermediates_dir.join(format!("{stem}.{}.obj", module.module_name));
 
-        let llvm_ir = emit_llvm_ir(&module.module_name, &module.checked)
-            .map_err(|error| {
-                anyhow::anyhow!(
-                    "LLVM IR emission failed for '{}': {error}",
-                    module.path.display()
-                )
-            })?;
+        let llvm_ir = emit_llvm_ir(&module.module_name, &module.checked).map_err(|error| {
+            anyhow::anyhow!(
+                "LLVM IR emission failed for '{}': {error}",
+                module.path.display()
+            )
+        })?;
         fs::write(&ll_path, llvm_ir)
             .with_context(|| format!("failed to write LLVM IR '{}'", ll_path.display()))?;
 
@@ -602,12 +604,12 @@ fn build_project_native(build: &ProjectBuild, executable_path: &Path) -> Result<
             &obj_path,
             include_native_entry,
         )
-            .map_err(|error| {
-                anyhow::anyhow!(
-                    "object emission failed for '{}': {error}",
-                    module.path.display()
-                )
-            })?;
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "object emission failed for '{}': {error}",
+                module.path.display()
+            )
+        })?;
         println!("kept intermediate LLVM IR at {}", ll_path.display());
         println!("kept intermediate object file at {}", obj_path.display());
         object_paths.push(obj_path);

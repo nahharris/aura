@@ -24,6 +24,14 @@ pub enum PrimitiveType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FuncParamRef {
+    pub name: Option<String>,
+    pub label: Option<String>,
+    pub trailing: bool,
+    pub ty: Box<TypeRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeRef {
     Primitive(PrimitiveType),
     InferVar(u32),
@@ -40,7 +48,11 @@ pub enum TypeRef {
         size: u64,
     },
     Func {
-        params: Vec<TypeRef>,
+        params: Vec<FuncParamRef>,
+        ret: Box<TypeRef>,
+    },
+    Macro {
+        params: Vec<FuncParamRef>,
         ret: Box<TypeRef>,
     },
     Tuple(Vec<TypeRef>),
@@ -91,10 +103,18 @@ impl fmt::Display for TypeRef {
             Self::Func { params, ret } => {
                 let joined = params
                     .iter()
-                    .map(ToString::to_string)
+                    .map(format_func_param)
                     .collect::<Vec<_>>()
                     .join(", ");
                 write!(f, "({joined}) -> {ret}")
+            }
+            Self::Macro { params, ret } => {
+                let joined = params
+                    .iter()
+                    .map(format_func_param)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "macro({joined}) -> {ret}")
             }
             Self::Tuple(items) => {
                 let joined = items
@@ -134,4 +154,21 @@ impl fmt::Display for TypeRef {
             Self::Unknown => f.write_str("<unknown>"),
         }
     }
+}
+
+fn format_func_param(param: &FuncParamRef) -> String {
+    let mut out = String::new();
+    if let Some(label) = &param.label {
+        out.push_str(label);
+        out.push(' ');
+    }
+    if let Some(name) = &param.name {
+        out.push_str(name);
+        out.push_str(": ");
+    }
+    out.push_str(&param.ty.to_string());
+    if param.trailing {
+        out.push_str(" (trailing)");
+    }
+    out
 }

@@ -36,6 +36,7 @@ pub enum CheckedStaticValue {
     Int(String),
     Float(String),
     Ident(String),
+    Label(String),
     String(String),
     Char(String),
 }
@@ -103,20 +104,32 @@ pub enum CheckedExpr {
     },
     MultiArm(Vec<CheckedExpr>),
     If {
+        result_ty: TyId,
         condition: Box<CheckedExpr>,
         then_branch: Box<CheckedExpr>,
         else_branch: Option<Box<CheckedExpr>>,
     },
     Cases {
-        arms: Vec<CheckedExpr>,
+        result_ty: TyId,
+        arms: Vec<CheckedCaseArm>,
+    },
+    Loop {
+        target: String,
+        result_ty: TyId,
+        condition: Option<Box<CheckedExpr>>,
+        body: Box<CheckedExpr>,
     },
     Return {
+        target: String,
         value: Box<CheckedExpr>,
     },
     Break {
+        target: String,
         value: Option<Box<CheckedExpr>>,
     },
-    Continue,
+    Continue {
+        target: String,
+    },
     Coerce {
         from: TyId,
         to: TyId,
@@ -140,6 +153,12 @@ pub struct CheckedBinding {
 pub struct CheckedEnumArm {
     pub variant_index: usize,
     pub binding_name: Option<String>,
+    pub body: CheckedExpr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedCaseArm {
+    pub guard: CheckedExpr,
     pub body: CheckedExpr,
 }
 
@@ -183,6 +202,7 @@ mod tests {
                 ty: TyId(0),
                 is_extern: false,
                 value: CheckedExpr::If {
+                    result_ty: TyId(2),
                     condition: Box::new(CheckedExpr::Ident("cond".to_string())),
                     then_branch: Box::new(CheckedExpr::Coerce {
                         from: TyId(1),

@@ -44,9 +44,11 @@ Resolve symbols, enforce type rules, and emit checked IR for downstream codegen.
 
 ## Runtime Surface
 
-- Runtime callable signatures come from [[Subsystems/Runtime Host]] metadata via `BuiltinRegistry::with_prelude()`.
-- This removes duplicated runtime signature tables from the middle of `aura-typecheck`.
-- Legacy builtin-member lowering for `Bytes`/`String` still exists, but the callable ABI table is now shared.
+- Runtime callable signatures come from Aura source stubs in `aura-stl/src/core.aura`, re-exported through `aura-stl/src/lib.aura`.
+- The checker no longer injects `BuiltinRegistry::with_prelude()` as the typing authority; runtime-host metadata remains for host ABI/link validation.
+- Non-macro `defstub` declarations are available as typed globals and lower to extern checked-IR declarations.
+- `Macro[...]` stubs are declaration-only and provide typing contracts for compiler-lowered builtin forms.
+- Legacy builtin-member lowering for `Bytes`/`String` still exists, but direct runtime callables are now typed through stubs.
 
 ## Checked IR Notes
 
@@ -57,6 +59,8 @@ Resolve symbols, enforce type rules, and emit checked IR for downstream codegen.
 - Enum-driven multi-arm methods lower to `CheckedExpr::EnumMatch`, using the resolved enum variant table from the type alias definition.
 - Named constructor forms (`Type.variant`, `Type.variant(payload)`) resolve against the type namespace first.
 - Shorthand constructor forms (`.variant`, `.variant(payload)`) remain expected-type-driven and work for both local and imported enum aliases.
+- `If`, `Cases`, and `Loop` are dedicated checked-IR control-flow nodes.
+- `Return`, `Break`, and `Continue` carry resolved target names so LLVM lowering can emit direct control transfer.
 
 ## Testing
 

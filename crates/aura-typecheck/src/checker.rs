@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use aura_diagnostics::type_ref::FuncParamRef;
 use aura_diagnostics::{Diagnostic, Issue, PrimitiveType, Stage, TypeRef, TypingContext};
 use aura_frontend::ast::{
     BinaryOp as ParsedBinaryOp, Decl, Expr, LabeledClosureArg, Pattern, Program, StaticArg,
@@ -7,16 +8,15 @@ use aura_frontend::ast::{
 };
 
 use crate::aliases::TypeAliases;
-use crate::builtins::{BuiltinRegistry, BuiltinTypeRef};
 use crate::checked_ir::{
-    BinaryOpKind, CheckedBinding, CheckedDecl, CheckedEnumArm, CheckedExpr, CheckedIr,
-    CheckedStaticArg, CheckedStaticValue, CheckedTypeExpr,
+    BinaryOpKind, CheckedBinding, CheckedCaseArm, CheckedDecl, CheckedEnumArm, CheckedExpr,
+    CheckedIr, CheckedStaticArg, CheckedStaticValue, CheckedTypeExpr,
 };
 use crate::interfaces::InterfaceRegistry;
 use crate::modules::ModuleChecker;
 use crate::numeric::can_implicitly_widen;
 use crate::patterns::PatternChecker;
-use crate::types::{Ty, TyId, TyInterner};
+use crate::types::{FuncParam, Ty, TyId, TyInterner};
 use crate::unify::Unifier;
 
 use crate::generics::GenericConstraint;
@@ -26,7 +26,6 @@ use crate::{CheckContext, CheckOptions, ImportBinding, TypeImportBinding};
 pub struct TypeChecker {
     interner: TyInterner,
     aliases: TypeAliases,
-    builtins: BuiltinRegistry,
     module_checker: ModuleChecker,
     pattern_checker: PatternChecker,
     interfaces: InterfaceRegistry,
@@ -48,6 +47,12 @@ pub struct TypeChecker {
     current_match_subject: Option<MatchSubject>,
     resolved_enum_ctors: HashMap<String, ResolvedEnumCtor>,
     resolved_method_calls: HashMap<String, String>,
+    active_labels: Vec<String>,
+    active_function_targets: Vec<FunctionJumpTarget>,
+    active_loop_targets: Vec<ActiveLoopTarget>,
+    resolved_loop_targets: HashMap<String, ResolvedLoopInfo>,
+    resolved_jump_targets: HashMap<String, String>,
+    next_loop_target: usize,
     options: CheckOptions,
 }
 
@@ -74,6 +79,26 @@ struct MatchSubject {
 struct ResolvedEnumCtor {
     enum_ty: TyId,
     variant_index: usize,
+}
+
+#[derive(Debug, Clone)]
+struct FunctionJumpTarget {
+    name: String,
+    return_ty: TyId,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveLoopTarget {
+    target: String,
+    label: Option<String>,
+    result_ty: TyId,
+    saw_break: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedLoopInfo {
+    target: String,
+    result_ty: TyId,
 }
 
 #[derive(Debug, Clone)]
@@ -178,7 +203,6 @@ impl TypeChecker {
         let mut checker = Self {
             interner,
             aliases,
-            builtins: BuiltinRegistry::with_prelude(),
             module_checker: ModuleChecker::new(),
             pattern_checker: PatternChecker::new(),
             interfaces: InterfaceRegistry::with_prelude(),
@@ -200,24 +224,20 @@ impl TypeChecker {
             current_match_subject: None,
             resolved_enum_ctors: HashMap::new(),
             resolved_method_calls: HashMap::new(),
+            active_labels: Vec::new(),
+            active_function_targets: Vec::new(),
+            active_loop_targets: Vec::new(),
+            resolved_loop_targets: HashMap::new(),
+            resolved_jump_targets: HashMap::new(),
+            next_loop_target: 0,
             options,
         };
 
-        for sig in checker.builtins.signatures().cloned().collect::<Vec<_>>() {
-            let param_tys = sig
-                .params
-                .iter()
-                .map(|ty| checker.intern_builtin_type(ty))
-                .collect::<Vec<_>>();
-            let ret = checker.intern_builtin_type(&sig.ret);
-            let func_ty = checker.interner.intern(Ty::Func {
-                params: param_tys,
-                ret,
-            });
-            checker.insert_value(sig.name, func_ty, false);
-        }
-
-        let imported_bindings = checker.imported_values.values().cloned().collect::<Vec<_>>();
+        let imported_bindings = checker
+            .imported_values
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
         for binding in imported_bindings {
             let ty = checker.type_ref_to_ty(&binding.ty);
             checker.insert_value(binding.local_name.clone(), ty, false);
@@ -254,6 +274,17 @@ impl TypeChecker {
 
     fn nominal_ty(&mut self, name: &str) -> TyId {
         self.interner.intern(Ty::Nominal(name.to_string()))
+    }
+
+    fn positional_params(&self, params: impl IntoIterator<Item = TyId>) -> Vec<FuncParam> {
+        params.into_iter().map(FuncParam::positional).collect()
+    }
+
+    fn named_params_from_fields(&mut self, fields: &[(String, TypeExpr)]) -> Vec<FuncParam> {
+        fields
+            .iter()
+            .map(|(name, ty)| FuncParam::named(name.clone(), self.resolve_type_expr(ty)))
+            .collect()
     }
 
     fn type_ref_to_ty(&mut self, ty: &TypeRef) -> TyId {
@@ -308,10 +339,31 @@ impl TypeChecker {
             TypeRef::Func { params, ret } => {
                 let param_tys = params
                     .iter()
-                    .map(|param| self.type_ref_to_ty(param))
+                    .map(|param| FuncParam {
+                        name: param.name.clone(),
+                        label: param.label.clone(),
+                        trailing: param.trailing,
+                        ty: self.type_ref_to_ty(&param.ty),
+                    })
                     .collect::<Vec<_>>();
                 let ret_ty = self.type_ref_to_ty(ret);
                 self.interner.intern(Ty::Func {
+                    params: param_tys,
+                    ret: ret_ty,
+                })
+            }
+            TypeRef::Macro { params, ret } => {
+                let param_tys = params
+                    .iter()
+                    .map(|param| FuncParam {
+                        name: param.name.clone(),
+                        label: param.label.clone(),
+                        trailing: param.trailing,
+                        ty: self.type_ref_to_ty(&param.ty),
+                    })
+                    .collect::<Vec<_>>();
+                let ret_ty = self.type_ref_to_ty(ret);
+                self.interner.intern(Ty::Macro {
                     params: param_tys,
                     ret: ret_ty,
                 })
@@ -362,7 +414,9 @@ impl TypeChecker {
     }
 
     fn namespace_binding(&self, namespace: &str, field: &str) -> Option<&ImportBinding> {
-        self.namespaces.get(namespace).and_then(|fields| fields.get(field))
+        self.namespaces
+            .get(namespace)
+            .and_then(|fields| fields.get(field))
     }
 
     fn namespace_alias_conflicts(&self, name: &str) -> bool {
@@ -373,16 +427,104 @@ impl TypeChecker {
         format!("{expr:?}")
     }
 
+    fn next_loop_target_name(&mut self) -> String {
+        let target = format!("loop#{}", self.next_loop_target);
+        self.next_loop_target += 1;
+        target
+    }
+
+    fn current_jump_label(&self) -> Option<String> {
+        self.active_labels.last().cloned()
+    }
+
+    fn static_label_arg(&mut self, static_args: &[StaticArg], form: &str) -> Option<String> {
+        match static_args.first() {
+            None => None,
+            Some(StaticArg::Value(StaticValueExpr::Label(label)))
+            | Some(StaticArg::Value(StaticValueExpr::Ident(label))) => Some(label.clone()),
+            Some(_) => {
+                self.diagnostics.push(
+                    self.typecheck_error(
+                        Issue::BuiltinForm,
+                        format!("{form} label must be a dot-identifier static argument"),
+                    )
+                    .with_hint(format!("use form like {form}[.target] ...")),
+                );
+                None
+            }
+        }
+    }
+
+    fn resolve_function_jump_target(
+        &mut self,
+        static_args: &[StaticArg],
+        form: &str,
+    ) -> Option<FunctionJumpTarget> {
+        let label = self.static_label_arg(static_args, form);
+        if let Some(label) = label {
+            let resolved = self
+                .active_function_targets
+                .iter()
+                .rev()
+                .find(|target| target.name == label)
+                .cloned();
+            if resolved.is_none() {
+                self.diagnostics.push(
+                    self.typecheck_error(
+                        Issue::BuiltinForm,
+                        format!("{form} target '.{label}' does not name an enclosing function"),
+                    )
+                    .with_hint("use an enclosing function label or remove the explicit target"),
+                );
+            }
+            resolved
+        } else {
+            let resolved = self.active_function_targets.last().cloned();
+            if resolved.is_none() {
+                self.diagnostics.push(
+                    self.typecheck_error(
+                        Issue::BuiltinForm,
+                        format!("{form} is only valid inside a function body"),
+                    )
+                    .with_hint("move the jump into a function body"),
+                );
+            }
+            resolved
+        }
+    }
+
+    fn resolve_loop_jump_target(&mut self, static_args: &[StaticArg], form: &str) -> Option<usize> {
+        let label = self.static_label_arg(static_args, form);
+        let resolved = if let Some(label) = label.clone() {
+            self.active_loop_targets
+                .iter()
+                .rposition(|target| target.label.as_deref() == Some(label.as_str()))
+        } else if self.active_loop_targets.is_empty() {
+            None
+        } else {
+            Some(self.active_loop_targets.len() - 1)
+        };
+
+        if resolved.is_none() {
+            let message = if let Some(label) = label {
+                format!("{form} target '.{label}' does not name an enclosing loop")
+            } else {
+                format!("{form} is only valid inside a loop body")
+            };
+            self.diagnostics.push(
+                self.typecheck_error(Issue::BuiltinForm, message)
+                    .with_hint("use an enclosing loop target or remove the jump"),
+            );
+        }
+        resolved
+    }
+
     fn enum_alias(&self, name: &str) -> Option<TyId> {
         let ty = self.aliases.get(name)?;
         matches!(self.interner.get(ty), Some(Ty::Enum(_))).then_some(ty)
     }
 
-    fn enum_variant(
-        &self,
-        enum_ty: TyId,
-        name: &str,
-    ) -> Option<(usize, Option<TyId>)> {
+    fn enum_variant(&self, enum_ty: TyId, name: &str) -> Option<(usize, Option<TyId>)> {
         let Ty::Enum(variants) = self.interner.get(enum_ty)? else {
             return None;
         };
@@ -541,9 +683,10 @@ impl TypeChecker {
     ) -> Option<CheckedExpr> {
         let kind = Self::classify_builtin_member_call(object, field)?;
         let (name, lowered_args): (&str, Vec<CheckedExpr>) = match kind {
-            BuiltinMemberCall::BytesNew => {
-                ("bytes_new", args.iter().map(|arg| self.lower_expr(arg)).collect())
-            }
+            BuiltinMemberCall::BytesNew => (
+                "bytes_new",
+                args.iter().map(|arg| self.lower_expr(arg)).collect(),
+            ),
             BuiltinMemberCall::BytesGet => (
                 "bytes_get",
                 std::iter::once(self.lower_expr(object))
@@ -692,6 +835,43 @@ impl TypeChecker {
                 self.current_expr_span = prev_span;
             }
 
+            if let Decl::Stub(stub) = decl {
+                if self.imported_binding(&stub.name).is_some()
+                    || self.namespace_alias_conflicts(&stub.name)
+                {
+                    self.diagnostics.push(
+                        self.typecheck_error(
+                            Issue::ResolveDuplicate,
+                            format!("stub '{}' conflicts with an imported name", stub.name),
+                        )
+                        .with_stage(Stage::Resolver)
+                        .with_hint("rename the stub or adjust the imports"),
+                    );
+                    continue;
+                }
+
+                self.push_generic_scope();
+                for p in &stub.static_params {
+                    let t = self.interner.intern(Ty::GenericParam(p.name.clone()));
+                    self.insert_generic(p.name.clone(), t);
+                }
+                let ty = self.resolve_type_expr(&stub.ty);
+                self.pop_generic_scope();
+
+                if !matches!(self.interner.get(ty), Some(Ty::Macro { .. })) {
+                    self.ir.declarations.push(CheckedDecl {
+                        name: stub.name.clone(),
+                        link_name: stub.name.clone(),
+                        params: Vec::new(),
+                        ty,
+                        is_extern: true,
+                        value: CheckedExpr::Any,
+                    });
+                }
+                values.insert(stub.name.clone(), ty);
+                self.insert_value(stub.name.clone(), ty, false);
+            }
+
             if let Decl::Function(function) = decl {
                 if self.imported_binding(&function.name).is_some()
                     || self.namespace_alias_conflicts(&function.name)
@@ -713,13 +893,10 @@ impl TypeChecker {
                 self.current_expr_span = Expr::span(&function.body);
                 self.push_obligation(format!("checking function `{}`", function.name));
                 self.pending_constraints.clear();
-                let receiver_ty = function
-                    .receiver
-                    .as_ref()
-                    .map(|receiver| {
-                        self.validate_method_receiver(receiver);
-                        self.resolve_type_expr(receiver)
-                    });
+                let receiver_ty = function.receiver.as_ref().map(|receiver| {
+                    self.validate_method_receiver(receiver);
+                    self.resolve_type_expr(receiver)
+                });
                 self.push_generic_scope();
                 for p in &function.static_params {
                     let t = self.interner.intern(Ty::GenericParam(p.name.clone()));
@@ -735,8 +912,9 @@ impl TypeChecker {
                         if matches!(self.interner.get(receiver_ty), Some(Ty::Enum(_))) {
                             self.validate_enum_multi_arm_patterns(arms, receiver_ty);
                         } else {
-                            self.diagnostics
-                                .extend(self.pattern_checker.validate_multi_arm_exhaustiveness(arms));
+                            self.diagnostics.extend(
+                                self.pattern_checker.validate_multi_arm_exhaustiveness(arms),
+                            );
                         }
                     } else {
                         self.diagnostics
@@ -753,8 +931,14 @@ impl TypeChecker {
                     .collect();
                 let expected_ret = self.resolve_type_expr(&function.return_type);
                 self.validate_main_signature(function);
+                self.active_function_targets.push(FunctionJumpTarget {
+                    name: function.name.clone(),
+                    return_ty: expected_ret,
+                });
                 let previous_match_subject = self.current_match_subject.clone();
-                if let (Some(receiver_ty), Some(first_param)) = (receiver_ty, function.params.first()) {
+                if let (Some(receiver_ty), Some(first_param)) =
+                    (receiver_ty, function.params.first())
+                {
                     self.current_match_subject = Some(MatchSubject {
                         name: first_param.name.clone(),
                         ty: receiver_ty,
@@ -773,19 +957,24 @@ impl TypeChecker {
                     ConversionMode::ImplicitOnly,
                 );
                 let func_ty = self.interner.intern(Ty::Func {
-                    params: param_tys,
+                    params: self.positional_params(param_tys),
                     ret: expected_ret,
                 });
                 self.ir.declarations.push(CheckedDecl {
                     name: function.name.clone(),
                     link_name: function.name.clone(),
-                    params: function.params.iter().map(|param| param.name.clone()).collect(),
+                    params: function
+                        .params
+                        .iter()
+                        .map(|param| param.name.clone())
+                        .collect(),
                     ty: func_ty,
                     is_extern: false,
                     value: lowered_body,
                 });
                 self.pop_scope();
                 self.pop_generic_scope();
+                let _ = self.active_function_targets.pop();
                 self.insert_value(function.name.clone(), func_ty, false);
                 if let Some(receiver_ty) = receiver_ty {
                     self.register_method(
@@ -816,7 +1005,10 @@ impl TypeChecker {
                     self.diagnostics.push(
                         self.typecheck_error(
                             Issue::ResolveDuplicate,
-                            format!("macro '{}' conflicts with an imported name", macro_decl.name),
+                            format!(
+                                "macro '{}' conflicts with an imported name",
+                                macro_decl.name
+                            ),
                         )
                         .with_stage(Stage::Resolver)
                         .with_hint("rename the macro or adjust the imports"),
@@ -927,11 +1119,16 @@ impl TypeChecker {
                     .map(|t| self.resolve_type_expr(t))
                     .unwrap_or_else(|| self.interner.fresh_infer_var(&mut self.next_infer_var));
                 self.interner.intern(Ty::Func {
-                    params: param_tys,
+                    params: self.positional_params(param_tys),
                     ret,
                 })
             }
-            Expr::Label { expr, .. } => self.infer_expr(expr),
+            Expr::Label { label, expr } => {
+                self.active_labels.push(label.clone());
+                let ty = self.infer_expr(expr);
+                let _ = self.active_labels.pop();
+                ty
+            }
             Expr::Tuple(items) => {
                 if items.is_empty() {
                     return self.interner.intern(Ty::Void);
@@ -1151,6 +1348,9 @@ impl TypeChecker {
                 }
                 if matches!(callee_name.as_deref(), Some("cases")) {
                     return self.infer_cases_call_with_expected(args, trailing, None);
+                }
+                if matches!(callee_name.as_deref(), Some("loop")) {
+                    return self.infer_loop_call_with_expected(expr, args, trailing, None);
                 }
                 let callee_ty = self.infer_expr(callee);
                 self.infer_call_expr(
@@ -1394,24 +1594,54 @@ impl TypeChecker {
                 macro_name,
                 operand,
                 static_args,
-            } if macro_name == "return" => self.infer_expr(operand),
-            Expr::MacroApply {
-                macro_name,
-                operand,
-                static_args,
-            } if macro_name == "break" => {
-                if let Expr::List(items) = TypeChecker::base_expr(operand.as_ref()) {
-                    if let Some(v) = items.first() {
-                        return self.infer_expr(v);
-                    }
+            } if macro_name == "return" => {
+                if let Some(target) = self.resolve_function_jump_target(static_args, "return") {
+                    let actual = self.infer_expr_with_expected(operand, target.return_ty);
+                    self.require_assignable(target.return_ty, actual, "return value");
+                    self.resolved_jump_targets
+                        .insert(Self::expr_cache_key(expr), target.name);
                 }
-                self.interner.intern(Ty::Void)
+                self.interner.intern(Ty::Never)
             }
             Expr::MacroApply {
                 macro_name,
                 operand,
                 static_args,
-            } if macro_name == "continue" => self.interner.intern(Ty::Void),
+            } if macro_name == "break" => {
+                if let Some(target_idx) = self.resolve_loop_jump_target(static_args, "break") {
+                    let result_ty = self.active_loop_targets[target_idx].result_ty;
+                    let actual = if let Expr::List(items) = TypeChecker::base_expr(operand.as_ref())
+                    {
+                        if let Some(v) = items.first() {
+                            self.infer_expr_with_expected(v, result_ty)
+                        } else {
+                            self.interner.intern(Ty::Void)
+                        }
+                    } else {
+                        self.infer_expr_with_expected(operand, result_ty)
+                    };
+                    self.require_assignable(result_ty, actual, "break value");
+                    self.active_loop_targets[target_idx].saw_break = true;
+                    self.resolved_jump_targets.insert(
+                        Self::expr_cache_key(expr),
+                        self.active_loop_targets[target_idx].target.clone(),
+                    );
+                }
+                self.interner.intern(Ty::Never)
+            }
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                static_args,
+            } if macro_name == "continue" => {
+                if let Some(target_idx) = self.resolve_loop_jump_target(static_args, "continue") {
+                    self.resolved_jump_targets.insert(
+                        Self::expr_cache_key(expr),
+                        self.active_loop_targets[target_idx].target.clone(),
+                    );
+                }
+                self.interner.intern(Ty::Never)
+            }
             Expr::MacroApply {
                 macro_name,
                 operand,
@@ -1560,8 +1790,10 @@ impl TypeChecker {
                                     return expected;
                                 }
                                 ([payload_expr], None, Some(expected_payload_ty)) => {
-                                    let payload_ty = self
-                                        .infer_expr_with_expected(payload_expr, *expected_payload_ty);
+                                    let payload_ty = self.infer_expr_with_expected(
+                                        payload_expr,
+                                        *expected_payload_ty,
+                                    );
                                     self.require_assignable(
                                         *expected_payload_ty,
                                         payload_ty,
@@ -1626,9 +1858,13 @@ impl TypeChecker {
                     }
                 }
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
-                    if let Some(actual) = self
-                        .infer_builtin_member_call(object, field, args, trailing, Some(expected))
-                    {
+                    if let Some(actual) = self.infer_builtin_member_call(
+                        object,
+                        field,
+                        args,
+                        trailing,
+                        Some(expected),
+                    ) {
                         self.require_assignable(expected, actual, "bidirectional expected type");
                         return actual;
                     }
@@ -1648,6 +1884,12 @@ impl TypeChecker {
                     self.require_assignable(expected, actual, "bidirectional expected type");
                     return actual;
                 }
+                if matches!(callee_name.as_deref(), Some("loop")) {
+                    let actual =
+                        self.infer_loop_call_with_expected(expr, args, trailing, Some(expected));
+                    self.require_assignable(expected, actual, "bidirectional expected type");
+                    return actual;
+                }
                 let callee_ty = self.infer_expr(callee);
                 let actual = self.infer_call_expr(
                     callee_ty,
@@ -1660,8 +1902,10 @@ impl TypeChecker {
                 self.require_assignable(expected, actual, "bidirectional expected type");
                 actual
             }
-            (Expr::Label { expr, .. }, _) => {
+            (Expr::Label { label, expr }, _) => {
+                self.active_labels.push(label.clone());
                 let actual = self.infer_expr_with_expected(expr, expected);
+                let _ = self.active_labels.pop();
                 self.require_assignable(expected, actual, "bidirectional expected type");
                 actual
             }
@@ -1733,7 +1977,9 @@ impl TypeChecker {
                             },
                             "integer literal is out of range for USize",
                         )
-                        .with_hint("use a non-negative integer that fits in the target pointer width"),
+                        .with_hint(
+                            "use a non-negative integer that fits in the target pointer width",
+                        ),
                     );
                     self.unknown_ty()
                 }
@@ -1861,7 +2107,7 @@ impl TypeChecker {
                 },
                 _,
             ) if macro_name == "return" => {
-                let actual = self.infer_expr_with_expected(operand, expected);
+                let actual = self.infer_expr(expr);
                 self.require_assignable(expected, actual, "bidirectional expected type");
                 actual
             }
@@ -1961,7 +2207,7 @@ impl TypeChecker {
                     .collect::<Vec<_>>();
 
                 for (declared, expected_param) in param_tys.iter().zip(expected_params.iter()) {
-                    self.require_assignable(*expected_param, *declared, "closure parameter");
+                    self.require_assignable(expected_param.ty, *declared, "closure parameter");
                 }
 
                 let ret = return_type
@@ -1969,7 +2215,7 @@ impl TypeChecker {
                     .map(|t| self.resolve_type_expr(t))
                     .unwrap_or(expected_ret);
                 self.interner.intern(Ty::Func {
-                    params: param_tys,
+                    params: self.positional_params(param_tys),
                     ret,
                 })
             }
@@ -1978,19 +2224,6 @@ impl TypeChecker {
                 self.require_assignable(expected, actual, "bidirectional expected type");
                 actual
             }
-        }
-    }
-
-    fn intern_builtin_type(&mut self, ty: &BuiltinTypeRef) -> TyId {
-        match ty {
-            BuiltinTypeRef::Int32 => self.interner.intern(Ty::Int32),
-            BuiltinTypeRef::ISize => self.interner.intern(Ty::ISize),
-            BuiltinTypeRef::USize => self.interner.intern(Ty::USize),
-            BuiltinTypeRef::UInt8 => self.interner.intern(Ty::UInt8),
-            BuiltinTypeRef::Void => self.interner.intern(Ty::Void),
-            BuiltinTypeRef::Bytes => self.nominal_ty("Bytes"),
-            BuiltinTypeRef::String => self.nominal_ty("String"),
-            BuiltinTypeRef::Never => self.interner.intern(Ty::Never),
         }
     }
 
@@ -2197,6 +2430,7 @@ impl TypeChecker {
             StaticValueExpr::Int(v) => CheckedStaticValue::Int(v.clone()),
             StaticValueExpr::Float(v) => CheckedStaticValue::Float(v.clone()),
             StaticValueExpr::Ident(v) => CheckedStaticValue::Ident(v.clone()),
+            StaticValueExpr::Label(v) => CheckedStaticValue::Label(v.clone()),
             StaticValueExpr::String(v) => CheckedStaticValue::String(v.clone()),
             StaticValueExpr::Char(v) => CheckedStaticValue::Char(v.clone()),
         }
@@ -2261,6 +2495,12 @@ impl TypeChecker {
         if matches!(rhs_ty, Ty::Any) {
             return lhs;
         }
+        if matches!(lhs_ty, Ty::Never) {
+            return rhs;
+        }
+        if matches!(rhs_ty, Ty::Never) {
+            return lhs;
+        }
 
         if matches!(
             self.conversion_decision(lhs, rhs, ConversionMode::ImplicitOnly, context),
@@ -2275,9 +2515,43 @@ impl TypeChecker {
             return rhs;
         }
 
+        if self.type_contains_infer_var(lhs) || self.type_contains_infer_var(rhs) {
+            if let Ok(unified) = self.unifier.unify(&mut self.interner, lhs, rhs, context) {
+                return self.unifier.resolve(unified);
+            }
+        }
+
         self.emit_type_mismatch(lhs, rhs, context, "branch join compatibility check failed");
 
         self.unify_with_context(lhs, rhs, context)
+    }
+
+    fn type_contains_infer_var(&self, ty: TyId) -> bool {
+        let ty = self.unifier.resolve(ty);
+        match self.interner.get(ty) {
+            Some(Ty::InferVar(_)) => true,
+            Some(Ty::List(item)) | Some(Ty::Set(item)) => self.type_contains_infer_var(*item),
+            Some(Ty::Dict { key, value }) => {
+                self.type_contains_infer_var(*key) || self.type_contains_infer_var(*value)
+            }
+            Some(Ty::Array { item, .. }) => self.type_contains_infer_var(*item),
+            Some(Ty::Tuple(items)) | Some(Ty::Union(items)) => {
+                items.iter().any(|item| self.type_contains_infer_var(*item))
+            }
+            Some(Ty::Struct(fields)) => fields
+                .iter()
+                .any(|(_, field_ty)| self.type_contains_infer_var(*field_ty)),
+            Some(Ty::Enum(variants)) => variants
+                .iter()
+                .any(|(_, payload)| payload.is_some_and(|ty| self.type_contains_infer_var(ty))),
+            Some(Ty::Func { params, ret }) | Some(Ty::Macro { params, ret }) => {
+                params
+                    .iter()
+                    .any(|param| self.type_contains_infer_var(param.ty))
+                    || self.type_contains_infer_var(*ret)
+            }
+            _ => false,
+        }
     }
 
     fn resolve_type_expr(&mut self, ty: &TypeExpr) -> TyId {
@@ -2363,6 +2637,54 @@ impl TypeChecker {
                 }
 
                 match name.as_str() {
+                    "Int8" => {
+                        self.enforce_exact_type_arity("Int8", args, 0);
+                        self.interner.intern(Ty::Int8)
+                    }
+                    "Int16" => {
+                        self.enforce_exact_type_arity("Int16", args, 0);
+                        self.interner.intern(Ty::Int16)
+                    }
+                    "Int32" => {
+                        self.enforce_exact_type_arity("Int32", args, 0);
+                        self.interner.intern(Ty::Int32)
+                    }
+                    "Int64" => {
+                        self.enforce_exact_type_arity("Int64", args, 0);
+                        self.interner.intern(Ty::Int64)
+                    }
+                    "Int128" => {
+                        self.enforce_exact_type_arity("Int128", args, 0);
+                        self.interner.intern(Ty::Int128)
+                    }
+                    "UInt8" => {
+                        self.enforce_exact_type_arity("UInt8", args, 0);
+                        self.interner.intern(Ty::UInt8)
+                    }
+                    "UInt16" => {
+                        self.enforce_exact_type_arity("UInt16", args, 0);
+                        self.interner.intern(Ty::UInt16)
+                    }
+                    "UInt32" => {
+                        self.enforce_exact_type_arity("UInt32", args, 0);
+                        self.interner.intern(Ty::UInt32)
+                    }
+                    "UInt64" => {
+                        self.enforce_exact_type_arity("UInt64", args, 0);
+                        self.interner.intern(Ty::UInt64)
+                    }
+                    "UInt128" => {
+                        self.enforce_exact_type_arity("UInt128", args, 0);
+                        self.interner.intern(Ty::UInt128)
+                    }
+                    "ISize" => {
+                        self.enforce_exact_type_arity("ISize", args, 0);
+                        self.interner.intern(Ty::ISize)
+                    }
+                    "USize" => {
+                        self.enforce_exact_type_arity("USize", args, 0);
+                        self.interner.intern(Ty::USize)
+                    }
                     "Bool" => {
                         self.enforce_exact_type_arity("Bool", args, 0);
                         self.interner.intern(Ty::Bool)
@@ -2415,12 +2737,47 @@ impl TypeChecker {
                     }
                     "Func" => {
                         self.enforce_exact_type_arity("Func", args, 2);
-                        let a = self.resolve_required_type_arg(args, 0, "Func", "param0");
+                        let params = match args.first() {
+                            Some(StaticArg::Type(TypeExpr::Tuple(items))) => {
+                                let item_tys = items
+                                    .iter()
+                                    .map(|item| self.resolve_type_expr(item))
+                                    .collect::<Vec<_>>();
+                                self.positional_params(item_tys)
+                            }
+                            Some(StaticArg::Type(TypeExpr::Struct(fields))) => {
+                                self.named_params_from_fields(fields)
+                            }
+                            Some(StaticArg::Type(ty)) => {
+                                let param_ty = self.resolve_type_expr(ty);
+                                self.positional_params(vec![param_ty])
+                            }
+                            Some(StaticArg::Value(_)) | None => Vec::new(),
+                        };
                         let b = self.resolve_required_type_arg(args, 1, "Func", "ret");
-                        self.interner.intern(Ty::Func {
-                            params: vec![a],
-                            ret: b,
-                        })
+                        self.interner.intern(Ty::Func { params, ret: b })
+                    }
+                    "Macro" => {
+                        self.enforce_exact_type_arity("Macro", args, 2);
+                        let params = match args.first() {
+                            Some(StaticArg::Type(TypeExpr::Tuple(items))) => {
+                                let item_tys = items
+                                    .iter()
+                                    .map(|item| self.resolve_type_expr(item))
+                                    .collect::<Vec<_>>();
+                                self.positional_params(item_tys)
+                            }
+                            Some(StaticArg::Type(TypeExpr::Struct(fields))) => {
+                                self.named_params_from_fields(fields)
+                            }
+                            Some(StaticArg::Type(ty)) => {
+                                let param_ty = self.resolve_type_expr(ty);
+                                self.positional_params(vec![param_ty])
+                            }
+                            Some(StaticArg::Value(_)) | None => Vec::new(),
+                        };
+                        let ret = self.resolve_required_type_arg(args, 1, "Macro", "ret");
+                        self.interner.intern(Ty::Macro { params, ret })
                     }
                     _ => self
                         .lookup_generic(name)
@@ -2588,7 +2945,7 @@ impl TypeChecker {
             .map(|t| self.unifier.resolve(t))
             .unwrap_or_else(|| self.interner.fresh_infer_var(&mut self.next_infer_var));
         let expected_func = self.interner.intern(Ty::Func {
-            params: expected_params.clone(),
+            params: self.positional_params(expected_params.clone()),
             ret: expected_ret,
         });
 
@@ -2601,7 +2958,7 @@ impl TypeChecker {
             if cparams.len() == expected_params.len() {
                 used_known_func_shape = true;
                 for (target, source) in expected_params.iter().zip(cparams.iter()) {
-                    let _ = self.unify_with_context(*target, *source, "callable parameter");
+                    let _ = self.unify_with_context(*target, source.ty, "callable parameter");
                 }
                 self.require_assignable(expected_ret, cret, "callable return");
             }
@@ -2646,9 +3003,9 @@ impl TypeChecker {
             let params = placeholder_params
                 .into_iter()
                 .map(|ty| self.unifier.resolve(ty))
-                .collect();
+                .collect::<Vec<_>>();
             self.interner.intern(Ty::Func {
-                params,
+                params: self.positional_params(params),
                 ret: resolved,
             })
         }
@@ -2733,6 +3090,65 @@ impl TypeChecker {
         };
 
         self.infer_multi_arm_with_expected(arms, expected)
+    }
+
+    fn infer_loop_call_with_expected(
+        &mut self,
+        expr: &Expr,
+        args: &[Expr],
+        trailing: &[LabeledClosureArg],
+        expected: Option<TyId>,
+    ) -> TyId {
+        if !args.is_empty() {
+            self.diagnostics.push(
+                self.typecheck_error(Issue::BuiltinForm, "loop does not accept runtime arguments")
+                    .with_hint("use form: loop do { ... } or loop while { ... } do { ... }"),
+            );
+            return self.unknown_ty();
+        }
+
+        let loop_result_ty =
+            expected.unwrap_or_else(|| self.interner.fresh_infer_var(&mut self.next_infer_var));
+        let loop_target = self.next_loop_target_name();
+        self.resolved_loop_targets.insert(
+            Self::expr_cache_key(expr),
+            ResolvedLoopInfo {
+                target: loop_target.clone(),
+                result_ty: loop_result_ty,
+            },
+        );
+        self.active_loop_targets.push(ActiveLoopTarget {
+            target: loop_target.clone(),
+            label: self.current_jump_label(),
+            result_ty: loop_result_ty,
+            saw_break: false,
+        });
+
+        let Some(do_body) = trailing.iter().find(|c| c.label == "do") else {
+            self.diagnostics.push(
+                self.typecheck_error(Issue::BuiltinForm, "loop requires labeled 'do' closure")
+                    .with_hint("use form: loop do { ... } or loop while { ... } do { ... }"),
+            );
+            let _ = self.active_loop_targets.pop();
+            return self.unknown_ty();
+        };
+
+        if let Some(condition) = trailing.iter().find(|c| c.label == "while") {
+            let bool_ty = self.interner.intern(Ty::Bool);
+            let cond_ty = self.infer_expr_with_expected(&condition.body, bool_ty);
+            self.require_assignable(bool_ty, cond_ty, "loop condition");
+        }
+
+        let _ = self.infer_expr(&do_body.body);
+        let loop_state = self
+            .active_loop_targets
+            .pop()
+            .expect("loop target should exist during loop inference");
+        if loop_state.saw_break {
+            self.unifier.resolve(loop_state.result_ty)
+        } else {
+            self.interner.intern(Ty::Never)
+        }
     }
 
     fn instantiate_call_callee(
@@ -2864,10 +3280,28 @@ impl TypeChecker {
             Ty::Func { params, ret } => {
                 let p = params
                     .iter()
-                    .map(|x| self.substitute_ty_id(*x, subst))
+                    .map(|x| FuncParam {
+                        name: x.name.clone(),
+                        label: x.label.clone(),
+                        trailing: x.trailing,
+                        ty: self.substitute_ty_id(x.ty, subst),
+                    })
                     .collect();
                 let r = self.substitute_ty_id(ret, subst);
                 self.interner.intern(Ty::Func { params: p, ret: r })
+            }
+            Ty::Macro { params, ret } => {
+                let p = params
+                    .iter()
+                    .map(|x| FuncParam {
+                        name: x.name.clone(),
+                        label: x.label.clone(),
+                        trailing: x.trailing,
+                        ty: self.substitute_ty_id(x.ty, subst),
+                    })
+                    .collect();
+                let r = self.substitute_ty_id(ret, subst);
+                self.interner.intern(Ty::Macro { params: p, ret: r })
             }
             Ty::Tuple(items) => {
                 let out = items
@@ -3391,7 +3825,24 @@ impl TypeChecker {
                     && ap
                         .iter()
                         .zip(bp.iter())
-                        .all(|(x, y)| self.structurally_equivalent(*x, *y))
+                        .all(|(x, y)| self.structurally_equivalent(x.ty, y.ty))
+                    && self.structurally_equivalent(*ar, *br)
+            }
+            (
+                Ty::Macro {
+                    params: ap,
+                    ret: ar,
+                },
+                Ty::Macro {
+                    params: bp,
+                    ret: br,
+                },
+            ) => {
+                ap.len() == bp.len()
+                    && ap
+                        .iter()
+                        .zip(bp.iter())
+                        .all(|(x, y)| self.structurally_equivalent(x.ty, y.ty))
                     && self.structurally_equivalent(*ar, *br)
             }
             _ => false,
@@ -3536,7 +3987,11 @@ impl TypeChecker {
         self.require_assignable(bool_ty, guard_ty, "arm guard");
     }
 
-    fn validate_enum_multi_arm_patterns(&mut self, arms: &[aura_frontend::ast::Arm], enum_ty: TyId) {
+    fn validate_enum_multi_arm_patterns(
+        &mut self,
+        arms: &[aura_frontend::ast::Arm],
+        enum_ty: TyId,
+    ) {
         let Some(Ty::Enum(variants)) = self.interner.get(enum_ty).cloned() else {
             return;
         };
@@ -3747,6 +4202,90 @@ impl TypeChecker {
                     .collect(),
             ),
             Expr::Call { callee, args, .. } => {
+                if let Expr::Ident(name) = TypeChecker::base_expr(callee.as_ref()) {
+                    if name == "if" {
+                        let condition = args
+                            .first()
+                            .map(|arg| Box::new(self.lower_expr(arg)))
+                            .unwrap_or_else(|| Box::new(CheckedExpr::Any));
+                        let then_branch = if let Expr::Call { trailing, .. } = expr {
+                            trailing
+                                .iter()
+                                .find(|closure| closure.label == "then")
+                                .map(|closure| Box::new(self.lower_expr(&closure.body)))
+                                .unwrap_or_else(|| Box::new(CheckedExpr::Any))
+                        } else {
+                            Box::new(CheckedExpr::Any)
+                        };
+                        let else_branch = if let Expr::Call { trailing, .. } = expr {
+                            trailing
+                                .iter()
+                                .find(|closure| closure.label == "else")
+                                .map(|closure| Box::new(self.lower_expr(&closure.body)))
+                        } else {
+                            None
+                        };
+                        return CheckedExpr::If {
+                            result_ty: self.preview_expr_ty(expr),
+                            condition,
+                            then_branch,
+                            else_branch,
+                        };
+                    }
+                    if name == "cases" {
+                        if let Expr::Call { trailing, .. } = expr {
+                            if let Some(when) =
+                                trailing.iter().find(|closure| closure.label == "when")
+                            {
+                                if let Expr::MultiArm(arms) = TypeChecker::base_expr(&when.body) {
+                                    return CheckedExpr::Cases {
+                                        result_ty: self.preview_expr_ty(expr),
+                                        arms: arms
+                                            .iter()
+                                            .map(|arm| CheckedCaseArm {
+                                                guard: arm
+                                                    .guard
+                                                    .as_ref()
+                                                    .map(|guard| self.lower_expr(guard))
+                                                    .unwrap_or(CheckedExpr::Ident(
+                                                        "true".to_string(),
+                                                    )),
+                                                body: self.lower_expr(&arm.body),
+                                            })
+                                            .collect(),
+                                    };
+                                }
+                            }
+                        }
+                    }
+                    if name == "loop" {
+                        if let Expr::Call { trailing, .. } = expr {
+                            let loop_info = self
+                                .resolved_loop_targets
+                                .get(&Self::expr_cache_key(expr))
+                                .cloned()
+                                .unwrap_or_else(|| ResolvedLoopInfo {
+                                    target: String::new(),
+                                    result_ty: self.preview_expr_ty(expr),
+                                });
+                            let condition = trailing
+                                .iter()
+                                .find(|closure| closure.label == "while")
+                                .map(|closure| Box::new(self.lower_expr(&closure.body)));
+                            let body = trailing
+                                .iter()
+                                .find(|closure| closure.label == "do")
+                                .map(|closure| Box::new(self.lower_expr(&closure.body)))
+                                .unwrap_or_else(|| Box::new(CheckedExpr::Any));
+                            return CheckedExpr::Loop {
+                                target: loop_info.target,
+                                result_ty: loop_info.result_ty,
+                                condition,
+                                body,
+                            };
+                        }
+                    }
+                }
                 let resolved_method = self
                     .resolved_method_call(expr)
                     .cloned()
@@ -3848,6 +4387,7 @@ impl TypeChecker {
                         let then_branch = self.lower_expr(&items[1]);
                         let else_branch = items.get(2).map(|e| Box::new(self.lower_expr(e)));
                         return CheckedExpr::If {
+                            result_ty: self.preview_expr_ty(expr),
                             condition: Box::new(condition),
                             then_branch: Box::new(then_branch),
                             else_branch,
@@ -3870,7 +4410,18 @@ impl TypeChecker {
             } if macro_name == "cases" => {
                 if let Expr::MultiArm(arms) = TypeChecker::base_expr(operand.as_ref()) {
                     return CheckedExpr::Cases {
-                        arms: arms.iter().map(|a| self.lower_expr(&a.body)).collect(),
+                        result_ty: self.preview_expr_ty(expr),
+                        arms: arms
+                            .iter()
+                            .map(|arm| CheckedCaseArm {
+                                guard: arm
+                                    .guard
+                                    .as_ref()
+                                    .map(|guard| self.lower_expr(guard))
+                                    .unwrap_or(CheckedExpr::Ident("true".to_string())),
+                                body: self.lower_expr(&arm.body),
+                            })
+                            .collect(),
                     };
                 }
                 CheckedExpr::MacroApply {
@@ -3903,6 +4454,11 @@ impl TypeChecker {
                 operand,
                 static_args,
             } if macro_name == "return" => CheckedExpr::Return {
+                target: self
+                    .resolved_jump_targets
+                    .get(&Self::expr_cache_key(expr))
+                    .cloned()
+                    .unwrap_or_default(),
                 value: Box::new(self.lower_expr(operand)),
             },
             Expr::MacroApply {
@@ -3912,9 +4468,21 @@ impl TypeChecker {
             } if macro_name == "break" => {
                 if let Expr::List(items) = TypeChecker::base_expr(operand.as_ref()) {
                     let value = items.first().map(|v| Box::new(self.lower_expr(v)));
-                    CheckedExpr::Break { value }
+                    CheckedExpr::Break {
+                        target: self
+                            .resolved_jump_targets
+                            .get(&Self::expr_cache_key(expr))
+                            .cloned()
+                            .unwrap_or_default(),
+                        value,
+                    }
                 } else {
                     CheckedExpr::Break {
+                        target: self
+                            .resolved_jump_targets
+                            .get(&Self::expr_cache_key(expr))
+                            .cloned()
+                            .unwrap_or_default(),
                         value: Some(Box::new(self.lower_expr(operand))),
                     }
                 }
@@ -3923,7 +4491,13 @@ impl TypeChecker {
                 macro_name,
                 operand,
                 static_args,
-            } if macro_name == "continue" => CheckedExpr::Continue,
+            } if macro_name == "continue" => CheckedExpr::Continue {
+                target: self
+                    .resolved_jump_targets
+                    .get(&Self::expr_cache_key(expr))
+                    .cloned()
+                    .unwrap_or_default(),
+            },
             Expr::MacroApply {
                 macro_name,
                 operand,
@@ -3936,10 +4510,15 @@ impl TypeChecker {
                     .collect(),
                 operand: Box::new(self.lower_expr(operand)),
             },
-            Expr::Label { label, expr } => CheckedExpr::Label {
-                label: label.clone(),
-                expr: Box::new(self.lower_expr(expr)),
-            },
+            Expr::Label { label, expr } => {
+                self.active_labels.push(label.clone());
+                let lowered = self.lower_expr(expr);
+                let _ = self.active_labels.pop();
+                CheckedExpr::Label {
+                    label: label.clone(),
+                    expr: Box::new(lowered),
+                }
+            }
             Expr::MultiArm(arms) => {
                 if let Some(subject) = self.current_match_subject.clone() {
                     if let Some(Ty::Enum(_)) = self.interner.get(subject.ty) {
@@ -3986,10 +4565,12 @@ impl TypeChecker {
                 )
             }
             Expr::Member { object, field } => match TypeChecker::base_expr(object) {
-                Expr::Ident(type_name) if self.enum_alias(type_name).is_some() => CheckedExpr::DotIdent {
-                    name: field.clone(),
-                    payload: Some(Box::new(self.lower_expr(object))),
-                },
+                Expr::Ident(type_name) if self.enum_alias(type_name).is_some() => {
+                    CheckedExpr::DotIdent {
+                        name: field.clone(),
+                        payload: Some(Box::new(self.lower_expr(object))),
+                    }
+                }
                 Expr::Ident(namespace) => self
                     .namespace_binding(namespace, field)
                     .map(|binding| CheckedExpr::Ident(binding.link_name.clone()))
@@ -4094,7 +4675,9 @@ impl TypeChecker {
                 .last()
                 .map(|item| self.preview_expr_ty(item))
                 .unwrap_or_else(|| self.interner.intern(Ty::Void)),
-            Expr::Assign { name, .. } => self.lookup_value(name).unwrap_or_else(|| self.unknown_ty()),
+            Expr::Assign { name, .. } => {
+                self.lookup_value(name).unwrap_or_else(|| self.unknown_ty())
+            }
             Expr::Closure {
                 params,
                 return_type,
@@ -4108,7 +4691,7 @@ impl TypeChecker {
                     .map(|t| self.resolve_type_expr(t))
                     .unwrap_or_else(|| self.interner.fresh_infer_var(&mut self.next_infer_var));
                 self.interner.intern(Ty::Func {
-                    params: param_tys,
+                    params: self.positional_params(param_tys),
                     ret,
                 })
             }
@@ -4278,11 +4861,16 @@ fn ty_to_ref(ty: &Ty, interner: &TyInterner) -> TypeRef {
         Ty::Func { params, ret } => {
             let params_ref = params
                 .iter()
-                .map(|id| {
-                    interner
-                        .get(*id)
-                        .map(|t| ty_to_ref(t, interner))
-                        .unwrap_or(TypeRef::Unknown)
+                .map(|param| FuncParamRef {
+                    name: param.name.clone(),
+                    label: param.label.clone(),
+                    trailing: param.trailing,
+                    ty: Box::new(
+                        interner
+                            .get(param.ty)
+                            .map(|t| ty_to_ref(t, interner))
+                            .unwrap_or(TypeRef::Unknown),
+                    ),
                 })
                 .collect::<Vec<_>>();
             let ret_ref = interner
@@ -4290,6 +4878,30 @@ fn ty_to_ref(ty: &Ty, interner: &TyInterner) -> TypeRef {
                 .map(|t| ty_to_ref(t, interner))
                 .unwrap_or(TypeRef::Unknown);
             TypeRef::Func {
+                params: params_ref,
+                ret: Box::new(ret_ref),
+            }
+        }
+        Ty::Macro { params, ret } => {
+            let params_ref = params
+                .iter()
+                .map(|param| FuncParamRef {
+                    name: param.name.clone(),
+                    label: param.label.clone(),
+                    trailing: param.trailing,
+                    ty: Box::new(
+                        interner
+                            .get(param.ty)
+                            .map(|t| ty_to_ref(t, interner))
+                            .unwrap_or(TypeRef::Unknown),
+                    ),
+                })
+                .collect::<Vec<_>>();
+            let ret_ref = interner
+                .get(*ret)
+                .map(|t| ty_to_ref(t, interner))
+                .unwrap_or(TypeRef::Unknown);
+            TypeRef::Macro {
                 params: params_ref,
                 ret: Box::new(ret_ref),
             }
@@ -4348,9 +4960,9 @@ fn ty_to_ref(ty: &Ty, interner: &TyInterner) -> TypeRef {
 #[cfg(test)]
 mod tests {
     use super::TypeChecker;
+    use crate::CheckContext;
     use crate::checked_ir::CheckedExpr;
     use crate::types::Ty;
-    use crate::CheckContext;
     use aura_frontend::Parser;
     use aura_frontend::ast::{
         BinaryOp as ParsedBinaryOp, Decl, Expr, FunctionDecl, LabeledClosureArg, Pattern, Program,
@@ -4364,7 +4976,7 @@ mod tests {
         }
     }
 
-    use crate::{check_module, check_module_with_options, CheckOptions};
+    use crate::{CheckOptions, check_module, check_module_with_options};
 
     #[test]
     fn allows_implicit_numeric_widening_on_reassignment() {
@@ -4426,10 +5038,12 @@ mod tests {
             },
         );
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_PATTERN_NON_EXHAUSTIVE"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_PATTERN_NON_EXHAUSTIVE")
+        );
     }
 
     #[test]
@@ -4465,10 +5079,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_PATTERN_UNREACHABLE_ARM"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_PATTERN_UNREACHABLE_ARM")
+        );
     }
 
     #[test]
@@ -4501,10 +5117,12 @@ mod tests {
         };
 
         let checked = check_module(&program);
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_ARG_MISSING"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_ARG_MISSING")
+        );
         assert!(checked.diagnostics.iter().any(|d| {
             d.hint
                 .as_deref()
@@ -4523,7 +5141,11 @@ mod tests {
         };
 
         let checked = check_module(&program);
-        assert!(checked.module.is_some());
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
         let module = checked.module.expect("module should exist");
         let ty_id = module.value_types.get("s").expect("type should exist");
         let ty = module
@@ -4570,7 +5192,10 @@ mod tests {
         let CheckedExpr::Block(items) = &main_decl.value else {
             panic!("expected block body in checked ir")
         };
-        assert!(matches!(items[0], CheckedExpr::LocalBind { mutable: true, .. }));
+        assert!(matches!(
+            items[0],
+            CheckedExpr::LocalBind { mutable: true, .. }
+        ));
         assert!(matches!(items[1], CheckedExpr::AssignLocal { .. }));
     }
 
@@ -4697,10 +5322,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_USE_DUPLICATE"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_USE_DUPLICATE")
+        );
     }
 
     #[test]
@@ -4719,10 +5346,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_BUILTIN_FORM"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_BUILTIN_FORM")
+        );
     }
 
     #[test]
@@ -4828,10 +5457,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_OP_NON_NUMERIC"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_OP_NON_NUMERIC")
+        );
     }
 
     #[test]
@@ -4850,10 +5481,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_BUILTIN_FORM"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_BUILTIN_FORM")
+        );
     }
 
     #[test]
@@ -4884,7 +5517,7 @@ mod tests {
         let module = checked.module.expect("module should exist");
         assert!(matches!(
             module.ir.declarations[0].value,
-            CheckedExpr::Call { .. }
+            CheckedExpr::If { .. }
         ));
         let x_ty = module.value_types.get("x").expect("x should exist");
         assert!(matches!(module.types.get(*x_ty), Some(Ty::Int32)));
@@ -4923,10 +5556,94 @@ mod tests {
         let module = checked.module.expect("module should exist");
         assert!(matches!(
             module.ir.declarations[0].value,
-            CheckedExpr::Call { .. }
+            CheckedExpr::Cases { .. }
         ));
         let x_ty = module.value_types.get("x").expect("x should exist");
         assert!(matches!(module.types.get(*x_ty), Some(Ty::Int32)));
+    }
+
+    #[test]
+    fn defstub_lowers_to_extern_ir_declaration() {
+        let program = Parser::parse_source("defstub syscall_exit: Func[(code: Int), Never]")
+            .expect("source should parse");
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        let decl = module
+            .ir
+            .declarations
+            .iter()
+            .find(|decl| decl.name == "syscall_exit")
+            .expect("stub declaration should exist");
+
+        assert!(decl.is_extern);
+        assert!(matches!(module.types.get(decl.ty), Some(Ty::Func { .. })));
+    }
+
+    #[test]
+    fn macro_defstub_does_not_emit_runtime_extern_declaration() {
+        let program = Parser::parse_source("defstub[T] return: Macro[T, Never]")
+            .expect("source should parse");
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+
+        assert!(module.ir.declarations.is_empty());
+        assert!(matches!(
+            module
+                .value_types
+                .get("return")
+                .and_then(|ty| module.types.get(*ty)),
+            Some(Ty::Macro { .. })
+        ));
+    }
+
+    #[test]
+    fn loop_call_typechecks_with_while_and_do_closures() {
+        let program = Parser::parse_source("def main() -> Void { loop while { true } do { () } }")
+            .expect("source should parse");
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        let main_decl = module
+            .ir
+            .declarations
+            .iter()
+            .find(|decl| decl.name == "main")
+            .expect("main declaration should exist");
+
+        assert!(
+            matches!(main_decl.value, CheckedExpr::Loop { .. })
+                || matches!(
+                    main_decl.value,
+                    CheckedExpr::Block(ref items)
+                        if matches!(items.first(), Some(CheckedExpr::Loop { .. }))
+                )
+        );
+    }
+
+    #[test]
+    fn loop_call_typechecks_as_direct_or_block_wrapped_loop() {
+        let program = Parser::parse_source("def main() -> Void { loop do { () } }")
+            .expect("source should parse");
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        let main_decl = module
+            .ir
+            .declarations
+            .iter()
+            .find(|decl| decl.name == "main")
+            .expect("main declaration should exist");
+
+        assert!(
+            matches!(main_decl.value, CheckedExpr::Loop { .. })
+                || matches!(
+                    main_decl.value,
+                    CheckedExpr::Block(ref items)
+                        if matches!(items.first(), Some(CheckedExpr::Loop { .. }))
+                )
+        );
     }
 
     #[test]
@@ -4949,10 +5666,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_IF_FORM"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_IF_FORM")
+        );
     }
 
     #[test]
@@ -4982,43 +5701,82 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_CASES_FORM"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_CASES_FORM")
+        );
     }
 
     #[test]
     fn return_break_continue_lower_to_control_flow_ir() {
         let program = Program {
             declarations: vec![
-                Decl::Assign {
+                Decl::Function(FunctionDecl {
                     doc: None,
+                    static_params: Vec::new(),
+                    receiver: None,
                     name: "r".to_string(),
-                    value: Expr::MacroApply {
+                    params: Vec::new(),
+                    return_type: TypeExpr::Named {
+                        name: "Int".to_string(),
+                        args: Vec::new(),
+                    },
+                    body: Expr::MacroApply {
                         macro_name: "return".to_string(),
                         static_args: Vec::new(),
                         operand: Box::new(Expr::Int("1".to_string())),
                     },
-                },
-                Decl::Assign {
+                }),
+                Decl::Function(FunctionDecl {
                     doc: None,
+                    static_params: Vec::new(),
+                    receiver: None,
                     name: "b".to_string(),
-                    value: Expr::MacroApply {
-                        macro_name: "break".to_string(),
-                        static_args: Vec::new(),
-                        operand: Box::new(Expr::List(vec![Expr::Int("9".to_string())])),
+                    params: Vec::new(),
+                    return_type: TypeExpr::Named {
+                        name: "Int".to_string(),
+                        args: Vec::new(),
                     },
-                },
-                Decl::Assign {
+                    body: Expr::Call {
+                        callee: Box::new(Expr::Ident("loop".to_string())),
+                        static_args: Vec::new(),
+                        args: Vec::new(),
+                        trailing: vec![LabeledClosureArg {
+                            label: "do".to_string(),
+                            body: Expr::MacroApply {
+                                macro_name: "break".to_string(),
+                                static_args: Vec::new(),
+                                operand: Box::new(Expr::List(vec![Expr::Int("9".to_string())])),
+                            },
+                        }],
+                    },
+                }),
+                Decl::Function(FunctionDecl {
                     doc: None,
+                    static_params: Vec::new(),
+                    receiver: None,
                     name: "c".to_string(),
-                    value: Expr::MacroApply {
-                        macro_name: "continue".to_string(),
-                        static_args: Vec::new(),
-                        operand: Box::new(Expr::Ident("unit".to_string())),
+                    params: Vec::new(),
+                    return_type: TypeExpr::Named {
+                        name: "Never".to_string(),
+                        args: Vec::new(),
                     },
-                },
+                    body: Expr::Call {
+                        callee: Box::new(Expr::Ident("loop".to_string())),
+                        static_args: Vec::new(),
+                        args: Vec::new(),
+                        trailing: vec![LabeledClosureArg {
+                            label: "do".to_string(),
+                            body: Expr::MacroApply {
+                                macro_name: "continue".to_string(),
+                                static_args: Vec::new(),
+                                operand: Box::new(Expr::Tuple(Vec::new())),
+                            },
+                        }],
+                    },
+                }),
             ],
         };
 
@@ -5030,12 +5788,47 @@ mod tests {
         ));
         assert!(matches!(
             module.ir.declarations[1].value,
-            CheckedExpr::Break { .. }
+            CheckedExpr::Loop { .. }
         ));
         assert!(matches!(
             module.ir.declarations[2].value,
-            CheckedExpr::Continue
+            CheckedExpr::Loop { .. }
         ));
+    }
+
+    #[test]
+    fn return_outside_function_reports_error() {
+        let program = Parser::parse_source("def bad = return 1").expect("source should parse");
+
+        let checked = check_module(&program);
+
+        assert!(checked.module.is_none());
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_BUILTIN_FORM")
+        );
+    }
+
+    #[test]
+    fn break_and_continue_outside_loop_report_errors() {
+        let program = Parser::parse_source(
+            "def bad_break() -> Void { break 1 } def bad_continue() -> Void { continue 1 }",
+        )
+        .expect("source should parse");
+
+        let checked = check_module(&program);
+
+        assert!(checked.module.is_none());
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .filter(|d| d.code_str() == "E_BUILTIN_FORM")
+                .count()
+                >= 2
+        );
     }
 
     #[test]
@@ -5074,11 +5867,17 @@ mod tests {
         };
 
         let checked = check_module(&program);
-        assert!(checked.module.is_some());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "W_UNRESOLVED_IDENT")
+        );
     }
 
     #[test]
@@ -5132,10 +5931,12 @@ mod tests {
         };
 
         let checked = check_module(&program);
-        assert!(checked
-            .diagnostics
-            .iter()
-            .all(|d| d.code_str() != "E_MAIN_SIGNATURE"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .all(|d| d.code_str() != "E_MAIN_SIGNATURE")
+        );
     }
 
     #[test]
@@ -5173,10 +5974,12 @@ mod tests {
                 enforce_main_signature: true,
             },
         );
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_MAIN_SIGNATURE"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_MAIN_SIGNATURE")
+        );
     }
 
     #[test]
@@ -5214,10 +6017,12 @@ mod tests {
                 enforce_main_signature: true,
             },
         );
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_MAIN_SIGNATURE"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_MAIN_SIGNATURE")
+        );
     }
 
     #[test]
@@ -5250,10 +6055,12 @@ mod tests {
         };
 
         let checked = check_module(&program);
-        assert!(checked
-            .diagnostics
-            .iter()
-            .all(|d| d.code_str() != "E_MAIN_SIGNATURE"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .all(|d| d.code_str() != "E_MAIN_SIGNATURE")
+        );
     }
 
     #[test]
@@ -5291,7 +6098,10 @@ mod tests {
 
         let checked = check_module(&program);
         let module = checked.module.expect("module should exist");
-        let ty_id = module.value_types.get("v").expect("value type should exist");
+        let ty_id = module
+            .value_types
+            .get("v")
+            .expect("value type should exist");
         let ty = module.types.get(*ty_id).expect("type should exist");
         assert!(matches!(ty, Ty::Void));
     }
@@ -5326,7 +6136,7 @@ mod tests {
             panic!("expected function type")
         };
         assert_eq!(params.len(), 1);
-        assert!(matches!(module.types.get(params[0]), Some(Ty::Void)));
+        assert!(matches!(module.types.get(params[0].ty), Some(Ty::Void)));
         assert!(matches!(module.types.get(*ret), Some(Ty::Void)));
     }
 
@@ -5354,11 +6164,17 @@ mod tests {
         };
 
         let checked = check_module(&program);
-        assert!(checked.module.is_some());
-        assert!(!checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+        assert!(
+            !checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "W_UNRESOLVED_IDENT")
+        );
     }
 
     #[test]
@@ -5392,11 +6208,17 @@ mod tests {
         };
 
         let checked = check_module(&program);
-        assert!(checked.module.is_some());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "W_UNRESOLVED_IDENT")
+        );
     }
 
     #[test]
@@ -5421,11 +6243,17 @@ mod tests {
         };
 
         let checked = check_module(&program);
-        assert!(checked.module.is_some());
-        assert!(!checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+        assert!(
+            !checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "W_UNRESOLVED_IDENT")
+        );
     }
 
     #[test]
@@ -5457,11 +6285,17 @@ mod tests {
         };
 
         let checked = check_module(&program);
-        assert!(checked.module.is_some());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "W_UNRESOLVED_IDENT")
+        );
     }
 
     #[test]
@@ -5555,10 +6389,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_CALL_STATIC_UNEXPECTED"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_CALL_STATIC_UNEXPECTED")
+        );
     }
 
     #[test]
@@ -5613,10 +6449,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_some());
-        assert!(!checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_CALL_STATIC_ARITY"));
+        assert!(
+            !checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_CALL_STATIC_ARITY")
+        );
     }
 
     #[test]
@@ -5660,10 +6498,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_CALL_STATIC_ARITY"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_CALL_STATIC_ARITY")
+        );
     }
 
     #[test]
@@ -5706,11 +6546,17 @@ mod tests {
         };
 
         let checked = check_module(&program);
-        assert!(checked.module.is_some());
-        assert!(!checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+        assert!(
+            !checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
+        );
     }
 
     #[test]
@@ -5759,11 +6605,17 @@ mod tests {
         };
 
         let checked = check_module(&program);
-        assert!(checked.module.is_some());
-        assert!(!checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+        assert!(
+            !checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
+        );
     }
 
     #[test]
@@ -5807,11 +6659,17 @@ mod tests {
         };
 
         let checked = check_module(&program);
-        assert!(checked.module.is_some());
-        assert!(!checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+        assert!(
+            !checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
+        );
     }
 
     #[test]
@@ -5869,11 +6727,17 @@ mod tests {
         };
 
         let checked = check_module(&program);
-        assert!(checked.module.is_some());
-        assert!(!checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+        assert!(
+            !checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
+        );
     }
 
     #[test]
@@ -5899,10 +6763,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
+        );
     }
 
     #[test]
@@ -5946,10 +6812,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_some());
-        assert!(!checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
+        assert!(
+            !checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
+        );
     }
 
     #[test]
@@ -6002,10 +6870,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_some());
-        assert!(!checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
+        assert!(
+            !checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
+        );
     }
 
     #[test]
@@ -6049,10 +6919,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
+        );
     }
 
     #[test]
@@ -6106,10 +6978,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_some());
-        assert!(!checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_MISMATCH" || d.code_str() == "E_UNIFY_MISMATCH"));
+        assert!(
+            !checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_MISMATCH" || d.code_str() == "E_UNIFY_MISMATCH")
+        );
     }
 
     #[test]
@@ -6134,10 +7008,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_some());
-        assert!(!checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
+        assert!(
+            !checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
+        );
     }
 
     #[test]
@@ -6162,10 +7038,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_some());
-        assert!(!checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
+        assert!(
+            !checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
+        );
     }
 
     #[test]
@@ -6184,10 +7062,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_MACRO_UNTYPED"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_MACRO_UNTYPED")
+        );
     }
 
     #[test]
@@ -6206,10 +7086,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_IF_FORM"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_IF_FORM")
+        );
     }
 
     #[test]
@@ -6228,10 +7110,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_CASES_FORM"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_CASES_FORM")
+        );
     }
 
     #[test]
@@ -6259,10 +7143,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_ARG_MISSING"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_ARG_MISSING")
+        );
     }
 
     #[test]
@@ -6296,10 +7182,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_ARG_KIND"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_ARG_KIND")
+        );
     }
 
     #[test]
@@ -6330,10 +7218,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_ARRAY_SIZE_MISSING"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_ARRAY_SIZE_MISSING")
+        );
     }
 
     #[test]
@@ -6370,10 +7260,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_ARG_ARITY"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_ARG_ARITY")
+        );
     }
 
     #[test]
@@ -6404,10 +7296,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_ARG_ARITY"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_ARG_ARITY")
+        );
     }
 
     #[test]
@@ -6451,7 +7345,7 @@ mod tests {
 
         let p0 = module
             .types
-            .get(params[0])
+            .get(params[0].ty)
             .expect("param type should exist");
         let r = module.types.get(*ret).expect("return type should exist");
         assert!(matches!(p0, Ty::GenericParam(name) if name == "T"));
@@ -6495,7 +7389,7 @@ mod tests {
         let Ty::Func { params, .. } = module.types.get(*g_ty).expect("func type expected") else {
             panic!("expected function type")
         };
-        let list_ty = module.types.get(params[0]).expect("param type expected");
+        let list_ty = module.types.get(params[0].ty).expect("param type expected");
         let Ty::List(item) = list_ty else {
             panic!("expected list type")
         };
@@ -6598,14 +7492,18 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_INTERFACE_BOUND_UNSAT"));
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| !d.obligations.is_empty()));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_INTERFACE_BOUND_UNSAT")
+        );
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| !d.obligations.is_empty())
+        );
     }
 
     #[test]
@@ -6657,14 +7555,18 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_STATIC_ARG_KIND"));
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| !d.obligations.is_empty()));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_STATIC_ARG_KIND")
+        );
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| !d.obligations.is_empty())
+        );
     }
 
     #[test]
@@ -6713,10 +7615,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_STATIC_ARG_MISSING"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_STATIC_ARG_MISSING")
+        );
     }
 
     #[test]
@@ -6766,10 +7670,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_UNKNOWN_INTERFACE"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_UNKNOWN_INTERFACE")
+        );
     }
 
     #[test]
@@ -6792,10 +7698,11 @@ mod tests {
         let mut checker = TypeChecker::new(CheckContext::default(), CheckOptions::default());
         let _ = checker.check_program(&program);
         let (_types, _diagnostics, ir) = checker.into_parts();
-        assert!(ir
-            .declarations
-            .iter()
-            .any(|d| d.name == "x" && matches!(&d.value, CheckedExpr::Int(_))));
+        assert!(
+            ir.declarations
+                .iter()
+                .any(|d| d.name == "x" && matches!(&d.value, CheckedExpr::Int(_)))
+        );
     }
 
     #[test]
@@ -6817,10 +7724,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
+        );
     }
 
     #[test]
@@ -6860,10 +7769,12 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
+        );
     }
 
     #[test]
@@ -7009,7 +7920,7 @@ mod tests {
             panic!("p should be a function type")
         };
         assert_eq!(params.len(), 1);
-        assert!(matches!(module.types.get(params[0]), Some(Ty::Int32)));
+        assert!(matches!(module.types.get(params[0].ty), Some(Ty::Int32)));
         assert!(matches!(module.types.get(*ret), Some(Ty::Int32)));
     }
 
@@ -7142,9 +8053,10 @@ mod tests {
 
     #[test]
     fn main_can_call_syscall_exit_from_multi_expression_body() {
-        let program =
-            Parser::parse_source("def main() -> Void { 0; syscall_exit(0) }")
-                .expect("source should parse");
+        let program = Parser::parse_source(
+            "defstub syscall_exit: Func[(code: Int), Never]; def main() -> Void { 0; syscall_exit(0) }",
+        )
+        .expect("source should parse");
 
         let checked = check_module(&program);
         assert!(
@@ -7156,9 +8068,10 @@ mod tests {
 
     #[test]
     fn main_can_call_syscall_exit_from_local_let_binding() {
-        let program =
-            Parser::parse_source("def main() -> Void { let exit_code = 0; syscall_exit(exit_code) }")
-                .expect("source should parse");
+        let program = Parser::parse_source(
+            "defstub syscall_exit: Func[(code: Int), Never]; def main() -> Void { let exit_code = 0; syscall_exit(exit_code) }",
+        )
+        .expect("source should parse");
 
         let checked = check_module(&program);
         assert!(
@@ -7206,9 +8119,13 @@ mod tests {
 
     #[test]
     fn string_into_and_syscall_write_typecheck() {
-        let program =
-            Parser::parse_source("def main() -> Void { syscall_write(1, \"Hello\".into()); syscall_exit(0) }")
-                .expect("source should parse");
+        let program = Parser::parse_source(
+            "defstub syscall_exit: Func[(code: Int), Never]; \
+             defstub syscall_write: Func[(fd: Int, bytes: Bytes), ISize]; \
+             defstub string_into: Func[(text: String), Bytes]; \
+             def main() -> Void { syscall_write(1, \"Hello\".into()); syscall_exit(0) }",
+        )
+        .expect("source should parse");
 
         let checked = check_module(&program);
         assert!(
@@ -7224,7 +8141,10 @@ mod tests {
             .iter()
             .find(|decl| decl.name == "main")
             .expect("main declaration should exist");
-        assert!(matches!(module.types.get(main_decl.ty), Some(Ty::Func { .. })));
+        assert!(matches!(
+            module.types.get(main_decl.ty),
+            Some(Ty::Func { .. })
+        ));
     }
 
     #[test]
@@ -7238,10 +8158,12 @@ mod tests {
             "expected module, got diagnostics: {:?}",
             checked.diagnostics
         );
-        assert!(!checked
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("immutable local")));
+        assert!(
+            !checked
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("immutable local"))
+        );
     }
 
     #[test]
@@ -7250,13 +8172,12 @@ mod tests {
             .expect("source should parse");
 
         let checked = check_module(&program);
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_MISMATCH"
+        assert!(checked.diagnostics.iter().any(|d| {
+            d.code_str() == "E_TYPE_MISMATCH"
                 && d.hint
                     .as_deref()
-                    .is_some_and(|hint| hint.contains("use `let`"))));
+                    .is_some_and(|hint| hint.contains("use `let`"))
+        }));
     }
 
     #[test]
@@ -7271,22 +8192,26 @@ mod tests {
             "expected module, got diagnostics: {:?}",
             checked.diagnostics
         );
-        assert!(!checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
+        assert!(
+            !checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "W_UNRESOLVED_IDENT")
+        );
     }
 
     #[test]
     fn collection_item_locals_do_not_leak_across_commas() {
-        let program = Parser::parse_source("def xs = [let x = 0; x, x]")
-            .expect("source should parse");
+        let program =
+            Parser::parse_source("def xs = [let x = 0; x, x]").expect("source should parse");
 
         let checked = check_module(&program);
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "W_UNRESOLVED_IDENT")
+        );
     }
 
     #[test]
@@ -7351,9 +8276,11 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(checked
-            .diagnostics
-            .iter()
-            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
+        );
     }
 }
