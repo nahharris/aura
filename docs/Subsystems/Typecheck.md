@@ -16,7 +16,7 @@ related_contracts:
   - "Contracts/Typecheck IR"
 related_notes:
   - "Language/Syntax And Semantics"
-last_reviewed: 2026-04-21
+last_reviewed: 2026-04-23
 ---
 
 # Typecheck
@@ -59,6 +59,8 @@ Resolve symbols, enforce type rules, and emit checked IR for downstream codegen.
 - Enum-driven multi-arm methods lower to `CheckedExpr::EnumMatch`, using the resolved enum variant table from the type alias definition.
 - Named constructor forms (`Type.variant`, `Type.variant(payload)`) resolve against the type namespace first.
 - Shorthand constructor forms (`.variant`, `.variant(payload)`) remain expected-type-driven and work for both local and imported enum aliases.
+- Struct-payload enum sugar is typechecked as one struct payload. Field sugar is accepted only when the resolved variant payload is a struct; explicit payload values remain valid.
+- Enum-match lowering records struct payload field bindings so backend lowering can bind `.variant(field = name)` arms without changing the single-payload enum representation.
 - `If`, `Cases`, and `Loop` are dedicated checked-IR control-flow nodes.
 - `Return`, `Break`, and `Continue` carry resolved target names so LLVM lowering can emit direct control transfer.
 

@@ -20,6 +20,7 @@ This note is a reader's map into `DESIGN.md`, not a replacement for it.
 - `defstub` declares typed extern or builtin contracts at top level; same-name overloads are allowed only for stubs
 - `Macro[...]` is valid in `defstub` for declaration-only builtin forms such as `return`, `break`, and `continue`
 - `Func[...]` parameter shapes preserve names/labels so builtins such as `if`, `cases`, and `loop` can type labeled trailing closures
+- Enum variants still carry at most one payload value; when that payload is a struct, `.variant(field = value, ...)` and `.variant(field = binding, ...)` are surface sugar for the explicit wrapped struct payload.
 
 ## Alias Note
 

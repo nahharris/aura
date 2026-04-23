@@ -239,6 +239,7 @@ pub struct Arm {
 pub enum Pattern {
     Wildcard,
     Ident(String),
+    Struct(Vec<(String, Pattern)>),
     DotVariant {
         name: String,
         payload: Option<Box<Pattern>>,

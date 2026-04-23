@@ -34,6 +34,7 @@ Status: frozen v1.
 - Literals and atoms: `Ident`, `Int`, `Float`, `Char`, `String`, `DotIdent`, `Any`
 - Collections: `List`, `Dict`
 - Invocation and macro surfaces: `Call`, `BinaryOp`, `MacroApply`
+- Enum constructors: `EnumCtor` with one optional payload expression
 - Structured control flow: `If`, `Cases`, `Loop`, `Return`, `Break`, `Continue`
 - Structural wrappers: `Label`, `MultiArm`
 - Conversion wrappers: `Coerce`, `Cast`
@@ -51,6 +52,8 @@ Status: frozen v1.
 3. `if`, `cases`, and `loop` lower to dedicated control-flow nodes.
 4. `return`, `break`, and `continue` lower to dedicated jump nodes with resolved target metadata.
 5. Core conversion decisions are centralized in the checker.
+6. Struct-payload enum constructor sugar lowers to `EnumCtor` with one `Struct` payload, not multiple payloads.
+7. `EnumMatch` arms may carry struct field binding metadata for backend locals, but payload storage remains the single enum payload.
 
 ## Stub Declarations
 

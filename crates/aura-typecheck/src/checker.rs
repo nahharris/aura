@@ -9,8 +9,9 @@ use aura_frontend::ast::{
 
 use crate::aliases::TypeAliases;
 use crate::checked_ir::{
-    BinaryOpKind, CheckedBinding, CheckedCaseArm, CheckedDecl, CheckedEnumArm, CheckedExpr,
-    CheckedIr, CheckedStaticArg, CheckedStaticValue, CheckedTypeExpr,
+    BinaryOpKind, CheckedBinding, CheckedCaseArm, CheckedDecl, CheckedEnumArm,
+    CheckedEnumStructBinding, CheckedExpr, CheckedIr, CheckedStaticArg, CheckedStaticValue,
+    CheckedTypeExpr,
 };
 use crate::interfaces::InterfaceRegistry;
 use crate::modules::ModuleChecker;
@@ -535,6 +536,174 @@ impl TypeChecker {
             .map(|(index, (_, payload_ty))| (index, *payload_ty))
     }
 
+    fn named_call_args<'a>(&self, args: &'a [Expr]) -> Option<Vec<(String, &'a Expr)>> {
+        if args.is_empty() {
+            return None;
+        }
+        let mut fields = Vec::with_capacity(args.len());
+        for arg in args {
+            let Expr::Assign { name, value } = Self::base_expr(arg) else {
+                return None;
+            };
+            fields.push((name.clone(), value.as_ref()));
+        }
+        Some(fields)
+    }
+
+    fn infer_struct_fields_with_expected(
+        &mut self,
+        actual_fields: &[(String, &Expr)],
+        expected_fields: &[(String, TyId)],
+        context: &str,
+    ) -> TyId {
+        let mut shape_matches = actual_fields.len() == expected_fields.len();
+        if !shape_matches {
+            self.diagnostics.push(
+                self.typecheck_error(
+                    Issue::TypeMismatch {
+                        context: TypingContext::Custom(context.to_string()),
+                        expected: TypeRef::Struct(
+                            expected_fields
+                                .iter()
+                                .filter_map(|(name, ty)| {
+                                    self.interner
+                                        .get(*ty)
+                                        .map(|ty| (name.clone(), ty_to_ref(ty, &self.interner)))
+                                })
+                                .collect(),
+                        ),
+                        actual: TypeRef::Unknown,
+                    },
+                    format!("{context} field count does not match expected struct payload"),
+                )
+                .with_hint("use exactly the fields declared by the enum variant payload"),
+            );
+        }
+
+        for ((actual_name, value), (expected_name, expected_ty)) in
+            actual_fields.iter().zip(expected_fields.iter())
+        {
+            if actual_name != expected_name {
+                shape_matches = false;
+                self.diagnostics.push(
+                    self.typecheck_error(
+                        Issue::TypeMismatch {
+                            context: TypingContext::Custom(context.to_string()),
+                            expected: TypeRef::Struct(
+                                expected_fields
+                                    .iter()
+                                    .filter_map(|(name, ty)| {
+                                        self.interner.get(*ty).map(|ty| {
+                                            (name.clone(), ty_to_ref(ty, &self.interner))
+                                        })
+                                    })
+                                    .collect(),
+                            ),
+                            actual: TypeRef::Unknown,
+                        },
+                        format!(
+                            "{context} field '{actual_name}' does not match expected field '{expected_name}'"
+                        ),
+                    )
+                    .with_hint("use the enum variant payload field names in declaration order"),
+                );
+            }
+            let value_ty = self.infer_expr_with_expected(value, *expected_ty);
+            self.require_assignable(*expected_ty, value_ty, context);
+        }
+
+        if shape_matches {
+            self.interner.intern(Ty::Struct(expected_fields.to_vec()))
+        } else {
+            self.unknown_ty()
+        }
+    }
+
+    fn infer_enum_constructor_call(
+        &mut self,
+        expr: &Expr,
+        enum_ty: TyId,
+        variant_index: usize,
+        payload_ty: Option<TyId>,
+        args: &[Expr],
+        expected_result: Option<TyId>,
+    ) -> TyId {
+        if let Some(named_args) = self.named_call_args(args) {
+            let Some(expected_payload_ty) = payload_ty else {
+                self.emit_enum_constructor_payload_mismatch(
+                    enum_ty,
+                    "unit enum variant does not accept payload fields",
+                );
+                return self.unknown_ty();
+            };
+            let Some(Ty::Struct(expected_fields)) = self.interner.get(expected_payload_ty).cloned()
+            else {
+                self.emit_enum_constructor_payload_mismatch(
+                    enum_ty,
+                    "enum variant field sugar requires a struct payload",
+                );
+                return self.unknown_ty();
+            };
+            let payload = self.infer_struct_fields_with_expected(
+                &named_args,
+                &expected_fields,
+                "enum variant payload",
+            );
+            self.require_assignable(expected_payload_ty, payload, "enum variant payload");
+            self.record_enum_ctor(expr, enum_ty, variant_index);
+            if let Some(expected) = expected_result {
+                self.require_assignable(expected, enum_ty, "bidirectional expected type");
+            }
+            return enum_ty;
+        }
+
+        match (payload_ty, args) {
+            (None, []) => {
+                self.record_enum_ctor(expr, enum_ty, variant_index);
+                if let Some(expected) = expected_result {
+                    self.require_assignable(expected, enum_ty, "bidirectional expected type");
+                }
+                enum_ty
+            }
+            (Some(expected_payload_ty), [payload]) => {
+                let actual_payload = self.infer_expr_with_expected(payload, expected_payload_ty);
+                self.require_assignable(
+                    expected_payload_ty,
+                    actual_payload,
+                    "enum variant payload",
+                );
+                self.record_enum_ctor(expr, enum_ty, variant_index);
+                if let Some(expected) = expected_result {
+                    self.require_assignable(expected, enum_ty, "bidirectional expected type");
+                }
+                enum_ty
+            }
+            _ => {
+                self.emit_enum_constructor_payload_mismatch(
+                    enum_ty,
+                    "enum variant payload arity does not match expected type",
+                );
+                self.unknown_ty()
+            }
+        }
+    }
+
+    fn emit_enum_constructor_payload_mismatch(&mut self, enum_ty: TyId, reason: &str) {
+        self.diagnostics.push(
+            self.typecheck_error(
+                Issue::TypeMismatch {
+                    context: TypingContext::Custom("enum constructor".to_string()),
+                    expected: ty_to_ref(self.interner.get(enum_ty).unwrap_or(&Ty::Any), &self.interner),
+                    actual: TypeRef::Unknown,
+                },
+                format!("type mismatch in enum constructor: {reason}"),
+            )
+            .with_hint(
+                "call payload variants with one payload value, or use field sugar for struct payload variants",
+            ),
+        );
+    }
+
     fn record_enum_ctor(&mut self, expr: &Expr, enum_ty: TyId, variant_index: usize) {
         self.resolved_enum_ctors.insert(
             Self::expr_cache_key(expr),
@@ -549,6 +718,64 @@ impl TypeChecker {
         self.resolved_enum_ctors
             .get(&Self::expr_cache_key(expr))
             .copied()
+    }
+
+    fn lower_enum_call_payload(
+        &mut self,
+        enum_ty: TyId,
+        variant_index: usize,
+        args: &[Expr],
+    ) -> Option<Box<CheckedExpr>> {
+        if let Some(named_args) = self.named_call_args(args) {
+            let Some(Ty::Enum(variants)) = self.interner.get(enum_ty).cloned() else {
+                return None;
+            };
+            let payload_ty = variants
+                .get(variant_index)
+                .and_then(|(_, payload)| *payload)?;
+            if !matches!(self.interner.get(payload_ty), Some(Ty::Struct(_))) {
+                return None;
+            }
+            let fields = named_args
+                .into_iter()
+                .map(|(name, value)| (name, self.lower_expr(value)))
+                .collect::<Vec<_>>();
+            return Some(Box::new(CheckedExpr::Struct(fields)));
+        }
+
+        args.first().map(|arg| Box::new(self.lower_expr(arg)))
+    }
+
+    fn enum_struct_pattern_bindings(
+        &self,
+        pattern: Option<&Pattern>,
+        payload_ty: Option<TyId>,
+    ) -> Vec<CheckedEnumStructBinding> {
+        let (Some(Pattern::Struct(pattern_fields)), Some(payload_ty)) = (pattern, payload_ty)
+        else {
+            return Vec::new();
+        };
+        let Some(Ty::Struct(payload_fields)) = self.interner.get(payload_ty) else {
+            return Vec::new();
+        };
+
+        pattern_fields
+            .iter()
+            .filter_map(|(field_name, pattern)| {
+                let Pattern::Ident(binding_name) = pattern else {
+                    return None;
+                };
+                let (field_index, (_, field_ty)) = payload_fields
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (payload_name, _))| payload_name == field_name)?;
+                Some(CheckedEnumStructBinding {
+                    name: binding_name.clone(),
+                    field_index,
+                    ty: *field_ty,
+                })
+            })
+            .collect()
     }
 
     fn record_method_call(&mut self, expr: &Expr, link_name: String) {
@@ -1252,49 +1479,14 @@ impl TypeChecker {
                             if let Some((variant_index, payload_ty)) =
                                 self.enum_variant(enum_ty, field)
                             {
-                                if payload_ty.is_none() && args.is_empty() {
-                                    self.record_enum_ctor(expr, enum_ty, variant_index);
-                                    return enum_ty;
-                                }
-                                if let (Some(expected_payload_ty), Some(payload)) =
-                                    (payload_ty, args.first())
-                                {
-                                    if args.len() == 1 {
-                                        let actual_payload = self
-                                            .infer_expr_with_expected(payload, expected_payload_ty);
-                                        self.require_assignable(
-                                            expected_payload_ty,
-                                            actual_payload,
-                                            "enum variant payload",
-                                        );
-                                        self.record_enum_ctor(expr, enum_ty, variant_index);
-                                        return enum_ty;
-                                    }
-                                }
-                                self.diagnostics.push(
-                                    self.typecheck_error(
-                                        Issue::TypeMismatch {
-                                            context: TypingContext::Custom(
-                                                "enum constructor".to_string(),
-                                            ),
-                                            expected: ty_to_ref(
-                                                self.interner
-                                                    .get(enum_ty)
-                                                    .unwrap_or(&Ty::Any),
-                                                &self.interner,
-                                            ),
-                                            actual: TypeRef::Unknown,
-                                        },
-                                        format!(
-                                            "enum constructor '{}.{}' has the wrong payload arity",
-                                            type_name, field
-                                        ),
-                                    )
-                                    .with_hint(
-                                        "call payload variants with one argument and unit variants with none",
-                                    ),
+                                return self.infer_enum_constructor_call(
+                                    expr,
+                                    enum_ty,
+                                    variant_index,
+                                    payload_ty,
+                                    args,
+                                    None,
                                 );
-                                return self.unknown_ty();
                             }
                         }
                     }
@@ -1735,42 +1927,14 @@ impl TypeChecker {
                             if let Some((variant_index, payload_ty)) =
                                 self.enum_variant(enum_ty, field)
                             {
-                                if payload_ty.is_none() && args.is_empty() {
-                                    self.record_enum_ctor(expr, enum_ty, variant_index);
-                                    self.require_assignable(
-                                        expected,
-                                        enum_ty,
-                                        "bidirectional expected type",
-                                    );
-                                    return enum_ty;
-                                }
-                                if let (Some(expected_payload_ty), Some(payload)) =
-                                    (payload_ty, args.first())
-                                {
-                                    if args.len() == 1 {
-                                        let payload_ty = self
-                                            .infer_expr_with_expected(payload, expected_payload_ty);
-                                        self.require_assignable(
-                                            expected_payload_ty,
-                                            payload_ty,
-                                            "enum variant payload",
-                                        );
-                                        self.record_enum_ctor(expr, enum_ty, variant_index);
-                                        self.require_assignable(
-                                            expected,
-                                            enum_ty,
-                                            "bidirectional expected type",
-                                        );
-                                        return enum_ty;
-                                    }
-                                }
-                                self.emit_type_mismatch(
-                                    expected,
+                                return self.infer_enum_constructor_call(
+                                    expr,
                                     enum_ty,
-                                    "assignment",
-                                    "enum variant payload arity does not match expected type",
+                                    variant_index,
+                                    payload_ty,
+                                    args,
+                                    Some(expected),
                                 );
-                                return self.unknown_ty();
                             }
                         }
                     }
@@ -2169,13 +2333,15 @@ impl TypeChecker {
                 })
             }
             (Expr::Struct(fields), Some(Ty::Struct(expected_fields))) => {
-                for ((_, value), (_, expected_field_ty)) in
-                    fields.iter().zip(expected_fields.iter())
-                {
-                    let value_ty = self.infer_expr_with_expected(value, *expected_field_ty);
-                    self.require_assignable(*expected_field_ty, value_ty, "struct field");
-                }
-                self.interner.intern(Ty::Struct(expected_fields))
+                let actual_fields = fields
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value))
+                    .collect::<Vec<_>>();
+                self.infer_struct_fields_with_expected(
+                    &actual_fields,
+                    &expected_fields,
+                    "struct field",
+                )
             }
             (
                 Expr::Closure {
@@ -3973,8 +4139,16 @@ impl TypeChecker {
     }
 
     fn bind_arm_patterns(&mut self, patterns: &[Pattern]) {
+        let subject_ty = self
+            .current_match_subject
+            .as_ref()
+            .map(|subject| subject.ty);
         for pattern in patterns {
-            self.bind_pattern(pattern);
+            if let Some(subject_ty) = subject_ty {
+                self.bind_pattern_with_expected(pattern, subject_ty, false);
+            } else {
+                self.bind_pattern(pattern);
+            }
         }
     }
 
@@ -4036,6 +4210,11 @@ impl TypeChecker {
                 let ty = self.interner.fresh_infer_var(&mut self.next_infer_var);
                 self.insert_value(name.clone(), ty, false);
             }
+            Pattern::Struct(fields) => {
+                for (_, inner) in fields {
+                    self.bind_pattern(inner);
+                }
+            }
             Pattern::DotVariant { payload, .. } => {
                 if let Some(inner) = payload.as_ref() {
                     self.bind_pattern(inner);
@@ -4046,13 +4225,49 @@ impl TypeChecker {
     }
 
     fn bind_local_pattern(&mut self, pattern: &Pattern, ty: TyId, mutable: bool) {
+        self.bind_pattern_with_expected(pattern, ty, mutable);
+    }
+
+    fn bind_pattern_with_expected(&mut self, pattern: &Pattern, ty: TyId, mutable: bool) {
         match pattern {
             Pattern::Ident(name) if name != "true" && name != "false" => {
                 self.insert_value(name.clone(), ty, mutable);
             }
+            Pattern::Struct(fields) => {
+                if let Some(Ty::Struct(expected_fields)) = self.interner.get(ty).cloned() {
+                    for (field_name, inner) in fields {
+                        if let Some((_, field_ty)) = expected_fields
+                            .iter()
+                            .find(|(expected_name, _)| expected_name == field_name)
+                        {
+                            self.bind_pattern_with_expected(inner, *field_ty, mutable);
+                        } else {
+                            self.bind_pattern(inner);
+                        }
+                    }
+                } else {
+                    for (_, inner) in fields {
+                        self.bind_pattern(inner);
+                    }
+                }
+            }
             Pattern::DotVariant { payload, .. } => {
                 if let Some(inner) = payload.as_ref() {
-                    self.bind_local_pattern(inner, ty, mutable);
+                    let payload_ty = match self.interner.get(ty).cloned() {
+                        Some(Ty::Enum(_)) => {
+                            if let Pattern::DotVariant { name, .. } = pattern {
+                                self.enum_variant(ty, name).and_then(|(_, payload)| payload)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(payload_ty) = payload_ty {
+                        self.bind_pattern_with_expected(inner, payload_ty, mutable);
+                    } else {
+                        self.bind_pattern(inner);
+                    }
                 }
             }
             _ => {}
@@ -4125,10 +4340,15 @@ impl TypeChecker {
                     };
                 }
                 Expr::Call { args, .. } => {
+                    let payload = self.lower_enum_call_payload(
+                        resolved.enum_ty,
+                        resolved.variant_index,
+                        args,
+                    );
                     return CheckedExpr::EnumCtor {
                         enum_ty: resolved.enum_ty,
                         variant_index: resolved.variant_index,
-                        payload: args.first().map(|arg| Box::new(self.lower_expr(arg))),
+                        payload,
                     };
                 }
                 Expr::Member { .. } => {
@@ -4527,16 +4747,21 @@ impl TypeChecker {
                         for arm in arms {
                             match arm.patterns.first() {
                                 Some(Pattern::DotVariant { name, payload }) => {
-                                    if let Some((variant_index, _)) =
+                                    if let Some((variant_index, payload_ty)) =
                                         self.enum_variant(subject.ty, name)
                                     {
                                         let binding_name = match payload.as_deref() {
                                             Some(Pattern::Ident(name)) => Some(name.clone()),
                                             _ => None,
                                         };
+                                        let struct_bindings = self.enum_struct_pattern_bindings(
+                                            payload.as_deref(),
+                                            payload_ty,
+                                        );
                                         lowered_arms.push(CheckedEnumArm {
                                             variant_index,
                                             binding_name,
+                                            struct_bindings,
                                             body: self.lower_expr(&arm.body),
                                         });
                                     }
@@ -4960,14 +5185,14 @@ fn ty_to_ref(ty: &Ty, interner: &TyInterner) -> TypeRef {
 #[cfg(test)]
 mod tests {
     use super::TypeChecker;
-    use crate::CheckContext;
     use crate::checked_ir::CheckedExpr;
     use crate::types::Ty;
-    use aura_frontend::Parser;
+    use crate::CheckContext;
     use aura_frontend::ast::{
         BinaryOp as ParsedBinaryOp, Decl, Expr, FunctionDecl, LabeledClosureArg, Pattern, Program,
         StaticArg, StaticParam, StaticParamKind, StaticValueExpr, TypeExpr, UseBinding, UseDecl,
     };
+    use aura_frontend::Parser;
 
     fn ty_param(name: &str) -> StaticParam {
         StaticParam {
@@ -4976,7 +5201,7 @@ mod tests {
         }
     }
 
-    use crate::{CheckOptions, check_module, check_module_with_options};
+    use crate::{check_module, check_module_with_options, CheckOptions};
 
     #[test]
     fn allows_implicit_numeric_widening_on_reassignment() {
@@ -5038,12 +5263,10 @@ mod tests {
             },
         );
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_PATTERN_NON_EXHAUSTIVE")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_PATTERN_NON_EXHAUSTIVE"));
     }
 
     #[test]
@@ -5079,12 +5302,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_PATTERN_UNREACHABLE_ARM")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_PATTERN_UNREACHABLE_ARM"));
     }
 
     #[test]
@@ -5117,12 +5338,10 @@ mod tests {
         };
 
         let checked = check_module(&program);
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_ARG_MISSING")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_ARG_MISSING"));
         assert!(checked.diagnostics.iter().any(|d| {
             d.hint
                 .as_deref()
@@ -5322,12 +5541,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_USE_DUPLICATE")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_USE_DUPLICATE"));
     }
 
     #[test]
@@ -5346,12 +5563,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_BUILTIN_FORM")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_BUILTIN_FORM"));
     }
 
     #[test]
@@ -5457,12 +5672,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_OP_NON_NUMERIC")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_OP_NON_NUMERIC"));
     }
 
     #[test]
@@ -5481,12 +5694,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_BUILTIN_FORM")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_BUILTIN_FORM"));
     }
 
     #[test]
@@ -5666,12 +5877,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_IF_FORM")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_IF_FORM"));
     }
 
     #[test]
@@ -5701,12 +5910,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_CASES_FORM")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_CASES_FORM"));
     }
 
     #[test]
@@ -5803,12 +6010,10 @@ mod tests {
         let checked = check_module(&program);
 
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_BUILTIN_FORM")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_BUILTIN_FORM"));
     }
 
     #[test]
@@ -5872,12 +6077,10 @@ mod tests {
             "expected module, got diagnostics: {:?}",
             checked.diagnostics
         );
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "W_UNRESOLVED_IDENT")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
     }
 
     #[test]
@@ -5931,12 +6134,10 @@ mod tests {
         };
 
         let checked = check_module(&program);
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .all(|d| d.code_str() != "E_MAIN_SIGNATURE")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .all(|d| d.code_str() != "E_MAIN_SIGNATURE"));
     }
 
     #[test]
@@ -5974,12 +6175,10 @@ mod tests {
                 enforce_main_signature: true,
             },
         );
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_MAIN_SIGNATURE")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_MAIN_SIGNATURE"));
     }
 
     #[test]
@@ -6017,12 +6216,10 @@ mod tests {
                 enforce_main_signature: true,
             },
         );
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_MAIN_SIGNATURE")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_MAIN_SIGNATURE"));
     }
 
     #[test]
@@ -6055,12 +6252,10 @@ mod tests {
         };
 
         let checked = check_module(&program);
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .all(|d| d.code_str() != "E_MAIN_SIGNATURE")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .all(|d| d.code_str() != "E_MAIN_SIGNATURE"));
     }
 
     #[test]
@@ -6169,12 +6364,10 @@ mod tests {
             "expected module, got diagnostics: {:?}",
             checked.diagnostics
         );
-        assert!(
-            !checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "W_UNRESOLVED_IDENT")
-        );
+        assert!(!checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
     }
 
     #[test]
@@ -6213,12 +6406,10 @@ mod tests {
             "expected module, got diagnostics: {:?}",
             checked.diagnostics
         );
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "W_UNRESOLVED_IDENT")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
     }
 
     #[test]
@@ -6248,12 +6439,10 @@ mod tests {
             "expected module, got diagnostics: {:?}",
             checked.diagnostics
         );
-        assert!(
-            !checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "W_UNRESOLVED_IDENT")
-        );
+        assert!(!checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
     }
 
     #[test]
@@ -6290,12 +6479,10 @@ mod tests {
             "expected module, got diagnostics: {:?}",
             checked.diagnostics
         );
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "W_UNRESOLVED_IDENT")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
     }
 
     #[test]
@@ -6389,12 +6576,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_CALL_STATIC_UNEXPECTED")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_CALL_STATIC_UNEXPECTED"));
     }
 
     #[test]
@@ -6449,12 +6634,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_some());
-        assert!(
-            !checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_CALL_STATIC_ARITY")
-        );
+        assert!(!checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_CALL_STATIC_ARITY"));
     }
 
     #[test]
@@ -6498,12 +6681,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_CALL_STATIC_ARITY")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_CALL_STATIC_ARITY"));
     }
 
     #[test]
@@ -6551,12 +6732,10 @@ mod tests {
             "expected module, got diagnostics: {:?}",
             checked.diagnostics
         );
-        assert!(
-            !checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
-        );
+        assert!(!checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -6610,12 +6789,10 @@ mod tests {
             "expected module, got diagnostics: {:?}",
             checked.diagnostics
         );
-        assert!(
-            !checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
-        );
+        assert!(!checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -6664,12 +6841,10 @@ mod tests {
             "expected module, got diagnostics: {:?}",
             checked.diagnostics
         );
-        assert!(
-            !checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
-        );
+        assert!(!checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -6732,12 +6907,10 @@ mod tests {
             "expected module, got diagnostics: {:?}",
             checked.diagnostics
         );
-        assert!(
-            !checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
-        );
+        assert!(!checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -6763,12 +6936,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -6812,12 +6983,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_some());
-        assert!(
-            !checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
-        );
+        assert!(!checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -6870,12 +7039,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_some());
-        assert!(
-            !checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
-        );
+        assert!(!checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -6919,12 +7086,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -6978,12 +7143,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_some());
-        assert!(
-            !checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_MISMATCH" || d.code_str() == "E_UNIFY_MISMATCH")
-        );
+        assert!(!checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH" || d.code_str() == "E_UNIFY_MISMATCH"));
     }
 
     #[test]
@@ -7008,12 +7171,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_some());
-        assert!(
-            !checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
-        );
+        assert!(!checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -7038,12 +7199,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_some());
-        assert!(
-            !checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
-        );
+        assert!(!checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -7062,12 +7221,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_MACRO_UNTYPED")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_MACRO_UNTYPED"));
     }
 
     #[test]
@@ -7086,12 +7243,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_IF_FORM")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_IF_FORM"));
     }
 
     #[test]
@@ -7110,12 +7265,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_CASES_FORM")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_CASES_FORM"));
     }
 
     #[test]
@@ -7143,12 +7296,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_ARG_MISSING")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_ARG_MISSING"));
     }
 
     #[test]
@@ -7182,12 +7333,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_ARG_KIND")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_ARG_KIND"));
     }
 
     #[test]
@@ -7218,12 +7367,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_ARRAY_SIZE_MISSING")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_ARRAY_SIZE_MISSING"));
     }
 
     #[test]
@@ -7260,12 +7407,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_ARG_ARITY")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_ARG_ARITY"));
     }
 
     #[test]
@@ -7296,12 +7441,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_ARG_ARITY")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_ARG_ARITY"));
     }
 
     #[test]
@@ -7492,18 +7635,14 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_INTERFACE_BOUND_UNSAT")
-        );
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| !d.obligations.is_empty())
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_INTERFACE_BOUND_UNSAT"));
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| !d.obligations.is_empty()));
     }
 
     #[test]
@@ -7555,18 +7694,14 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_STATIC_ARG_KIND")
-        );
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| !d.obligations.is_empty())
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_STATIC_ARG_KIND"));
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| !d.obligations.is_empty()));
     }
 
     #[test]
@@ -7615,12 +7750,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_STATIC_ARG_MISSING")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_STATIC_ARG_MISSING"));
     }
 
     #[test]
@@ -7670,12 +7803,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_UNKNOWN_INTERFACE")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_UNKNOWN_INTERFACE"));
     }
 
     #[test]
@@ -7698,11 +7829,10 @@ mod tests {
         let mut checker = TypeChecker::new(CheckContext::default(), CheckOptions::default());
         let _ = checker.check_program(&program);
         let (_types, _diagnostics, ir) = checker.into_parts();
-        assert!(
-            ir.declarations
-                .iter()
-                .any(|d| d.name == "x" && matches!(&d.value, CheckedExpr::Int(_)))
-        );
+        assert!(ir
+            .declarations
+            .iter()
+            .any(|d| d.name == "x" && matches!(&d.value, CheckedExpr::Int(_))));
     }
 
     #[test]
@@ -7724,12 +7854,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -7769,12 +7897,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 
     #[test]
@@ -8022,6 +8148,89 @@ mod tests {
     }
 
     #[test]
+    fn struct_payload_enum_variant_sugar_typechecks_with_expected_enum() {
+        let program = Parser::parse_source(
+            "def HttpError = enum(err: (message: String, code: Int)); \
+             def e: HttpError = .err(message = \"oops\", code = 500)",
+        )
+        .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+    }
+
+    #[test]
+    fn named_struct_payload_enum_variant_sugar_typechecks() {
+        let program = Parser::parse_source(
+            "def HttpError = enum(err: (message: String, code: Int)); \
+             def e = HttpError.err(message = \"oops\", code = 500)",
+        )
+        .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+    }
+
+    #[test]
+    fn explicit_struct_value_enum_payload_still_typechecks() {
+        let program = Parser::parse_source(
+            "def HttpError = enum(err: (message: String, code: Int)); \
+             def content = (message = \"oops\", code = 500); \
+             def e: HttpError = .err(content)",
+        )
+        .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+    }
+
+    #[test]
+    fn non_struct_enum_payload_rejects_field_sugar() {
+        let program = Parser::parse_source(
+            "def Result = enum(err: String); def e: Result = .err(message = \"oops\")",
+        )
+        .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(checked.module.is_none());
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
+    }
+
+    #[test]
+    fn enum_match_struct_payload_pattern_binds_fields() {
+        let program = Parser::parse_source(
+            "def HttpError = enum(err: (message: String, code: Int), ok); \
+             def HttpError.status(self: HttpError) -> Int { \
+                 .err(message = msg, code = status) -> status, \
+                 .ok -> 0 \
+             }",
+        )
+        .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+    }
+
+    #[test]
     fn union_assignment_typechecks_when_value_matches_member() {
         let program = Program {
             declarations: vec![Decl::Assign {
@@ -8158,12 +8367,10 @@ mod tests {
             "expected module, got diagnostics: {:?}",
             checked.diagnostics
         );
-        assert!(
-            !checked
-                .diagnostics
-                .iter()
-                .any(|d| d.message.contains("immutable local"))
-        );
+        assert!(!checked
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("immutable local")));
     }
 
     #[test]
@@ -8192,12 +8399,10 @@ mod tests {
             "expected module, got diagnostics: {:?}",
             checked.diagnostics
         );
-        assert!(
-            !checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "W_UNRESOLVED_IDENT")
-        );
+        assert!(!checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
     }
 
     #[test]
@@ -8206,12 +8411,10 @@ mod tests {
             Parser::parse_source("def xs = [let x = 0; x, x]").expect("source should parse");
 
         let checked = check_module(&program);
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "W_UNRESOLVED_IDENT")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "W_UNRESOLVED_IDENT"));
     }
 
     #[test]
@@ -8276,11 +8479,9 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_TYPE_MISMATCH")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_TYPE_MISMATCH"));
     }
 }

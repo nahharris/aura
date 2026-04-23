@@ -449,6 +449,34 @@ fn lower_enum_match<'ctx, 'm>(
                 cg.insert_local(name.clone(), slot);
             }
         }
+        if !arm.struct_bindings.is_empty() {
+            if let Some(payload_ty) = variants
+                .get(arm.variant_index)
+                .and_then(|(_, payload)| *payload)
+            {
+                let payload_value =
+                    load_enum_payload(cg, scrutinee_slot, enum_basic_ty, payload_ty)?;
+                let BasicValueEnum::StructValue(payload_struct) = payload_value else {
+                    return Err(CodegenError::UnsupportedExpression("enum_match"));
+                };
+                for binding in &arm.struct_bindings {
+                    let field_value = cg
+                        .builder
+                        .build_extract_value(
+                            payload_struct,
+                            binding.field_index as u32,
+                            &format!("enum_match_{}", binding.name),
+                        )
+                        .map_err(|_| CodegenError::UnsupportedExpression("enum_match"))?;
+                    let slot = allocate_local_slot(cg, &binding.name, binding.ty)?;
+                    let stored = coerce_basic_value_for_slot(cg, field_value, binding.ty)?;
+                    cg.builder
+                        .build_store(slot.ptr, stored)
+                        .map_err(|_| CodegenError::UnsupportedExpression("enum_match"))?;
+                    cg.insert_local(binding.name.clone(), slot);
+                }
+            }
+        }
         let arm_value = lower_expr(cg, &arm.body)?;
         if let Some(result_slot) = result_slot {
             let stored = coerce_basic_value_for_slot(cg, arm_value, result_ty)?;

@@ -313,8 +313,10 @@ An `enum` is a named-variant sum type, identical to Rust enums but with anonymou
 
 ```aura
 let res: enum(ok: Int, err: String) = .ok(5);
+let http: enum(err: (message: String, code: Int)) = .err(message = "oops", code = 500);
 
 let .ok(val) = res;   // fallible destructuring — panics if res is .err
+let .err(message = msg, code = status) = http;
 
 {
     .ok(val)  -> ...,
@@ -334,6 +336,21 @@ let from_anon: Result[Bool, String] = .ok(false);   // anon→named cast
 let .ok(val)  = success;
 let .err(msg) = failure;
 ```
+
+When a variant's single payload type is a struct, the constructor and pattern may elide the extra struct wrapper:
+
+```aura
+def HttpError = enum(err: (message: String, code: Int))
+
+let e = .err(message = "oops", code = 500);
+let same = .err((message = "oops", code = 500)); // explicit wrapped form
+let content = (message = "oops", code = 500);
+let also_same = .err(content);                    // explicit payload value
+
+let .err(message = msg, code = status) = e;
+```
+
+This is sugar only. The variant still carries exactly one payload value, and the sugar desugars to the existing single struct payload representation.
 
 ### Interface Types
 
@@ -657,6 +674,8 @@ let v: union(Int, Float) = 1;
 ```aura
 let result: enum(err: String, ok: Int) = .ok(42);
 let opt:    enum(null, some: Int)        = .null;
+let err:    enum(err: (message: String, code: Int)) =
+    .err(message = "oops", code = 500);
 ```
 
 Inline-scope trick applies inside variant constructors:
@@ -729,6 +748,7 @@ struct_field ::= identifier "=" identifier          // field rename: `alias = fi
 - A constructor pattern `TypeName(p1, p2)` destructures a named tuple or struct, optionally casting.
 - A rest pattern `..rest` captures remaining elements into a list; bare `..` discards them.
 - A variant pattern `.ok(inner)` matches a dot-identifier enum variant.
+- A variant pattern whose payload is a struct may use `.err(message = msg, code = status)`, which desugars to `.err((message = msg, code = status))`.
 - A guard `~ expr` is evaluated only when all patterns match; the arm is taken only if the guard is also `true`.
 - Arms are tried in order; the first matching arm is taken.
 

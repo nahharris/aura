@@ -545,8 +545,13 @@ where
             let name = self.expect_ident("expected variant name after '.'")?;
             let payload = if self.peek_is(&TokenKind::LParen) {
                 self.bump();
-                let inner = self.parse_pattern()?;
-                self.expect_simple(&TokenKind::RParen, "expected ')'", vec![")"])?;
+                let inner = if self.starts_struct_pattern_fields() {
+                    self.parse_struct_pattern_fields_until_rparen()?
+                } else {
+                    let inner = self.parse_pattern()?;
+                    self.expect_simple(&TokenKind::RParen, "expected ')'", vec![")"])?;
+                    inner
+                };
                 Some(Box::new(inner))
             } else {
                 None
@@ -554,8 +559,53 @@ where
             return Ok(Pattern::DotVariant { name, payload });
         }
 
+        if self.peek_is(&TokenKind::LParen) {
+            self.bump();
+            if self.starts_struct_pattern_fields() {
+                return self.parse_struct_pattern_fields_until_rparen();
+            }
+            return Err(self.error_here(
+                "expected struct pattern field",
+                vec!["identifier"],
+                Some("use form `(field = binding, other = value)`".to_string()),
+            ));
+        }
+
         let ident = self.expect_ident("expected pattern")?;
         Ok(Pattern::Ident(ident))
+    }
+
+    fn starts_struct_pattern_fields(&self) -> bool {
+        matches!(self.peek(), TokenKind::Ident(_)) && self.peek_n(1) == Some(&TokenKind::Eq)
+    }
+
+    fn parse_struct_pattern_fields_until_rparen(&mut self) -> Result<Pattern, ParseError> {
+        let mut fields = Vec::new();
+        loop {
+            let field = self.expect_ident("expected struct pattern field name")?;
+            self.expect_simple(
+                &TokenKind::Eq,
+                "expected '=' after struct pattern field name",
+                vec!["="],
+            )?;
+            let pattern = self.parse_pattern()?;
+            fields.push((field, pattern));
+
+            if self.peek_is(&TokenKind::Comma) {
+                self.bump();
+                if self.peek_is(&TokenKind::RParen) {
+                    break;
+                }
+                continue;
+            }
+            break;
+        }
+        self.expect_simple(
+            &TokenKind::RParen,
+            "expected ')' after struct pattern",
+            vec![")"],
+        )?;
+        Ok(Pattern::Struct(fields))
     }
 
     fn parse_static_params(&mut self) -> Result<Vec<StaticParam>, ParseError> {
@@ -1331,17 +1381,55 @@ where
         let name = self.expect_ident("expected identifier after '.'")?;
         let payload = if self.peek_is(&TokenKind::LParen) {
             self.bump();
-            let expr = self.parse_expr()?;
-            self.expect_simple(
-                &TokenKind::RParen,
-                "expected ')' after dot payload",
-                vec![")"],
-            )?;
+            let expr = if self.starts_struct_literal_fields() {
+                self.parse_struct_literal_fields_until_rparen()?
+            } else {
+                let expr = self.parse_expr()?;
+                self.expect_simple(
+                    &TokenKind::RParen,
+                    "expected ')' after dot payload",
+                    vec![")"],
+                )?;
+                expr
+            };
             Some(Box::new(expr))
         } else {
             None
         };
         Ok(self.with_span(mark, Expr::DotIdent { name, payload }))
+    }
+
+    fn starts_struct_literal_fields(&self) -> bool {
+        matches!(self.peek(), TokenKind::Ident(_)) && self.peek_n(1) == Some(&TokenKind::Eq)
+    }
+
+    fn parse_struct_literal_fields_until_rparen(&mut self) -> Result<Expr, ParseError> {
+        let mut fields = Vec::new();
+        loop {
+            let field = self.expect_ident("expected struct field name")?;
+            self.expect_simple(
+                &TokenKind::Eq,
+                "expected '=' after struct field name",
+                vec!["="],
+            )?;
+            let value = self.parse_expr()?;
+            fields.push((field, value));
+
+            if self.peek_is(&TokenKind::Comma) {
+                self.bump();
+                if self.peek_is(&TokenKind::RParen) {
+                    break;
+                }
+                continue;
+            }
+            break;
+        }
+        self.expect_simple(
+            &TokenKind::RParen,
+            "expected ')' after struct literal",
+            vec![")"],
+        )?;
+        Ok(Expr::Struct(fields))
     }
 
     fn parse_paren_literal_expr(&mut self) -> Result<Expr, ParseError> {
@@ -1351,33 +1439,8 @@ where
             return Ok(Expr::Tuple(Vec::new()));
         }
 
-        if matches!(self.peek(), TokenKind::Ident(_)) && self.peek_n(1) == Some(&TokenKind::Eq) {
-            let mut fields = Vec::new();
-            loop {
-                let field = self.expect_ident("expected struct field name")?;
-                self.expect_simple(
-                    &TokenKind::Eq,
-                    "expected '=' after struct field name",
-                    vec!["="],
-                )?;
-                let value = self.parse_expr()?;
-                fields.push((field, value));
-
-                if self.peek_is(&TokenKind::Comma) {
-                    self.bump();
-                    if self.peek_is(&TokenKind::RParen) {
-                        break;
-                    }
-                    continue;
-                }
-                break;
-            }
-            self.expect_simple(
-                &TokenKind::RParen,
-                "expected ')' after struct literal",
-                vec![")"],
-            )?;
-            return Ok(Expr::Struct(fields));
+        if self.starts_struct_literal_fields() {
+            return self.parse_struct_literal_fields_until_rparen();
         }
 
         let first = self.parse_elvis_expr()?;
@@ -2432,10 +2495,9 @@ mod tests {
         let src = "def foo() -> Int { 1 }; defmacro foo(node: Expr[Int]) -> Expr[Int] { node }";
         let err =
             Parser::parse_source(src).expect_err("should reject function shadowing macro symbol");
-        assert!(
-            err.message
-                .contains("function name 'foo' cannot shadow final macro symbol")
-        );
+        assert!(err
+            .message
+            .contains("function name 'foo' cannot shadow final macro symbol"));
     }
 
     #[test]
@@ -2443,10 +2505,9 @@ mod tests {
         let src = "defmacro foo(node: Expr[Int]) -> Expr[Int] { node }; def foo() -> Int { 1 }";
         let err =
             Parser::parse_source(src).expect_err("should reject function shadowing macro symbol");
-        assert!(
-            err.message
-                .contains("function name 'foo' cannot shadow final macro symbol")
-        );
+        assert!(err
+            .message
+            .contains("function name 'foo' cannot shadow final macro symbol"));
     }
 
     #[test]
@@ -2783,6 +2844,53 @@ mod tests {
                 payload: Some(_)
             } if name == "ok"
         ));
+    }
+
+    #[test]
+    fn parse_dot_ident_struct_payload_sugar_as_single_struct_payload() {
+        let src = "def err = .err(message = \"oops\", code = 500)";
+        let parsed = Parser::parse_source(src).expect("should parse struct payload sugar");
+        let Decl::Assign { value, .. } = &parsed.declarations[0] else {
+            panic!("expected assignment")
+        };
+        let Expr::DotIdent {
+            name,
+            payload: Some(payload),
+        } = u(value)
+        else {
+            panic!("expected dot-ident payload")
+        };
+
+        assert_eq!(name, "err");
+        assert!(matches!(u(payload.as_ref()), Expr::Struct(fields) if fields.len() == 2));
+    }
+
+    #[test]
+    fn parse_dot_variant_struct_payload_pattern_sugar() {
+        let src = "def Handler.map(self: Handler) -> Int { .err(message = msg, code = status) -> status, _ -> 0 }";
+        let parsed = Parser::parse_source(src).expect("should parse struct payload pattern sugar");
+        let Decl::Function(function) = &parsed.declarations[0] else {
+            panic!("expected function declaration")
+        };
+        let Expr::MultiArm(arms) = u(&function.body) else {
+            panic!("expected multi-arm body")
+        };
+
+        let Pattern::DotVariant {
+            name,
+            payload: Some(payload),
+        } = &arms[0].patterns[0]
+        else {
+            panic!("expected dot variant pattern")
+        };
+        assert_eq!(name, "err");
+        assert!(matches!(payload.as_ref(), Pattern::Struct(fields) if fields.len() == 2));
+    }
+
+    #[test]
+    fn parse_explicit_wrapped_struct_payload_forms_remain_valid() {
+        let src = "def err = .err((message = \"oops\", code = 500)); def Handler.map(self: Handler) -> Int { .err((message = msg, code = status)) -> status, _ -> 0 }";
+        Parser::parse_source(src).expect("explicit wrapped struct payloads should parse");
     }
 
     #[test]

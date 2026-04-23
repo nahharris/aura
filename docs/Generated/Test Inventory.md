@@ -2,7 +2,7 @@
 title: Test Inventory
 kind: generated
 generated_by: cargo xtask docs sync
-generated_at: 2026-04-23T01:05:33.312779Z
+generated_at: 2026-04-23T01:56:23.2028952Z
 ---
 
 # Test Inventory

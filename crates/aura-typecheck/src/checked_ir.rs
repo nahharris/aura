@@ -153,7 +153,15 @@ pub struct CheckedBinding {
 pub struct CheckedEnumArm {
     pub variant_index: usize,
     pub binding_name: Option<String>,
+    pub struct_bindings: Vec<CheckedEnumStructBinding>,
     pub body: CheckedExpr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedEnumStructBinding {
+    pub name: String,
+    pub field_index: usize,
+    pub ty: TyId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

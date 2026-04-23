@@ -1,4 +1,3 @@
-use crate::Parser;
 use crate::ast::{
     Arm, BinaryOp, Decl, Expr, FunctionDecl, LabeledClosureArg, MacroDecl, Param, Pattern, Program,
     StaticArg, StaticParam, StaticParamKind, StaticValueExpr, StubDecl, TypeExpr, UseBinding,
@@ -6,6 +5,7 @@ use crate::ast::{
 };
 use crate::lexer::lex_with_comments;
 use crate::token::TokenKind;
+use crate::Parser;
 
 pub struct FormatOptions {
     pub indent_width: usize,
@@ -337,7 +337,11 @@ impl<'a> Formatter<'a> {
                 self.out.push_str(name);
                 if let Some(payload) = payload {
                     self.out.push('(');
-                    self.write_expr(payload, false);
+                    if let Expr::Struct(fields) = payload.unspanned() {
+                        self.write_struct_expr_fields(fields);
+                    } else {
+                        self.write_expr(payload, false);
+                    }
                     self.out.push(')');
                 }
             }
@@ -353,14 +357,7 @@ impl<'a> Formatter<'a> {
             }
             Expr::Struct(fields) => {
                 self.out.push('(');
-                for (i, (name, value)) in fields.iter().enumerate() {
-                    if i > 0 {
-                        self.out.push_str(", ");
-                    }
-                    self.out.push_str(name);
-                    self.out.push_str(" = ");
-                    self.write_expr(value, false);
-                }
+                self.write_struct_expr_fields(fields);
                 self.out.push(')');
             }
             Expr::Block(items) => self.write_inline_block(items),
@@ -538,15 +535,46 @@ impl<'a> Formatter<'a> {
         match pattern {
             Pattern::Wildcard => self.out.push('_'),
             Pattern::Ident(name) => self.out.push_str(name),
+            Pattern::Struct(fields) => {
+                self.out.push('(');
+                self.write_struct_pattern_fields(fields);
+                self.out.push(')');
+            }
             Pattern::DotVariant { name, payload } => {
                 self.out.push('.');
                 self.out.push_str(name);
                 if let Some(payload) = payload {
                     self.out.push('(');
-                    self.write_pattern(payload);
+                    if let Pattern::Struct(fields) = payload.as_ref() {
+                        self.write_struct_pattern_fields(fields);
+                    } else {
+                        self.write_pattern(payload);
+                    }
                     self.out.push(')');
                 }
             }
+        }
+    }
+
+    fn write_struct_expr_fields(&mut self, fields: &[(String, Expr)]) {
+        for (i, (name, value)) in fields.iter().enumerate() {
+            if i > 0 {
+                self.out.push_str(", ");
+            }
+            self.out.push_str(name);
+            self.out.push_str(" = ");
+            self.write_expr(value, false);
+        }
+    }
+
+    fn write_struct_pattern_fields(&mut self, fields: &[(String, Pattern)]) {
+        for (i, (name, value)) in fields.iter().enumerate() {
+            if i > 0 {
+                self.out.push_str(", ");
+            }
+            self.out.push_str(name);
+            self.out.push_str(" = ");
+            self.write_pattern(value);
         }
     }
 
@@ -785,7 +813,7 @@ fn escape_string_literal(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{FormatOptions, format_source};
+    use super::{format_source, FormatOptions};
 
     #[test]
     fn preserves_trailing_closure_continuation_on_same_line() {
