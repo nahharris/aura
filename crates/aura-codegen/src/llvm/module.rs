@@ -1,6 +1,6 @@
-use aura_typecheck::CheckedModule;
 #[cfg(feature = "llvm-backend")]
 use aura_runtime_host::runtime_function;
+use aura_typecheck::CheckedModule;
 #[cfg(feature = "llvm-backend")]
 use aura_typecheck::Ty;
 #[cfg(feature = "llvm-backend")]
@@ -42,12 +42,12 @@ fn bind_function_params<'ctx, 'm>(
         return Err(CodegenError::InvalidFunctionType(decl.name.clone()));
     }
 
-    for (index, (param_name, param_ty)) in decl.params.iter().zip(params.iter()).enumerate() {
+    for (index, (param_name, param)) in decl.params.iter().zip(params.iter()).enumerate() {
         let Some(value) = function.get_nth_param(index as u32) else {
             return Err(CodegenError::InvalidFunctionType(decl.name.clone()));
         };
-        let _value_ty = classify_type(&cg.checked.types, *param_ty)?;
-        let basic_ty = lower_basic_type(cg.context, &cg.checked.types, *param_ty)?;
+        let _value_ty = classify_type(&cg.checked.types, param.ty)?;
+        let basic_ty = lower_basic_type(cg.context, &cg.checked.types, param.ty)?;
         let slot = cg
             .builder
             .build_alloca(basic_ty, &format!("param_{param_name}"))
@@ -59,7 +59,7 @@ fn bind_function_params<'ctx, 'm>(
             param_name.clone(),
             super::context::LocalSlot {
                 ptr: slot,
-                ty: *param_ty,
+                ty: param.ty,
             },
         );
     }
@@ -206,8 +206,7 @@ pub fn emit_module_stub(
         cg.push_local_scope();
         bind_function_params(&cg, decl, function)?;
 
-        let lowered = lower_expr(&cg, &decl.value)
-            .map_err(|_| CodegenError::UnsupportedExpression(classify_expr_kind(&decl.value)))?;
+        let lowered = lower_expr(&cg, &decl.value)?;
 
         if function.get_type().get_return_type().is_some() {
             cg.builder.build_return(Some(&lowered)).map_err(|_| {
@@ -292,8 +291,7 @@ pub fn emit_object_file_with_options(
         cg.push_local_scope();
         bind_function_params(&cg, decl, function)?;
 
-        let lowered = lower_expr(&cg, &decl.value)
-            .map_err(|_| CodegenError::UnsupportedExpression(classify_expr_kind(&decl.value)))?;
+        let lowered = lower_expr(&cg, &decl.value)?;
 
         if function.get_type().get_return_type().is_some() {
             cg.builder.build_return(Some(&lowered)).map_err(|_| {
@@ -354,11 +352,13 @@ mod tests {
     use aura_frontend::Parser;
     #[cfg(not(feature = "llvm-backend"))]
     use aura_frontend::Parser;
-    #[cfg(feature = "llvm-backend")]
-    use aura_typecheck::{CheckOptions, check_module, check_module_with_options};
     #[cfg(not(feature = "llvm-backend"))]
     use aura_typecheck::check_module;
+    #[cfg(feature = "llvm-backend")]
+    use aura_typecheck::{CheckOptions, check_module, check_module_with_options};
 
+    #[cfg(feature = "llvm-backend")]
+    use super::CodegenError;
     #[cfg(not(feature = "llvm-backend"))]
     use super::emit_module_stub;
 
@@ -390,7 +390,8 @@ mod tests {
     #[cfg(feature = "llvm-backend")]
     #[test]
     fn object_emission_supports_local_assignment_before_exit() {
-        let src = "def main() -> Void { let exit_code = 0; exit_code = 0; syscall_exit(exit_code) }";
+        let src = "defstub syscall_exit: Func[(code: Int), Never]; \
+                   def main() -> Void { let exit_code = 0; exit_code = 0; syscall_exit(exit_code) }";
         let program = Parser::parse_source(src).expect("parse");
         let checked = check_module(&program);
         let module = checked.module.expect("checked module");
@@ -403,8 +404,10 @@ mod tests {
     #[cfg(feature = "llvm-backend")]
     #[test]
     fn object_emission_supports_syscall_write_with_string_into() {
-        let src =
-            "def main() -> Void { syscall_write(1, \"Hello, world!\".into()); syscall_exit(0) }";
+        let src = "defstub syscall_exit: Func[(code: Int), Never]; \
+                   defstub syscall_write: Func[(fd: Int, bytes: Bytes), ISize]; \
+                   defstub string_into: Func[(text: String), Bytes]; \
+                   def main() -> Void { syscall_write(1, \"Hello, world!\".into()); syscall_exit(0) }";
         let program = Parser::parse_source(src).expect("parse");
         let checked = check_module(&program);
         let module = checked.module.expect("checked module");
@@ -417,8 +420,10 @@ mod tests {
     #[cfg(feature = "llvm-backend")]
     #[test]
     fn llvm_ir_declares_runtime_bytes_and_write_symbols() {
-        let src =
-            "def main() -> Void { syscall_write(1, \"Hello, world!\".into()); syscall_exit(0) }";
+        let src = "defstub syscall_exit: Func[(code: Int), Never]; \
+                   defstub syscall_write: Func[(fd: Int, bytes: Bytes), ISize]; \
+                   defstub string_into: Func[(text: String), Bytes]; \
+                   def main() -> Void { syscall_write(1, \"Hello, world!\".into()); syscall_exit(0) }";
         let program = Parser::parse_source(src).expect("parse");
         let checked = check_module(&program);
         let module = checked.module.expect("checked module");
@@ -434,6 +439,61 @@ mod tests {
 
     #[cfg(feature = "llvm-backend")]
     #[test]
+    fn llvm_ir_declares_managed_memory_runtime_symbols() {
+        let src = r#"
+            def touch(reference: Ref[Int]) -> Int {
+                reference.set(7);
+                reference.get()
+            }
+
+            def main() -> Void {
+                let alloc = RawAlloc[Int].new(2);
+                let slice = alloc.slice();
+                slice.set(0, 42);
+                let value = slice.get(0);
+                let reference = slice.ref_at(0);
+                ()
+            }
+        "#;
+        let program = Parser::parse_source(src).expect("parse");
+        let checked = check_module(&program);
+        let module = checked.module.expect("checked module");
+
+        let ir = super::emit_module_stub("managed_memory", &module).expect("emit ir");
+
+        assert!(ir.contains("declare ptr @raw_alloc_new(i64, i64, i64)"));
+        assert!(ir.contains("declare ptr @raw_alloc_slice(ptr)"));
+        assert!(ir.contains("declare i1 @slice_set(ptr, i64, ptr)"));
+        assert!(ir.contains("declare i1 @slice_get(ptr, i64, ptr)"));
+        assert!(ir.contains("declare ptr @slice_ref_at(ptr, i64)"));
+        assert!(ir.contains("declare void @ref_set(ptr, ptr)"));
+        assert!(ir.contains("declare void @ref_get(ptr, ptr)"));
+        assert!(ir.contains("call ptr @raw_alloc_new(i64 2, i64 4, i64 4)"));
+        assert!(ir.contains("call ptr @raw_alloc_slice(ptr"));
+        assert!(ir.contains("call i1 @slice_set(ptr"));
+        assert!(ir.contains("call i1 @slice_get(ptr"));
+        assert!(ir.contains("call ptr @slice_ref_at(ptr"));
+        assert!(ir.contains("call void @ref_set(ptr"));
+        assert!(ir.contains("call void @ref_get(ptr"));
+    }
+
+    #[cfg(feature = "llvm-backend")]
+    #[test]
+    fn llvm_identifier_named_true_prefers_local_binding() {
+        let src = "def echo(true: Int) -> Int { true }";
+        let program = Parser::parse_source(src).expect("parse");
+        let checked = check_module(&program);
+        let module = checked.module.expect("checked module");
+
+        let ir = super::emit_module_stub("true_shadow", &module).expect("emit ir");
+
+        assert!(ir.contains("store i32 %0, ptr %param_true"));
+        assert!(ir.contains("load i32, ptr %param_true"));
+        assert!(!ir.contains("ret i1 true"));
+    }
+
+    #[cfg(feature = "llvm-backend")]
+    #[test]
     fn non_void_main_is_rejected_before_codegen() {
         let src = "def main() -> Result[Void, UInt8] { .err(7) }";
         let program = Parser::parse_source(src).expect("parse");
@@ -443,11 +503,15 @@ mod tests {
                 enforce_main_signature: false,
             },
         );
-        assert!(
-            checked.module.is_none(),
-            "expected invalid non-void main to be rejected before codegen"
-        );
-        assert!(!checked.diagnostics.is_empty());
+        let module = checked
+            .module
+            .expect("typechecking should allow Result main");
+        let out = std::env::temp_dir().join("aura-non-void-main.obj");
+        let err = super::emit_object_file("non_void_main", &module, &out)
+            .expect_err("native entry lowering should reject non-Void main");
+
+        assert!(matches!(err, CodegenError::MainLowering(_)));
+        let _ = std::fs::remove_file(out);
     }
 
     #[cfg(feature = "llvm-backend")]

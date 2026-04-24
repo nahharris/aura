@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::types::{Ty, TyId, TyInterner};
+use crate::types::{FuncParam, Ty, TyId, TyInterner};
 use aura_diagnostics::{Diagnostic, Issue};
 
 #[derive(Debug, Clone, Default)]
@@ -140,10 +140,45 @@ impl Unifier {
 
                 let mut params = Vec::with_capacity(params_a.len());
                 for (a, b) in params_a.iter().zip(params_b.iter()) {
-                    params.push(self.unify(interner, *a, *b, _context)?);
+                    params.push(FuncParam {
+                        name: a.name.clone().or_else(|| b.name.clone()),
+                        label: a.label.clone().or_else(|| b.label.clone()),
+                        trailing: a.trailing || b.trailing,
+                        ty: self.unify(interner, a.ty, b.ty, _context)?,
+                    });
                 }
                 let ret = self.unify(interner, ret_a, ret_b, _context)?;
                 Ok(interner.intern(Ty::Func { params, ret }))
+            }
+            (
+                Some(Ty::Macro {
+                    params: params_a,
+                    ret: ret_a,
+                }),
+                Some(Ty::Macro {
+                    params: params_b,
+                    ret: ret_b,
+                }),
+            ) => {
+                if params_a.len() != params_b.len() {
+                    return Err(Box::new(
+                        Diagnostic::error(Issue::UnifyMismatch)
+                            .with_related("macro parameter count differs", None)
+                            .with_hint("pass a macro with matching arity"),
+                    ));
+                }
+
+                let mut params = Vec::with_capacity(params_a.len());
+                for (a, b) in params_a.iter().zip(params_b.iter()) {
+                    params.push(FuncParam {
+                        name: a.name.clone().or_else(|| b.name.clone()),
+                        label: a.label.clone().or_else(|| b.label.clone()),
+                        trailing: a.trailing || b.trailing,
+                        ty: self.unify(interner, a.ty, b.ty, _context)?,
+                    });
+                }
+                let ret = self.unify(interner, ret_a, ret_b, _context)?;
+                Ok(interner.intern(Ty::Macro { params, ret }))
             }
             (Some(Ty::Tuple(items_a)), Some(Ty::Tuple(items_b))) => {
                 if items_a.len() != items_b.len() {
@@ -231,7 +266,7 @@ impl Unifier {
                                     .with_hint(
                                         "ensure matching payload arity for each enum variant",
                                     ),
-                            ))
+                            ));
                         }
                     };
 
@@ -277,7 +312,11 @@ impl Unifier {
                 self.occurs(interner, var, *key) || self.occurs(interner, var, *value)
             }
             Some(Ty::Func { params, ret }) => {
-                params.iter().any(|p| self.occurs(interner, var, *p))
+                params.iter().any(|p| self.occurs(interner, var, p.ty))
+                    || self.occurs(interner, var, *ret)
+            }
+            Some(Ty::Macro { params, ret }) => {
+                params.iter().any(|p| self.occurs(interner, var, p.ty))
                     || self.occurs(interner, var, *ret)
             }
             Some(Ty::Tuple(items)) => items.iter().any(|t| self.occurs(interner, var, *t)),
@@ -293,7 +332,7 @@ impl Unifier {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::{Ty, TyInterner};
+    use crate::types::{FuncParam, Ty, TyInterner};
     use crate::unify::Unifier;
 
     #[test]
@@ -348,14 +387,14 @@ mod tests {
         let infer_param = interner.fresh_infer_var(&mut next);
         let infer_ret = interner.fresh_infer_var(&mut next);
         let left = interner.intern(Ty::Func {
-            params: vec![infer_param],
+            params: vec![FuncParam::positional(infer_param)],
             ret: infer_ret,
         });
 
         let int = interner.intern(Ty::Int32);
         let float = interner.intern(Ty::Float32);
         let right = interner.intern(Ty::Func {
-            params: vec![int],
+            params: vec![FuncParam::positional(int)],
             ret: float,
         });
 

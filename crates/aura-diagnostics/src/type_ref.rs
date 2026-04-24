@@ -24,6 +24,14 @@ pub enum PrimitiveType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FuncParamRef {
+    pub name: Option<String>,
+    pub label: Option<String>,
+    pub trailing: bool,
+    pub ty: Box<TypeRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeRef {
     Primitive(PrimitiveType),
     InferVar(u32),
@@ -40,7 +48,11 @@ pub enum TypeRef {
         size: u64,
     },
     Func {
-        params: Vec<TypeRef>,
+        params: Vec<FuncParamRef>,
+        ret: Box<TypeRef>,
+    },
+    Macro {
+        params: Vec<FuncParamRef>,
         ret: Box<TypeRef>,
     },
     Tuple(Vec<TypeRef>),
@@ -48,6 +60,9 @@ pub enum TypeRef {
     Union(Vec<TypeRef>),
     Enum(Vec<(String, Option<TypeRef>)>),
     Unknown,
+    RawAlloc(Box<TypeRef>),
+    Slice(Box<TypeRef>),
+    Ref(Box<TypeRef>),
 }
 
 impl fmt::Display for PrimitiveType {
@@ -91,10 +106,18 @@ impl fmt::Display for TypeRef {
             Self::Func { params, ret } => {
                 let joined = params
                     .iter()
-                    .map(ToString::to_string)
+                    .map(format_func_param)
                     .collect::<Vec<_>>()
                     .join(", ");
                 write!(f, "({joined}) -> {ret}")
+            }
+            Self::Macro { params, ret } => {
+                let joined = params
+                    .iter()
+                    .map(format_func_param)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "macro({joined}) -> {ret}")
             }
             Self::Tuple(items) => {
                 let joined = items
@@ -132,6 +155,78 @@ impl fmt::Display for TypeRef {
                 write!(f, "enum({joined})")
             }
             Self::Unknown => f.write_str("<unknown>"),
+            Self::RawAlloc(item) => write!(f, "RawAlloc[{item}]"),
+            Self::Slice(item) => write!(f, "Slice[{item}]"),
+            Self::Ref(item) => write!(f, "Ref[{item}]"),
         }
+    }
+}
+
+fn format_func_param(param: &FuncParamRef) -> String {
+    let mut out = String::new();
+    match (&param.label, &param.name) {
+        (Some(label), Some(name)) if label == name => {
+            out.push_str(label);
+            out.push_str(": ");
+        }
+        (Some(label), Some(name)) => {
+            out.push_str(label);
+            out.push(' ');
+            out.push_str(name);
+            out.push_str(": ");
+        }
+        (Some(label), None) => {
+            out.push_str(label);
+            out.push_str(": ");
+        }
+        (None, Some(name)) => {
+            out.push_str(name);
+            out.push_str(": ");
+        }
+        (None, None) => {}
+    }
+    out.push_str(&param.ty.to_string());
+    if param.trailing {
+        out.push_str(" (trailing)");
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FuncParamRef, PrimitiveType, TypeRef};
+
+    fn int_ref() -> Box<TypeRef> {
+        Box::new(TypeRef::Primitive(PrimitiveType::Int32))
+    }
+
+    #[test]
+    fn func_param_display_deduplicates_matching_label_and_name() {
+        let ty = TypeRef::Func {
+            params: vec![FuncParamRef {
+                name: Some("code".to_string()),
+                label: Some("code".to_string()),
+                trailing: false,
+                ty: int_ref(),
+            }],
+            ret: Box::new(TypeRef::Primitive(PrimitiveType::Void)),
+        };
+
+        assert_eq!(ty.to_string(), "(code: Int32) -> Void");
+    }
+
+    #[test]
+    fn func_param_display_preserves_distinct_label_and_name() {
+        let ty = TypeRef::Func {
+            params: vec![FuncParamRef {
+                name: Some("value".to_string()),
+                label: Some("as".to_string()),
+                trailing: false,
+                ty: int_ref(),
+            }],
+            ret: Box::new(TypeRef::Primitive(PrimitiveType::Void)),
+        };
+
+        assert_eq!(ty.to_string(), "(as value: Int32) -> Void");
     }
 }

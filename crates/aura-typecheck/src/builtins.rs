@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use aura_runtime_host::{RuntimeTypeRef, runtime_functions};
+use aura_runtime_host::{runtime_functions, RuntimeTypeRef};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuiltinTypeRef {
@@ -75,6 +75,8 @@ fn builtin_type_from_runtime(ty: &RuntimeTypeRef) -> BuiltinTypeRef {
 #[cfg(test)]
 mod tests {
     use crate::builtins::{BuiltinRegistry, BuiltinTypeRef};
+    use crate::{check_module, Ty};
+    use aura_frontend::Parser;
 
     #[test]
     fn prelude_registry_contains_expected_builtins() {
@@ -97,5 +99,64 @@ mod tests {
             vec![BuiltinTypeRef::Int32, BuiltinTypeRef::Bytes]
         );
         assert_eq!(write.ret, BuiltinTypeRef::ISize);
+    }
+
+    #[test]
+    fn core_runtime_stubs_match_runtime_host_abi() {
+        let core_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../aura-stl/src/core.aura");
+        let source = std::fs::read_to_string(&core_path).expect("core.aura should be readable");
+        let program = Parser::parse_source(&source).expect("core.aura should parse");
+        let checked = check_module(&program);
+        let module = checked.module.expect("core.aura stubs should typecheck");
+        let registry = BuiltinRegistry::with_prelude();
+
+        for signature in registry.signatures() {
+            let decl = module
+                .ir
+                .declarations
+                .iter()
+                .find(|decl| decl.name == signature.name)
+                .unwrap_or_else(|| panic!("missing runtime stub `{}`", signature.name));
+            let Some(Ty::Func { params, ret }) = module.types.get(decl.ty) else {
+                panic!("runtime stub `{}` should be a function", signature.name);
+            };
+
+            assert_eq!(
+                params.len(),
+                signature.params.len(),
+                "runtime stub `{}` parameter count",
+                signature.name
+            );
+            for (param, expected) in params.iter().zip(signature.params.iter()) {
+                assert_builtin_ty(&module.types, param.ty, expected, &signature.name);
+            }
+            assert_builtin_ty(&module.types, *ret, &signature.ret, &signature.name);
+        }
+    }
+
+    fn assert_builtin_ty(
+        types: &crate::TyInterner,
+        ty: crate::TyId,
+        expected: &BuiltinTypeRef,
+        name: &str,
+    ) {
+        let actual = types.get(ty).expect("type id should exist");
+        let matches = match (actual, expected) {
+            (Ty::Int32, BuiltinTypeRef::Int32)
+            | (Ty::ISize, BuiltinTypeRef::ISize)
+            | (Ty::USize, BuiltinTypeRef::USize)
+            | (Ty::UInt8, BuiltinTypeRef::UInt8)
+            | (Ty::Void, BuiltinTypeRef::Void)
+            | (Ty::Never, BuiltinTypeRef::Never) => true,
+            (Ty::Nominal(actual), BuiltinTypeRef::Bytes) if actual == "Bytes" => true,
+            (Ty::Nominal(actual), BuiltinTypeRef::String) if actual == "String" => true,
+            _ => false,
+        };
+
+        assert!(
+            matches,
+            "runtime stub `{name}` expected {expected:?}, got {actual:?}"
+        );
     }
 }

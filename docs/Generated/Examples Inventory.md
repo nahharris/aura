@@ -2,7 +2,7 @@
 title: Examples Inventory
 kind: generated
 generated_by: cargo xtask docs sync
-generated_at: 2026-04-22T10:04:40.1304955Z
+generated_at: 2026-04-24T08:47:20.4119107Z
 ---
 
 # Examples Inventory
@@ -16,8 +16,10 @@ generated_at: 2026-04-22T10:04:40.1304955Z
 | `examples/broken_parse.aura` | negative example for diagnostics |
 | `examples/broken_static_bound.aura` | negative example for diagnostics |
 | `examples/broken_type_mismatch.aura` | negative example for diagnostics |
+| `examples/control_flow.auir` | source example |
 | `examples/control_flow.aura` | source example |
 | `examples/control_flow.ir.aura` | checked IR example |
+| `examples/control_flow.ll` | source example |
 | `examples/falsey.aura` | source example |
 | `examples/generics_ok.aura` | source example |
 | `examples/generics_ok.ir.aura` | checked IR example |

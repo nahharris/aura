@@ -3,17 +3,18 @@ use std::{cell::RefCell, collections::HashMap};
 
 #[cfg(feature = "llvm-backend")]
 use inkwell::{
+    basic_block::BasicBlock,
     builder::Builder,
     context::Context,
     module::Module,
-    values::PointerValue,
     targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine},
+    values::PointerValue,
 };
 
 #[cfg(feature = "llvm-backend")]
-use aura_typecheck::checked_ir::CheckedDecl;
-#[cfg(feature = "llvm-backend")]
 use aura_typecheck::CheckedModule;
+#[cfg(feature = "llvm-backend")]
+use aura_typecheck::checked_ir::CheckedDecl;
 
 use super::error::CodegenError;
 
@@ -25,12 +26,22 @@ pub struct LocalSlot<'ctx> {
 }
 
 #[cfg(feature = "llvm-backend")]
+#[derive(Clone, Copy)]
+pub struct LoopTarget<'ctx> {
+    pub continue_block: BasicBlock<'ctx>,
+    pub break_block: BasicBlock<'ctx>,
+    pub result_slot: Option<PointerValue<'ctx>>,
+    pub result_ty: aura_typecheck::TyId,
+}
+
+#[cfg(feature = "llvm-backend")]
 pub struct CodegenContext<'ctx, 'm> {
     pub context: &'ctx Context,
     pub module: Module<'ctx>,
     pub builder: Builder<'ctx>,
     pub checked: &'m CheckedModule,
     pub local_scopes: RefCell<Vec<HashMap<String, LocalSlot<'ctx>>>>,
+    pub loop_targets: RefCell<Vec<(String, LoopTarget<'ctx>)>>,
 }
 
 #[cfg(feature = "llvm-backend")]
@@ -44,6 +55,7 @@ impl<'ctx, 'm> CodegenContext<'ctx, 'm> {
             builder,
             checked,
             local_scopes: RefCell::new(vec![HashMap::new()]),
+            loop_targets: RefCell::new(Vec::new()),
         }
     }
 
@@ -70,6 +82,22 @@ impl<'ctx, 'm> CodegenContext<'ctx, 'm> {
             .iter()
             .rev()
             .find_map(|scope| scope.get(name).copied())
+    }
+
+    pub fn push_loop_target(&self, target: String, blocks: LoopTarget<'ctx>) {
+        self.loop_targets.borrow_mut().push((target, blocks));
+    }
+
+    pub fn pop_loop_target(&self) {
+        let _ = self.loop_targets.borrow_mut().pop();
+    }
+
+    pub fn lookup_loop_target(&self, target: &str) -> Option<LoopTarget<'ctx>> {
+        self.loop_targets
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|(name, blocks)| (name == target).then_some(*blocks))
     }
 
     pub fn lookup_decl(&self, name: &str) -> Option<&'m CheckedDecl> {

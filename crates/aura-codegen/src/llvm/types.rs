@@ -42,11 +42,15 @@ pub fn classify_type(types: &TyInterner, ty_id: TyId) -> Result<AuraValueType, C
         Ty::Never
         | Ty::Any
         | Ty::Nominal(_)
+        | Ty::RawAlloc(_)
+        | Ty::Slice(_)
+        | Ty::Ref(_)
         | Ty::List(_)
         | Ty::Dict { .. }
         | Ty::Set(_)
         | Ty::Array { .. }
         | Ty::Func { .. }
+        | Ty::Macro { .. }
         | Ty::Tuple(_)
         | Ty::Struct(_)
         | Ty::Union(_)
@@ -70,9 +74,13 @@ pub fn classify_function_type(
 
     let params = params
         .iter()
-        .map(|param| classify_type(types, *param))
+        .map(|param| classify_type(types, param.ty))
         .collect::<Result<Vec<_>, _>>()?;
-    let ret = classify_type(types, *ret)?;
+    let ret = if matches!(types.get(*ret), Some(Ty::Never)) {
+        AuraValueType::Void
+    } else {
+        classify_type(types, *ret)?
+    };
     Ok(AuraFunctionType { params, ret })
 }
 
@@ -194,7 +202,11 @@ mod llvm_lowering {
                 variant.1.map(|payload| type_layout(types, payload))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let max_payload_size = payload_layout.iter().map(|layout| layout.size).max().unwrap_or(0);
+        let max_payload_size = payload_layout
+            .iter()
+            .map(|layout| layout.size)
+            .max()
+            .unwrap_or(0);
         let max_payload_align = payload_layout
             .iter()
             .map(|layout| layout.align)
@@ -215,13 +227,18 @@ mod llvm_lowering {
             AuraValueType::Int64 | AuraValueType::Float64 | AuraValueType::Pointer => {
                 TypeLayout { size: 8, align: 8 }
             }
-            AuraValueType::Int128 => TypeLayout { size: 16, align: 16 },
+            AuraValueType::Int128 => TypeLayout {
+                size: 16,
+                align: 16,
+            },
             AuraValueType::Aggregate(enum_ty) => {
                 let Ty::Enum(variants) = types
                     .get(enum_ty)
                     .ok_or(CodegenError::InvalidTypeId(enum_ty.0))?
                 else {
-                    return Err(CodegenError::UnsupportedType("non-enum aggregate".to_string()));
+                    return Err(CodegenError::UnsupportedType(
+                        "non-enum aggregate".to_string(),
+                    ));
                 };
                 let payload_layout = variants
                     .iter()
@@ -229,10 +246,16 @@ mod llvm_lowering {
                         variant.1.map(|payload| type_layout(types, payload))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                let max_payload_size =
-                    payload_layout.iter().map(|layout| layout.size).max().unwrap_or(0);
-                let max_payload_align =
-                    payload_layout.iter().map(|layout| layout.align).max().unwrap_or(1);
+                let max_payload_size = payload_layout
+                    .iter()
+                    .map(|layout| layout.size)
+                    .max()
+                    .unwrap_or(0);
+                let max_payload_align = payload_layout
+                    .iter()
+                    .map(|layout| layout.align)
+                    .max()
+                    .unwrap_or(1);
                 let payload_offset = align_to(4, max_payload_align.max(1));
                 let size = align_to(payload_offset + max_payload_size, 4.max(max_payload_align));
                 TypeLayout {
@@ -285,6 +308,7 @@ pub use llvm_lowering::{enum_basic_type, lower_basic_type, lower_function_type, 
 
 #[cfg(test)]
 mod tests {
+    use aura_typecheck::types::FuncParam;
     use aura_typecheck::{Ty, TyInterner};
 
     use super::{AuraValueType, classify_function_type, classify_type};
@@ -343,7 +367,10 @@ mod tests {
         let i32_ty = types.intern(Ty::Int32);
         let f64_ty = types.intern(Ty::Float64);
         let fn_ty = types.intern(Ty::Func {
-            params: vec![bool_ty, i32_ty],
+            params: vec![
+                FuncParam::positional(bool_ty),
+                FuncParam::positional(i32_ty),
+            ],
             ret: f64_ty,
         });
 

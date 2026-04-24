@@ -74,6 +74,7 @@ fn semantically_checked_ir_has_no_any_nodes_for_core_operator_path() {
             CheckedExpr::Call { callee, args } => {
                 contains_any(callee) || args.iter().any(contains_any)
             }
+            CheckedExpr::MemoryOp { args, .. } => args.iter().any(contains_any),
             CheckedExpr::BinaryOp { lhs, rhs, .. } => contains_any(lhs) || contains_any(rhs),
             CheckedExpr::MacroApply { operand, .. } => contains_any(operand),
             CheckedExpr::Label { expr, .. } => contains_any(expr),
@@ -92,6 +93,7 @@ fn semantically_checked_ir_has_no_any_nodes_for_core_operator_path() {
             }
             CheckedExpr::MultiArm(arms) => arms.iter().any(contains_any),
             CheckedExpr::If {
+                result_ty: _,
                 condition,
                 then_branch,
                 else_branch,
@@ -103,14 +105,25 @@ fn semantically_checked_ir_has_no_any_nodes_for_core_operator_path() {
                         .map(|e| contains_any(e))
                         .unwrap_or(false)
             }
-            CheckedExpr::Cases { arms } => arms.iter().any(contains_any),
-            CheckedExpr::Return { value } => contains_any(value),
-            CheckedExpr::Break { value } => {
+            CheckedExpr::Cases { result_ty: _, arms } => arms
+                .iter()
+                .any(|arm| contains_any(&arm.guard) || contains_any(&arm.body)),
+            CheckedExpr::Loop {
+                condition, body, ..
+            } => {
+                condition
+                    .as_ref()
+                    .map(|expr| contains_any(expr))
+                    .unwrap_or(false)
+                    || contains_any(body)
+            }
+            CheckedExpr::Return { value, .. } => contains_any(value),
+            CheckedExpr::Break { value, .. } => {
                 value.as_ref().map(|v| contains_any(v)).unwrap_or(false)
             }
             CheckedExpr::Coerce { expr, .. } => contains_any(expr),
             CheckedExpr::Cast { expr, .. } => contains_any(expr),
-            CheckedExpr::Continue
+            CheckedExpr::Continue { .. }
             | CheckedExpr::Ident(_)
             | CheckedExpr::Int(_)
             | CheckedExpr::Float(_)
@@ -193,6 +206,7 @@ fn pipe_operator_consumes_placeholder_in_rhs_call_without_any_nodes() {
             CheckedExpr::Call { callee, args } => {
                 contains_any(callee) || args.iter().any(contains_any)
             }
+            CheckedExpr::MemoryOp { args, .. } => args.iter().any(contains_any),
             CheckedExpr::BinaryOp { lhs, rhs, .. } => contains_any(lhs) || contains_any(rhs),
             CheckedExpr::MacroApply { operand, .. } => contains_any(operand),
             CheckedExpr::Label { expr, .. } => contains_any(expr),
@@ -211,6 +225,7 @@ fn pipe_operator_consumes_placeholder_in_rhs_call_without_any_nodes() {
             }
             CheckedExpr::MultiArm(arms) => arms.iter().any(contains_any),
             CheckedExpr::If {
+                result_ty: _,
                 condition,
                 then_branch,
                 else_branch,
@@ -222,14 +237,25 @@ fn pipe_operator_consumes_placeholder_in_rhs_call_without_any_nodes() {
                         .map(|e| contains_any(e))
                         .unwrap_or(false)
             }
-            CheckedExpr::Cases { arms } => arms.iter().any(contains_any),
-            CheckedExpr::Return { value } => contains_any(value),
-            CheckedExpr::Break { value } => {
+            CheckedExpr::Cases { result_ty: _, arms } => arms
+                .iter()
+                .any(|arm| contains_any(&arm.guard) || contains_any(&arm.body)),
+            CheckedExpr::Loop {
+                condition, body, ..
+            } => {
+                condition
+                    .as_ref()
+                    .map(|expr| contains_any(expr))
+                    .unwrap_or(false)
+                    || contains_any(body)
+            }
+            CheckedExpr::Return { value, .. } => contains_any(value),
+            CheckedExpr::Break { value, .. } => {
                 value.as_ref().map(|v| contains_any(v)).unwrap_or(false)
             }
             CheckedExpr::Coerce { expr, .. } => contains_any(expr),
             CheckedExpr::Cast { expr, .. } => contains_any(expr),
-            CheckedExpr::Continue
+            CheckedExpr::Continue { .. }
             | CheckedExpr::Ident(_)
             | CheckedExpr::Int(_)
             | CheckedExpr::Float(_)
@@ -281,6 +307,7 @@ fn enum_constructor_forms_typecheck_without_any_nodes() {
             CheckedExpr::Call { callee, args } => {
                 contains_any(callee) || args.iter().any(contains_any)
             }
+            CheckedExpr::MemoryOp { args, .. } => args.iter().any(contains_any),
             CheckedExpr::BinaryOp { lhs, rhs, .. } => contains_any(lhs) || contains_any(rhs),
             CheckedExpr::MacroApply { operand, .. } => contains_any(operand),
             CheckedExpr::Label { expr, .. } => contains_any(expr),
@@ -299,6 +326,7 @@ fn enum_constructor_forms_typecheck_without_any_nodes() {
             }
             CheckedExpr::MultiArm(arms) => arms.iter().any(contains_any),
             CheckedExpr::If {
+                result_ty: _,
                 condition,
                 then_branch,
                 else_branch,
@@ -310,14 +338,25 @@ fn enum_constructor_forms_typecheck_without_any_nodes() {
                         .map(|e| contains_any(e))
                         .unwrap_or(false)
             }
-            CheckedExpr::Cases { arms } => arms.iter().any(contains_any),
-            CheckedExpr::Return { value } => contains_any(value),
-            CheckedExpr::Break { value } => {
+            CheckedExpr::Cases { result_ty: _, arms } => arms
+                .iter()
+                .any(|arm| contains_any(&arm.guard) || contains_any(&arm.body)),
+            CheckedExpr::Loop {
+                condition, body, ..
+            } => {
+                condition
+                    .as_ref()
+                    .map(|expr| contains_any(expr))
+                    .unwrap_or(false)
+                    || contains_any(body)
+            }
+            CheckedExpr::Return { value, .. } => contains_any(value),
+            CheckedExpr::Break { value, .. } => {
                 value.as_ref().map(|v| contains_any(v)).unwrap_or(false)
             }
             CheckedExpr::Coerce { expr, .. } => contains_any(expr),
             CheckedExpr::Cast { expr, .. } => contains_any(expr),
-            CheckedExpr::Continue
+            CheckedExpr::Continue { .. }
             | CheckedExpr::Ident(_)
             | CheckedExpr::Int(_)
             | CheckedExpr::Float(_)
@@ -346,7 +385,10 @@ fn enum_constructor_forms_typecheck_without_any_nodes() {
             .iter()
             .find(|decl| decl.name == name)
             .expect("function declaration should exist");
-        assert!(!contains_any(&decl.value), "{name} should not lower through Any");
+        assert!(
+            !contains_any(&decl.value),
+            "{name} should not lower through Any"
+        );
         let CheckedExpr::EnumCtor {
             variant_index,
             payload,
@@ -355,11 +397,173 @@ fn enum_constructor_forms_typecheck_without_any_nodes() {
         else {
             panic!("{name} should lower to EnumCtor, got {:?}", decl.value);
         };
-        assert_eq!(*variant_index, expected_variant, "{name} lowered wrong variant");
+        assert_eq!(
+            *variant_index, expected_variant,
+            "{name} lowered wrong variant"
+        );
         assert_eq!(
             payload.is_some(),
             expects_payload,
             "{name} payload presence mismatch"
         );
     }
+}
+
+#[test]
+fn struct_payload_enum_sugar_lowers_to_single_struct_payload() {
+    let src = r#"
+        def HttpError = enum(err: (message: String, code: Int));
+        def make_sugar() -> HttpError { .err(message = "oops", code = 500) }
+        def make_wrapped() -> HttpError { .err((message = "oops", code = 500)) }
+    "#;
+    let parsed = Parser::parse_source(src).expect("parse should succeed");
+    let checked = check_module(&parsed);
+    let module = checked
+        .module
+        .unwrap_or_else(|| panic!("module should exist: {:?}", checked.diagnostics));
+
+    fn contains_any_or_dot_ident(expr: &CheckedExpr) -> bool {
+        match expr {
+            CheckedExpr::Any | CheckedExpr::DotIdent { .. } => true,
+            CheckedExpr::EnumCtor { payload, .. } => payload
+                .as_ref()
+                .map(|payload| contains_any_or_dot_ident(payload))
+                .unwrap_or(false),
+            CheckedExpr::Tuple(items) => items.iter().any(contains_any_or_dot_ident),
+            CheckedExpr::Struct(fields) => fields
+                .iter()
+                .any(|(_, value)| contains_any_or_dot_ident(value)),
+            CheckedExpr::Block(items) | CheckedExpr::List(items) | CheckedExpr::MultiArm(items) => {
+                items.iter().any(contains_any_or_dot_ident)
+            }
+            CheckedExpr::LocalBind { bindings, .. } => bindings
+                .iter()
+                .any(|binding| contains_any_or_dot_ident(&binding.value)),
+            CheckedExpr::AssignLocal { value, .. } => contains_any_or_dot_ident(value),
+            CheckedExpr::Dict(entries) => entries.iter().any(|(key, value)| {
+                contains_any_or_dot_ident(key) || contains_any_or_dot_ident(value)
+            }),
+            CheckedExpr::Call { callee, args } => {
+                contains_any_or_dot_ident(callee) || args.iter().any(contains_any_or_dot_ident)
+            }
+            CheckedExpr::MemoryOp { args, .. } => args.iter().any(contains_any_or_dot_ident),
+            CheckedExpr::BinaryOp { lhs, rhs, .. } => {
+                contains_any_or_dot_ident(lhs) || contains_any_or_dot_ident(rhs)
+            }
+            CheckedExpr::MacroApply { operand, .. } => contains_any_or_dot_ident(operand),
+            CheckedExpr::Label { expr, .. } => contains_any_or_dot_ident(expr),
+            CheckedExpr::EnumMatch {
+                scrutinee,
+                arms,
+                default_arm,
+                ..
+            } => {
+                contains_any_or_dot_ident(scrutinee)
+                    || arms.iter().any(|arm| contains_any_or_dot_ident(&arm.body))
+                    || default_arm
+                        .as_ref()
+                        .map(|arm| contains_any_or_dot_ident(arm))
+                        .unwrap_or(false)
+            }
+            CheckedExpr::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                contains_any_or_dot_ident(condition)
+                    || contains_any_or_dot_ident(then_branch)
+                    || else_branch
+                        .as_ref()
+                        .map(|branch| contains_any_or_dot_ident(branch))
+                        .unwrap_or(false)
+            }
+            CheckedExpr::Cases { arms, .. } => arms.iter().any(|arm| {
+                contains_any_or_dot_ident(&arm.guard) || contains_any_or_dot_ident(&arm.body)
+            }),
+            CheckedExpr::Loop {
+                condition, body, ..
+            } => {
+                condition
+                    .as_ref()
+                    .map(|condition| contains_any_or_dot_ident(condition))
+                    .unwrap_or(false)
+                    || contains_any_or_dot_ident(body)
+            }
+            CheckedExpr::Return { value, .. } => contains_any_or_dot_ident(value),
+            CheckedExpr::Break { value, .. } => value
+                .as_ref()
+                .map(|value| contains_any_or_dot_ident(value))
+                .unwrap_or(false),
+            CheckedExpr::Coerce { expr, .. } | CheckedExpr::Cast { expr, .. } => {
+                contains_any_or_dot_ident(expr)
+            }
+            CheckedExpr::Continue { .. }
+            | CheckedExpr::Ident(_)
+            | CheckedExpr::Int(_)
+            | CheckedExpr::Float(_)
+            | CheckedExpr::Char(_)
+            | CheckedExpr::String(_)
+            | CheckedExpr::Closure { .. } => false,
+        }
+    }
+
+    for name in ["make_sugar", "make_wrapped"] {
+        let decl = module
+            .ir
+            .declarations
+            .iter()
+            .find(|decl| decl.name == name)
+            .expect("function declaration should exist");
+        assert!(
+            !contains_any_or_dot_ident(&decl.value),
+            "{name} should not lower through Any or DotIdent"
+        );
+        let CheckedExpr::EnumCtor {
+            payload: Some(payload),
+            ..
+        } = &decl.value
+        else {
+            panic!(
+                "{name} should lower to EnumCtor with payload: {:?}",
+                decl.value
+            );
+        };
+        assert!(matches!(payload.as_ref(), CheckedExpr::Struct(fields) if fields.len() == 2));
+    }
+}
+
+#[test]
+fn enum_match_struct_payload_pattern_records_field_bindings() {
+    let src = r#"
+        def HttpError = enum(err: (message: String, code: Int), ok);
+        def HttpError.status(self: HttpError) -> Int {
+            .err(message = msg, code = status) -> status,
+            .ok -> 0
+        }
+    "#;
+    let parsed = Parser::parse_source(src).expect("parse should succeed");
+    let checked = check_module(&parsed);
+    let module = checked
+        .module
+        .unwrap_or_else(|| panic!("module should exist: {:?}", checked.diagnostics));
+    let decl = module
+        .ir
+        .declarations
+        .iter()
+        .find(|decl| decl.name == "status")
+        .expect("status method should exist");
+    let CheckedExpr::EnumMatch { arms, .. } = &decl.value else {
+        panic!("status body should lower to EnumMatch: {:?}", decl.value);
+    };
+    let err_arm = arms
+        .iter()
+        .find(|arm| !arm.struct_bindings.is_empty())
+        .expect("err arm should record struct bindings");
+
+    assert_eq!(err_arm.struct_bindings.len(), 2);
+    assert_eq!(err_arm.struct_bindings[0].name, "msg");
+    assert_eq!(err_arm.struct_bindings[0].field_index, 0);
+    assert_eq!(err_arm.struct_bindings[1].name, "status");
+    assert_eq!(err_arm.struct_bindings[1].field_index, 1);
 }

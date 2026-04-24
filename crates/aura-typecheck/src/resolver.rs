@@ -41,6 +41,7 @@ impl Resolver {
         for decl in &program.declarations {
             match decl {
                 Decl::Assign { name, .. } => self.declare(name, SymbolKind::Value),
+                Decl::Stub(s) => self.declare_stub(&s.name, SymbolKind::Value),
                 Decl::Macro(m) => self.declare(&m.name, SymbolKind::Function),
                 Decl::Function(f) => self.declare(&f.name, SymbolKind::Function),
                 Decl::Use(u) => match &u.binding {
@@ -84,6 +85,25 @@ impl Resolver {
         self.resolved.by_name.insert(key, symbol_id);
     }
 
+    fn declare_stub(&mut self, name: &str, kind: SymbolKind) {
+        let key = (self.current_scope, name.to_string());
+        let already_declared = self.resolved.by_name.contains_key(&key);
+
+        let symbol_id = SymbolId(self.next_symbol_id);
+        self.next_symbol_id += 1;
+
+        self.resolved.symbols.push(Symbol {
+            id: symbol_id,
+            name: name.to_string(),
+            kind,
+            scope: self.current_scope,
+        });
+
+        if !already_declared {
+            self.resolved.by_name.insert(key, symbol_id);
+        }
+    }
+
     #[allow(dead_code)]
     fn push_scope(&mut self) {
         let id = ScopeId(self.scopes.len());
@@ -119,11 +139,13 @@ mod tests {
         let program = Program {
             declarations: vec![
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("1".to_string()),
                 },
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("2".to_string()),
@@ -144,11 +166,13 @@ mod tests {
         let program = Program {
             declarations: vec![
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("1".to_string()),
                 },
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Int("2".to_string()),

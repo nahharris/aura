@@ -8,9 +8,11 @@ pub enum Decl {
     Macro(MacroDecl),
     Assign {
         name: String,
+        static_params: Vec<StaticParam>,
         value: Expr,
         doc: Option<DocAttribute>,
     },
+    Stub(StubDecl),
     Function(FunctionDecl),
     Use(UseDecl),
 }
@@ -45,6 +47,13 @@ pub struct FunctionDecl {
     pub return_type: TypeExpr,
     pub body: Expr,
     pub doc: Option<DocAttribute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StubDecl {
+    pub static_params: Vec<StaticParam>,
+    pub name: String,
+    pub ty: TypeExpr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +112,7 @@ pub enum StaticValueExpr {
     Int(String),
     Float(String),
     Ident(String),
+    Label(String),
     String(String),
     Char(String),
 }
@@ -139,6 +149,10 @@ pub enum Expr {
         static_args: Vec<StaticArg>,
         args: Vec<Expr>,
         trailing: Vec<LabeledClosureArg>,
+    },
+    TypeApply {
+        callee: Box<Expr>,
+        static_args: Vec<StaticArg>,
     },
     Member {
         object: Box<Expr>,
@@ -230,6 +244,7 @@ pub struct Arm {
 pub enum Pattern {
     Wildcard,
     Ident(String),
+    Struct(Vec<(String, Pattern)>),
     DotVariant {
         name: String,
         payload: Option<Box<Pattern>>,

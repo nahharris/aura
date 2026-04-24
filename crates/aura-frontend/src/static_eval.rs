@@ -13,6 +13,7 @@ impl StaticSatisfies for MinimalStaticChecker {
             StaticValueExpr::Int(_) => true,
             StaticValueExpr::Float(_) => true,
             StaticValueExpr::Ident(_) => true,
+            StaticValueExpr::Label(_) => true,
             StaticValueExpr::String(_) => true,
             StaticValueExpr::Char(_) => true,
         }

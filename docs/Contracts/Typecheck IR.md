@@ -34,7 +34,9 @@ Status: frozen v1.
 - Literals and atoms: `Ident`, `Int`, `Float`, `Char`, `String`, `DotIdent`, `Any`
 - Collections: `List`, `Dict`
 - Invocation and macro surfaces: `Call`, `BinaryOp`, `MacroApply`
-- Structured control flow: `If`, `Cases`, `Return`, `Break`, `Continue`
+- Managed memory: `MemoryOp` with operation kind, element type, result type, and arguments
+- Enum constructors: `EnumCtor` with one optional payload expression
+- Structured control flow: `If`, `Cases`, `Loop`, `Return`, `Break`, `Continue`
 - Structural wrappers: `Label`, `MultiArm`
 - Conversion wrappers: `Coerce`, `Cast`
 
@@ -48,9 +50,18 @@ Status: frozen v1.
 
 1. Every `CheckedDecl` carries a resolved `TyId`.
 2. Assignment compatibility may inject `Coerce` and `Cast` wrappers.
-3. `if` and `cases` lower to dedicated control-flow nodes.
-4. `return`, `break`, and `continue` lower to dedicated jump nodes.
+3. `if`, `cases`, and `loop` lower to dedicated control-flow nodes.
+4. `return`, `break`, and `continue` lower to dedicated jump nodes with resolved target metadata.
 5. Core conversion decisions are centralized in the checker.
+6. Struct-payload enum constructor sugar lowers to `EnumCtor` with one `Struct` payload, not multiple payloads.
+7. `EnumMatch` arms may carry struct field binding metadata for backend locals, but payload storage remains the single enum payload.
+8. Safe managed-memory calls lower to `MemoryOp`; raw host pointers are not represented in Aura source-level checked calls.
+
+## Stub Declarations
+
+- Non-macro `defstub` declarations lower to extern `CheckedDecl` entries with `CheckedExpr::Any` placeholders.
+- `Macro[...]` stubs are declaration-only typing contracts and do not emit runtime extern declarations.
+- Runtime imports and stubbed externs keep `link_name` separate from source `name` for backend declaration/link validation.
 
 ## Compatibility Policy
 

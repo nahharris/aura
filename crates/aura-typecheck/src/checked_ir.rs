@@ -36,6 +36,7 @@ pub enum CheckedStaticValue {
     Int(String),
     Float(String),
     Ident(String),
+    Label(String),
     String(String),
     Char(String),
 }
@@ -79,6 +80,12 @@ pub enum CheckedExpr {
         callee: Box<CheckedExpr>,
         args: Vec<CheckedExpr>,
     },
+    MemoryOp {
+        op: MemoryOpKind,
+        item_ty: TyId,
+        result_ty: TyId,
+        args: Vec<CheckedExpr>,
+    },
     BinaryOp {
         op: BinaryOpKind,
         lhs: Box<CheckedExpr>,
@@ -103,20 +110,32 @@ pub enum CheckedExpr {
     },
     MultiArm(Vec<CheckedExpr>),
     If {
+        result_ty: TyId,
         condition: Box<CheckedExpr>,
         then_branch: Box<CheckedExpr>,
         else_branch: Option<Box<CheckedExpr>>,
     },
     Cases {
-        arms: Vec<CheckedExpr>,
+        result_ty: TyId,
+        arms: Vec<CheckedCaseArm>,
+    },
+    Loop {
+        target: String,
+        result_ty: TyId,
+        condition: Option<Box<CheckedExpr>>,
+        body: Box<CheckedExpr>,
     },
     Return {
+        target: String,
         value: Box<CheckedExpr>,
     },
     Break {
+        target: String,
         value: Option<Box<CheckedExpr>>,
     },
-    Continue,
+    Continue {
+        target: String,
+    },
     Coerce {
         from: TyId,
         to: TyId,
@@ -140,6 +159,20 @@ pub struct CheckedBinding {
 pub struct CheckedEnumArm {
     pub variant_index: usize,
     pub binding_name: Option<String>,
+    pub struct_bindings: Vec<CheckedEnumStructBinding>,
+    pub body: CheckedExpr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedEnumStructBinding {
+    pub name: String,
+    pub field_index: usize,
+    pub ty: TyId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedCaseArm {
+    pub guard: CheckedExpr,
     pub body: CheckedExpr,
 }
 
@@ -158,6 +191,17 @@ pub enum BinaryOpKind {
     Neq,
     And,
     Or,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryOpKind {
+    RawAllocNew,
+    RawAllocSlice,
+    SliceGet,
+    SliceSet,
+    SliceRefAt,
+    RefGet,
+    RefSet,
 }
 
 impl CheckedIr {
@@ -183,6 +227,7 @@ mod tests {
                 ty: TyId(0),
                 is_extern: false,
                 value: CheckedExpr::If {
+                    result_ty: TyId(2),
                     condition: Box::new(CheckedExpr::Ident("cond".to_string())),
                     then_branch: Box::new(CheckedExpr::Coerce {
                         from: TyId(1),

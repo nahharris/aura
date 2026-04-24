@@ -185,6 +185,14 @@ The same rule is used for declaration bounds and macro static argument validatio
 
 `static` is a regular type-expression constructor, so it is valid anywhere a type expression is valid, for example `n: static Int`, `-> static Expr[T]`, and `Expr[static Int]`.
 
+`Func` parameter lists preserve names and labels when written as a struct-like shape:
+
+```aura
+Func[(cond: Bool, then: Func[(), T], else: Func[(), T]), T]
+```
+
+This representation is used by builtin stubs so labeled trailing closure forms can be typed without making those labels part of the runtime calling convention.
+
 Examples of built-in / standard types:
 
 | Type expression | Meaning |
@@ -198,7 +206,8 @@ Examples of built-in / standard types:
 | `Array[T, n: static Int]` | Fixed-size homogeneous array (`n` is a compile-time integer) |
 | `Dict[K, V]` | Key-value dictionary (maps are always spelled `Dict`, not `Map`) |
 | `Set[T]` | Homogeneous set |
-| `Func[A, B]` | Function from `A` (can be a struct) to `B` |
+| `Func[A, B]` | Function from `A` (can be a tuple/struct parameter shape) to `B` |
+| `Macro[A, B]` | Declaration-only macro signature used by `defstub` for builtin forms |
 | `Option[T]` | `enum(null, some: T)` — nullable value |
 | `Result[T, E]` | `enum(err: E, ok: T)` — fallible value |
 | `Iterable[T]` | Any type that can be iterated |
@@ -304,8 +313,10 @@ An `enum` is a named-variant sum type, identical to Rust enums but with anonymou
 
 ```aura
 let res: enum(ok: Int, err: String) = .ok(5);
+let http: enum(err: (message: String, code: Int)) = .err(message = "oops", code = 500);
 
 let .ok(val) = res;   // fallible destructuring — panics if res is .err
+let .err(message = msg, code = status) = http;
 
 {
     .ok(val)  -> ...,
@@ -325,6 +336,21 @@ let from_anon: Result[Bool, String] = .ok(false);   // anon→named cast
 let .ok(val)  = success;
 let .err(msg) = failure;
 ```
+
+When a variant's single payload type is a struct, the constructor and pattern may elide the extra struct wrapper:
+
+```aura
+def HttpError = enum(err: (message: String, code: Int))
+
+let e = .err(message = "oops", code = 500);
+let same = .err((message = "oops", code = 500)); // explicit wrapped form
+let content = (message = "oops", code = 500);
+let also_same = .err(content);                    // explicit payload value
+
+let .err(message = msg, code = status) = e;
+```
+
+This is sugar only. The variant still carries exactly one payload value, and the sugar desugars to the existing single struct payload representation.
 
 ### Interface Types
 
@@ -528,6 +554,18 @@ defmacro def(
 
 It can be used both in global or local scopes
 
+### `defstub` — Static Extern Contract
+
+`defstub` is a top-level static declaration that introduces a typed global symbol without an Aura body. It is used for runtime externs and compiler-lowered builtin forms.
+
+```aura
+defstub syscall_exit: Func[(code: Int), Never];
+defstub[T] if: Func[(cond: Bool, then: Func[(), T], else: Func[(), T]), T];
+defstub[T] return: Macro[T, Never];
+```
+
+Same-name overloads are allowed for `defstub` declarations only. `Func[...]` stubs describe callable extern contracts; `Macro[...]` stubs describe macro-shaped builtin forms and are declaration-only, not runtime first-class values.
+
 ### Scoping Rules
 
 - Every `{ }` block introduces a new scope.
@@ -636,6 +674,8 @@ let v: union(Int, Float) = 1;
 ```aura
 let result: enum(err: String, ok: Int) = .ok(42);
 let opt:    enum(null, some: Int)        = .null;
+let err:    enum(err: (message: String, code: Int)) =
+    .err(message = "oops", code = 500);
 ```
 
 Inline-scope trick applies inside variant constructors:
@@ -708,6 +748,7 @@ struct_field ::= identifier "=" identifier          // field rename: `alias = fi
 - A constructor pattern `TypeName(p1, p2)` destructures a named tuple or struct, optionally casting.
 - A rest pattern `..rest` captures remaining elements into a list; bare `..` discards them.
 - A variant pattern `.ok(inner)` matches a dot-identifier enum variant.
+- A variant pattern whose payload is a struct may use `.err(message = msg, code = status)`, which desugars to `.err((message = msg, code = status))`.
 - A guard `~ expr` is evaluated only when all patterns match; the arm is taken only if the guard is also `true`.
 - Arms are tried in order; the first matching arm is taken.
 
@@ -908,21 +949,11 @@ if (condition) then {
 
 The `then` block is a `Func[Void, T]` trailing lambda. The `else` block is a second trailing lambda with the label `else`. Both blocks must have the same type `T`; the version without an `else` branch returns `Void`.
 
-`if` is an inline function, it desugars to a function call with the following signature:
+`if` is compiler-lowered control flow with a `defstub` typing surface:
 
 ```aura
-inline def if[T](
-    condition: Bool,
-    then:      Func[Void, T],
-) -> Never
-```
-
-```aura
-inline def if[T](
-    condition: Bool,
-    then:      Func[Void, T],
-    else:      Func[Void, T]
-) -> T
+defstub if: Func[(cond: Bool, then: Func[(), Void]), Void];
+defstub[T] if: Func[(cond: Bool, then: Func[(), T], else: Func[(), T]), T];
 ```
 
 `if` is an expression. It can appear anywhere an expression is valid:
@@ -955,12 +986,10 @@ The final arm's condition is conventionally `~ true` to serve as the default (ca
 
 `cases` is an expression and returns the value of the taken arm. All arms must have the same type.
 
-`cases` is an inline function, it desugars to a function call with the following signature:
+`cases` is compiler-lowered control flow with a `defstub` typing surface:
 
 ```aura
-inline def cases[T](
-    arms: Func[Void, T]
-) -> T
+defstub[T] cases: Func[(when: Func[(), T]), T];
 ```
 
 The `arms` argument is a multi-arm closure where every arm has no patterns — only a guard. This is ordinary multi-arm closure syntax with the pattern list omitted:
@@ -1011,17 +1040,11 @@ Iteration over collections uses the `.each` method on `Iterable[T]`:
 }
 ```
 
-Macro definitions:
+Stub definitions:
 
 ```aura
-inline def loop(
-    do: Func[Void, Void]
-) -> Never
-
-inline def loop(
-    while: Func[Void, Bool],
-    do: Func[Void, Void]
-) -> Never
+defstub loop: Func[(do: Func[(), Void]), Never];
+defstub loop: Func[(while: Func[(), Bool], do: Func[(), Void]), Never];
 ```
 ****
 ### `return`
@@ -1051,17 +1074,10 @@ def first_positive(xs: List[Int]) -> Option[Int] {
 }
 ```
 
-Macro definitions:
+Stub definitions:
 
 ```aura
-defmacro return[T](
-    value: Expr[T]
-) -> Stmt
-
-defmacro return[T](
-    label: DotIdentifier,
-    value: Expr[T]
-) -> Stmt
+defstub[T] return: Macro[T, Never];
 ```
 
 ### `break`
@@ -1123,6 +1139,14 @@ loop do {
 
 3. **Inlining.** The bodies of `loop`, `if`, `cases`, and `.each` (and any other macro whose body parameter is `Expr[Func[...]]`) are **inlined** at the call site by the compiler. No stack frame is created for the closure call. As a result, a `return` or `break` inside a control-flow body compiles to a direct jump instruction rather than a function return — the label resolution above is a compile-time operation. This is what gives these macros the semantics of built-in syntax without any runtime overhead.
 
+The jump forms also have declaration-only macro stubs:
+
+```aura
+defstub break: Macro[(), Never];
+defstub[T] break: Macro[T, Never];
+defstub continue: Macro[(), Never];
+```
+
 ---
 
 ## Declarations
@@ -1170,6 +1194,8 @@ def ToStr    = interface(to_string: Func[(), String])
 ```
 
 The optional generic type parameter list `[T, E]` immediately follows `def`.
+Generic aliases preserve their static parameters as an alias scheme and instantiate when used with
+type arguments, e.g. `Box[Int]` for `def[T] Box = (value: T)`.
 
 A `def` with a type-alias right-hand side automatically generates:
 
@@ -1352,14 +1378,9 @@ Import resolution rules (current runtime):
 - Re-importing the same module path reuses a cached module value (single evaluation semantics).
 - Cyclic imports are runtime errors with an import-chain diagnostic.
 
-### `builtin` — Kernel binding form
+### Runtime extern stubs
 
-`builtin` is a contextual macro-like form that binds a kernel native symbol by identifier.
-
-```aura
-def _rt_fd_write = builtin rt_fd_write;
-def _rt_random_fill = builtin rt_random_fill;
-```
+Runtime host symbols are exposed through `defstub` declarations in the standard library rather than through a compiler-injected prelude or the removed `builtin` form. The STL entrypoint `aura-stl/src/lib.aura` re-exports `aura-stl/src/core.aura`, so consuming projects see these contracts through the normal library auto-import surface.
 
 Runtime boundary integer and pointer conventions:
 
@@ -1377,13 +1398,12 @@ Runtime boundary integer and pointer conventions:
 The public builtin surface for byte-oriented host I/O is:
 
 ```aura
-syscall_write(fd: Int32, bytes: Bytes) -> ISize
-
-Bytes.new(size: USize) -> Bytes
-Bytes.get(self: Bytes, index: USize) -> UInt8
-Bytes.set(self: Bytes, index: USize, value: UInt8) -> Void
-
-String.into(self: String) -> Bytes
+defstub syscall_exit: Func[(code: Int), Never];
+defstub syscall_write: Func[(fd: Int, bytes: Bytes), ISize];
+defstub bytes_new: Func[(size: USize), Bytes];
+defstub bytes_get: Func[(bytes: Bytes, index: USize), UInt8];
+defstub bytes_set: Func[(bytes: Bytes, index: USize, value: UInt8), Void];
+defstub string_into: Func[(text: String), Bytes];
 ```
 
 `syscall_write` writes the contents of `bytes` to the host file descriptor and returns the number
@@ -1395,6 +1415,38 @@ behavior until panic handlers exist.
 
 `String` remains the public string-literal type; converting it to a writeable buffer requires
 `String.into()`, which copies the UTF-8 bytes into a fresh owned `Bytes` value.
+
+### Managed memory handles
+
+Aura also has compiler-recognized opaque managed memory handles:
+
+- `RawAlloc[T]`
+- `Slice[T]`
+- `Ref[T]`
+
+The public safe surface is:
+
+```aura
+let alloc = RawAlloc[Int].new(4)
+let slice = alloc.slice()
+
+slice.get(0)        // Option[Int]
+slice.set(0, 42)    // Bool
+slice.ref_at(0)     // Option[Ref[Int]]
+
+let ref = slice.ref_at(0)!!
+ref.get()           // Int
+ref.set(7)          // Void
+```
+
+`RawAlloc[T].new(count)` allocates zero-initialized storage for `count` elements. v1 allocations are
+leak-only for the process lifetime, so `Ref[T]` values are non-null and cannot dangle once produced.
+`Slice[T]` and `Ref[T]` expose no raw pointer or unchecked source-level API.
+
+`Slice.get(index)` and `Slice.ref_at(index)` return `null` when `index` is out of bounds.
+`Slice.set(index, value)` returns `false` when out of bounds and `true` after a successful write.
+The compiler lowers these operations to internal runtime-host ABI helpers with concrete element
+size/alignment supplied by codegen; those helpers are not Aura-callable `defstub`s.
 
 ---
 

@@ -1,6 +1,7 @@
 use crate::ast::{
     Arm, BinaryOp, Decl, Expr, FunctionDecl, LabeledClosureArg, MacroDecl, Param, Pattern, Program,
-    StaticArg, StaticParam, StaticParamKind, StaticValueExpr, TypeExpr, UseBinding, UseDecl,
+    StaticArg, StaticParam, StaticParamKind, StaticValueExpr, StubDecl, TypeExpr, UseBinding,
+    UseDecl,
 };
 use crate::lexer::lex_with_comments;
 use crate::token::TokenKind;
@@ -190,7 +191,10 @@ impl<'a> Formatter<'a> {
     fn write_decl(&mut self, decl: &Decl) {
         match decl {
             Decl::Assign {
-                name, value, doc, ..
+                name,
+                static_params,
+                value,
+                doc,
             } => {
                 self.write_indent();
                 if let Some(doc) = doc {
@@ -198,11 +202,13 @@ impl<'a> Formatter<'a> {
                     self.out.push(' ');
                 }
                 self.out.push_str("def ");
+                self.write_static_params(static_params);
                 self.out.push_str(name);
                 self.out.push_str(" = ");
                 self.write_expr(value, false);
                 self.out.push(';');
             }
+            Decl::Stub(stub) => self.write_stub(stub),
             Decl::Function(fun) => self.write_function(fun),
             Decl::Macro(mac) => self.write_macro(mac),
             Decl::Use(use_decl) => self.write_use(use_decl),
@@ -270,6 +276,17 @@ impl<'a> Formatter<'a> {
         self.write_block_expr(&mac.body, false);
     }
 
+    fn write_stub(&mut self, stub: &StubDecl) {
+        self.write_indent();
+        self.out.push_str("defstub");
+        self.write_static_params(&stub.static_params);
+        self.out.push(' ');
+        self.out.push_str(&stub.name);
+        self.out.push_str(": ");
+        self.write_type_expr(&stub.ty);
+        self.out.push(';');
+    }
+
     fn write_static_params(&mut self, params: &[StaticParam]) {
         if params.is_empty() {
             return;
@@ -324,7 +341,11 @@ impl<'a> Formatter<'a> {
                 self.out.push_str(name);
                 if let Some(payload) = payload {
                     self.out.push('(');
-                    self.write_expr(payload, false);
+                    if let Expr::Struct(fields) = payload.unspanned() {
+                        self.write_struct_expr_fields(fields);
+                    } else {
+                        self.write_expr(payload, false);
+                    }
                     self.out.push(')');
                 }
             }
@@ -340,14 +361,7 @@ impl<'a> Formatter<'a> {
             }
             Expr::Struct(fields) => {
                 self.out.push('(');
-                for (i, (name, value)) in fields.iter().enumerate() {
-                    if i > 0 {
-                        self.out.push_str(", ");
-                    }
-                    self.out.push_str(name);
-                    self.out.push_str(" = ");
-                    self.write_expr(value, false);
-                }
+                self.write_struct_expr_fields(fields);
                 self.out.push(')');
             }
             Expr::Block(items) => self.write_inline_block(items),
@@ -408,6 +422,13 @@ impl<'a> Formatter<'a> {
                 args,
                 trailing,
             } => self.write_call(callee, static_args, args, trailing),
+            Expr::TypeApply {
+                callee,
+                static_args,
+            } => {
+                self.write_expr(callee, false);
+                self.write_static_args(static_args);
+            }
             Expr::Member { object, field } => {
                 self.write_expr(object, false);
                 self.out.push('.');
@@ -525,15 +546,46 @@ impl<'a> Formatter<'a> {
         match pattern {
             Pattern::Wildcard => self.out.push('_'),
             Pattern::Ident(name) => self.out.push_str(name),
+            Pattern::Struct(fields) => {
+                self.out.push('(');
+                self.write_struct_pattern_fields(fields);
+                self.out.push(')');
+            }
             Pattern::DotVariant { name, payload } => {
                 self.out.push('.');
                 self.out.push_str(name);
                 if let Some(payload) = payload {
                     self.out.push('(');
-                    self.write_pattern(payload);
+                    if let Pattern::Struct(fields) = payload.as_ref() {
+                        self.write_struct_pattern_fields(fields);
+                    } else {
+                        self.write_pattern(payload);
+                    }
                     self.out.push(')');
                 }
             }
+        }
+    }
+
+    fn write_struct_expr_fields(&mut self, fields: &[(String, Expr)]) {
+        for (i, (name, value)) in fields.iter().enumerate() {
+            if i > 0 {
+                self.out.push_str(", ");
+            }
+            self.out.push_str(name);
+            self.out.push_str(" = ");
+            self.write_expr(value, false);
+        }
+    }
+
+    fn write_struct_pattern_fields(&mut self, fields: &[(String, Pattern)]) {
+        for (i, (name, value)) in fields.iter().enumerate() {
+            if i > 0 {
+                self.out.push_str(", ");
+            }
+            self.out.push_str(name);
+            self.out.push_str(" = ");
+            self.write_pattern(value);
         }
     }
 
@@ -572,6 +624,10 @@ impl<'a> Formatter<'a> {
             | StaticValueExpr::Ident(s)
             | StaticValueExpr::String(s)
             | StaticValueExpr::Char(s) => self.out.push_str(s),
+            StaticValueExpr::Label(s) => {
+                self.out.push('.');
+                self.out.push_str(s);
+            }
         }
     }
 
@@ -747,6 +803,10 @@ fn expr_to_inline(expr: &Expr) -> String {
         Expr::Ident(v) | Expr::Int(v) | Expr::Float(v) | Expr::String(v) | Expr::Char(v) => {
             v.clone()
         }
+        Expr::TypeApply {
+            callee,
+            static_args: _,
+        } => expr_to_inline(callee),
         Expr::Member { object, field } => format!("{}.{}", expr_to_inline(object), field),
         _ => "<expr>".to_string(),
     }
@@ -821,5 +881,12 @@ mod tests {
         let src = "def x = f(5, _)\n";
         let out = format_source(src, &FormatOptions::default());
         assert!(out.contains("f(5, _)"));
+    }
+
+    #[test]
+    fn formats_defstub_declaration() {
+        let src = "defstub[T] if: Func[(cond: Bool, then: Func[(), T], else: Func[(), T]), T]\n";
+        let out = format_source(src, &FormatOptions::default());
+        assert!(out.contains("defstub[T] if: Func["));
     }
 }

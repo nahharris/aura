@@ -61,7 +61,10 @@ mod tests {
         let root = temp_test_dir("find_root_nested");
         let nested = root.join("src").join("app").join("feature");
         fs::create_dir_all(&nested).expect("should create nested dirs");
-        create_file(&root.join("project.auon"), "name = \"demo\", version = \"0.1.0\", kind = .binary, dependencies = [],");
+        create_file(
+            &root.join("project.auon"),
+            "name = \"demo\", version = \"0.1.0\", kind = .binary, dependencies = [],",
+        );
 
         let discovered = find_project_root(&nested).expect("must discover project root");
         assert_eq!(discovered, root);
@@ -73,7 +76,10 @@ mod tests {
     fn finds_root_from_file_path() {
         let root = temp_test_dir("find_root_file");
         let file = root.join("src").join("main.aura");
-        create_file(&root.join("project.auon"), "name = \"demo\", version = \"0.1.0\", kind = .binary, dependencies = [],");
+        create_file(
+            &root.join("project.auon"),
+            "name = \"demo\", version = \"0.1.0\", kind = .binary, dependencies = [],",
+        );
         create_file(&file, "def main = 1;");
 
         let discovered = find_project_root(&file).expect("must discover from file path");
@@ -97,7 +103,10 @@ mod tests {
     #[test]
     fn discovers_standard_layout_paths() {
         let root = temp_test_dir("layout");
-        create_file(&root.join("project.auon"), "name = \"demo\", version = \"0.1.0\", kind = .binary, dependencies = [],");
+        create_file(
+            &root.join("project.auon"),
+            "name = \"demo\", version = \"0.1.0\", kind = .binary, dependencies = [],",
+        );
 
         let layout = discover_layout(&root).expect("must discover layout");
         assert_eq!(layout.root, root);

@@ -3,11 +3,12 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use aura_diagnostics::type_ref::FuncParamRef;
 use aura_diagnostics::{Diagnostic, PrimitiveType, TypeRef};
-use aura_frontend::ast::{Decl, Program, UseBinding};
 use aura_frontend::Parser;
+use aura_frontend::ast::{Decl, Program, UseBinding};
 use aura_typecheck::checked_ir::{CheckedDecl, CheckedExpr};
-use aura_typecheck::types::{Ty, TyInterner};
+use aura_typecheck::types::{FuncParam, Ty, TyInterner};
 use aura_typecheck::{
     CheckContext, CheckOptions, CheckedModule, ImportBinding, TypeImportBinding,
     check_module_with_context,
@@ -74,7 +75,12 @@ impl fmt::Display for ProjectCompileError {
             Self::ParseSource {
                 path, diagnostic, ..
             } => {
-                write!(f, "failed parsing '{}': {}", path.display(), diagnostic.message)
+                write!(
+                    f,
+                    "failed parsing '{}': {}",
+                    path.display(),
+                    diagnostic.message
+                )
             }
             Self::Typecheck {
                 path, diagnostics, ..
@@ -87,7 +93,11 @@ impl fmt::Display for ProjectCompileError {
                 )
             }
             Self::Resolve { path, message } => match path {
-                Some(path) => write!(f, "module resolution failed at '{}': {message}", path.display()),
+                Some(path) => write!(
+                    f,
+                    "module resolution failed at '{}': {message}",
+                    path.display()
+                ),
                 None => write!(f, "module resolution failed: {message}"),
             },
         }
@@ -138,14 +148,12 @@ pub fn compile_project(
     options: ProjectCompileOptions,
 ) -> Result<ProjectBuild, ProjectCompileError> {
     let mut compiler = ProjectCompiler::default();
-    let root = canonicalize_existing(
-        manifest_file
-            .parent()
-            .ok_or_else(|| ProjectCompileError::Resolve {
-                path: Some(manifest_file.to_path_buf()),
-                message: "project.auon should have a parent directory".to_string(),
-            })?,
-    )?;
+    let root = canonicalize_existing(manifest_file.parent().ok_or_else(|| {
+        ProjectCompileError::Resolve {
+            path: Some(manifest_file.to_path_buf()),
+            message: "project.auon should have a parent directory".to_string(),
+        }
+    })?)?;
     compiler.ensure_package(&root)?;
     let manifest = compiler
         .packages
@@ -197,10 +205,11 @@ impl ProjectCompiler {
         }
 
         let manifest_file = root.join("project.auon");
-        let manifest = load_manifest(&manifest_file).map_err(|error| ProjectCompileError::Manifest {
-            path: manifest_file.clone(),
-            error,
-        })?;
+        let manifest =
+            load_manifest(&manifest_file).map_err(|error| ProjectCompileError::Manifest {
+                path: manifest_file.clone(),
+                error,
+            })?;
 
         let mut dependencies = HashMap::new();
         for dependency in &manifest.dependencies {
@@ -214,9 +223,9 @@ impl ProjectCompiler {
                     };
                     canonicalize_existing(&resolved)?
                 }
-                DependencySource::Git { .. } => canonicalize_existing(
-                    &root.join("vendor").join(&dependency.alias),
-                )?,
+                DependencySource::Git { .. } => {
+                    canonicalize_existing(&root.join("vendor").join(&dependency.alias))?
+                }
             };
             self.ensure_package(&dependency_root)?;
             dependencies.insert(dependency.alias.clone(), dependency_root);
@@ -250,18 +259,19 @@ impl ProjectCompiler {
             });
         }
 
-        let package_root = canonicalize_existing(
-            &find_project_root(&path).ok_or_else(|| ProjectCompileError::Resolve {
+        let package_root = canonicalize_existing(&find_project_root(&path).ok_or_else(|| {
+            ProjectCompileError::Resolve {
                 path: Some(path.clone()),
                 message: "could not determine owning package root".to_string(),
-            })?,
-        )?;
+            }
+        })?)?;
         self.ensure_package(&package_root)?;
 
-        let source = fs::read_to_string(&path).map_err(|error| ProjectCompileError::ReadSource {
-            path: path.clone(),
-            error: error.to_string(),
-        })?;
+        let source =
+            fs::read_to_string(&path).map_err(|error| ProjectCompileError::ReadSource {
+                path: path.clone(),
+                error: error.to_string(),
+            })?;
         let program = Parser::parse_source(&source).map_err(|diagnostic| {
             ProjectCompileError::ParseSource {
                 path: path.clone(),
@@ -357,9 +367,21 @@ impl ProjectCompiler {
                     source_name: name.clone(),
                     local_name: name.clone(),
                     ty: ty_to_type_ref(&checked.types, *ty),
+                    generic: None,
                 },
             })
             .collect::<Vec<_>>();
+        type_exports.extend(checked.generic_type_aliases.iter().map(|(name, generic)| {
+            TypeExportBinding {
+                owner_path: path.clone(),
+                binding: TypeImportBinding {
+                    source_name: name.clone(),
+                    local_name: name.clone(),
+                    ty: TypeRef::Unknown,
+                    generic: Some(generic.clone()),
+                },
+            }
+        }));
         type_exports.extend(explicit_type_reexports);
 
         self.loading_modules.remove(&path);
@@ -501,6 +523,7 @@ impl ProjectCompiler {
                                 source_name: field.source_name.clone(),
                                 local_name: field.local_name.clone(),
                                 ty: export.binding.ty.clone(),
+                                generic: export.binding.generic.clone(),
                             };
                             self.insert_imported_type(
                                 &mut context,
@@ -648,7 +671,9 @@ impl ProjectCompiler {
         if let Some(existing) = namespace_origins.get(alias) {
             return Err(ProjectCompileError::Resolve {
                 path: Some(importer_path.to_path_buf()),
-                message: format!("namespace alias '{alias}' is provided by both {existing} and {origin}"),
+                message: format!(
+                    "namespace alias '{alias}' is provided by both {existing} and {origin}"
+                ),
             });
         }
         namespace_origins.insert(alias.to_string(), origin);
@@ -667,22 +692,21 @@ impl ProjectCompiler {
                 .split_once('/')
                 .map(|(alias, rest)| (format!("@{alias}"), Some(rest)))
                 .unwrap_or_else(|| (format!("@{alias_source}"), None));
-            let dependency_root =
-                package
-                    .dependencies
-                    .get(&alias_tail)
-                    .ok_or_else(|| ProjectCompileError::Resolve {
-                        path: Some(importer_path.to_path_buf()),
-                        message: format!("unknown dependency alias '{alias_tail}'"),
-                    })?;
+            let dependency_root = package.dependencies.get(&alias_tail).ok_or_else(|| {
+                ProjectCompileError::Resolve {
+                    path: Some(importer_path.to_path_buf()),
+                    message: format!("unknown dependency alias '{alias_tail}'"),
+                }
+            })?;
             module_source_to_file(&dependency_root.join("src"), module_tail.unwrap_or("lib"))
         } else if source.starts_with("./") || source.starts_with("../") {
-            let importer_dir = importer_path
-                .parent()
-                .ok_or_else(|| ProjectCompileError::Resolve {
-                    path: Some(importer_path.to_path_buf()),
-                    message: "importing module has no parent directory".to_string(),
-                })?;
+            let importer_dir =
+                importer_path
+                    .parent()
+                    .ok_or_else(|| ProjectCompileError::Resolve {
+                        path: Some(importer_path.to_path_buf()),
+                        message: "importing module has no parent directory".to_string(),
+                    })?;
             module_source_to_file(importer_dir, source)
         } else {
             module_source_to_file(&package.root.join("src"), source)
@@ -719,7 +743,12 @@ impl ProjectCompiler {
             .modules
             .values()
             .flat_map(|module| module.value_exports.iter())
-            .map(|binding| (binding.binding.link_name.clone(), binding.owner_path.clone()))
+            .map(|binding| {
+                (
+                    binding.binding.link_name.clone(),
+                    binding.owner_path.clone(),
+                )
+            })
             .collect::<HashMap<_, _>>();
 
         let mut required = HashSet::from([entry_path.clone()]);
@@ -763,14 +792,18 @@ fn module_source_to_file(root: &Path, source: &str) -> PathBuf {
     root.join(relative)
 }
 
-fn module_logical_name(package_root: &Path, module_path: &Path) -> Result<String, ProjectCompileError> {
+fn module_logical_name(
+    package_root: &Path,
+    module_path: &Path,
+) -> Result<String, ProjectCompileError> {
     let src_root = package_root.join("src");
-    let relative = module_path
-        .strip_prefix(&src_root)
-        .map_err(|_| ProjectCompileError::Resolve {
-            path: Some(module_path.to_path_buf()),
-            message: "module path is not inside package src/".to_string(),
-        })?;
+    let relative =
+        module_path
+            .strip_prefix(&src_root)
+            .map_err(|_| ProjectCompileError::Resolve {
+                path: Some(module_path.to_path_buf()),
+                message: "module path is not inside package src/".to_string(),
+            })?;
     let mut logical = relative.to_path_buf();
     logical.set_extension("");
     Ok(logical
@@ -833,6 +866,9 @@ fn ty_to_type_ref(types: &TyInterner, ty_id: aura_typecheck::TyId) -> TypeRef {
         Some(Ty::Never) => TypeRef::Primitive(PrimitiveType::Never),
         Some(Ty::Any) => TypeRef::Primitive(PrimitiveType::Any),
         Some(Ty::Nominal(name)) => TypeRef::Nominal(name.clone()),
+        Some(Ty::RawAlloc(item)) => TypeRef::RawAlloc(Box::new(ty_to_type_ref(types, *item))),
+        Some(Ty::Slice(item)) => TypeRef::Slice(Box::new(ty_to_type_ref(types, *item))),
+        Some(Ty::Ref(item)) => TypeRef::Ref(Box::new(ty_to_type_ref(types, *item))),
         Some(Ty::List(item)) => TypeRef::List(Box::new(ty_to_type_ref(types, *item))),
         Some(Ty::Dict { key, value }) => TypeRef::Dict {
             key: Box::new(ty_to_type_ref(types, *key)),
@@ -844,7 +880,27 @@ fn ty_to_type_ref(types: &TyInterner, ty_id: aura_typecheck::TyId) -> TypeRef {
             size: *size,
         },
         Some(Ty::Func { params, ret }) => TypeRef::Func {
-            params: params.iter().map(|ty| ty_to_type_ref(types, *ty)).collect(),
+            params: params
+                .iter()
+                .map(|param| FuncParamRef {
+                    name: param.name.clone(),
+                    label: param.label.clone(),
+                    trailing: param.trailing,
+                    ty: Box::new(ty_to_type_ref(types, param.ty)),
+                })
+                .collect(),
+            ret: Box::new(ty_to_type_ref(types, *ret)),
+        },
+        Some(Ty::Macro { params, ret }) => TypeRef::Macro {
+            params: params
+                .iter()
+                .map(|param| FuncParamRef {
+                    name: param.name.clone(),
+                    label: param.label.clone(),
+                    trailing: param.trailing,
+                    ty: Box::new(ty_to_type_ref(types, param.ty)),
+                })
+                .collect(),
             ret: Box::new(ty_to_type_ref(types, *ret)),
         },
         Some(Ty::Tuple(items)) => {
@@ -900,6 +956,18 @@ fn ty_ref_to_ty_id(types: &mut TyInterner, ty: &TypeRef) -> aura_typecheck::TyId
         TypeRef::InferVar(v) => types.intern(Ty::InferVar(*v)),
         TypeRef::GenericParam(name) => types.intern(Ty::GenericParam(name.clone())),
         TypeRef::Nominal(name) => types.intern(Ty::Nominal(name.clone())),
+        TypeRef::RawAlloc(item) => {
+            let item = ty_ref_to_ty_id(types, item);
+            types.intern(Ty::RawAlloc(item))
+        }
+        TypeRef::Slice(item) => {
+            let item = ty_ref_to_ty_id(types, item);
+            types.intern(Ty::Slice(item))
+        }
+        TypeRef::Ref(item) => {
+            let item = ty_ref_to_ty_id(types, item);
+            types.intern(Ty::Ref(item))
+        }
         TypeRef::List(item) => {
             let item = ty_ref_to_ty_id(types, item);
             types.intern(Ty::List(item))
@@ -920,10 +988,28 @@ fn ty_ref_to_ty_id(types: &mut TyInterner, ty: &TypeRef) -> aura_typecheck::TyId
         TypeRef::Func { params, ret } => {
             let params = params
                 .iter()
-                .map(|param| ty_ref_to_ty_id(types, param))
+                .map(|param| FuncParam {
+                    name: param.name.clone(),
+                    label: param.label.clone(),
+                    trailing: param.trailing,
+                    ty: ty_ref_to_ty_id(types, &param.ty),
+                })
                 .collect::<Vec<_>>();
             let ret = ty_ref_to_ty_id(types, ret);
             types.intern(Ty::Func { params, ret })
+        }
+        TypeRef::Macro { params, ret } => {
+            let params = params
+                .iter()
+                .map(|param| FuncParam {
+                    name: param.name.clone(),
+                    label: param.label.clone(),
+                    trailing: param.trailing,
+                    ty: ty_ref_to_ty_id(types, &param.ty),
+                })
+                .collect::<Vec<_>>();
+            let ret = ty_ref_to_ty_id(types, ret);
+            types.intern(Ty::Macro { params, ret })
         }
         TypeRef::Tuple(items) => {
             let items = items
@@ -949,7 +1035,12 @@ fn ty_ref_to_ty_id(types: &mut TyInterner, ty: &TypeRef) -> aura_typecheck::TyId
         TypeRef::Enum(variants) => {
             let variants = variants
                 .iter()
-                .map(|(name, ty)| (name.clone(), ty.as_ref().map(|ty| ty_ref_to_ty_id(types, ty))))
+                .map(|(name, ty)| {
+                    (
+                        name.clone(),
+                        ty.as_ref().map(|ty| ty_ref_to_ty_id(types, ty)),
+                    )
+                })
                 .collect::<Vec<_>>();
             types.intern(Ty::Enum(variants))
         }
@@ -998,9 +1089,7 @@ fn collect_expr_external_link_names(
                 collect_expr_external_link_names(item, extern_links, out);
             }
         }
-        CheckedExpr::Block(items)
-        | CheckedExpr::List(items)
-        | CheckedExpr::MultiArm(items) => {
+        CheckedExpr::Block(items) | CheckedExpr::List(items) | CheckedExpr::MultiArm(items) => {
             for item in items {
                 collect_expr_external_link_names(item, extern_links, out);
             }
@@ -1020,6 +1109,11 @@ fn collect_expr_external_link_names(
         }
         CheckedExpr::Call { callee, args } => {
             collect_expr_external_link_names(callee, extern_links, out);
+            for arg in args {
+                collect_expr_external_link_names(arg, extern_links, out);
+            }
+        }
+        CheckedExpr::MemoryOp { args, .. } => {
             for arg in args {
                 collect_expr_external_link_names(arg, extern_links, out);
             }
@@ -1052,6 +1146,7 @@ fn collect_expr_external_link_names(
             condition,
             then_branch,
             else_branch,
+            ..
         } => {
             collect_expr_external_link_names(condition, extern_links, out);
             collect_expr_external_link_names(then_branch, extern_links, out);
@@ -1059,15 +1154,24 @@ fn collect_expr_external_link_names(
                 collect_expr_external_link_names(else_branch, extern_links, out);
             }
         }
-        CheckedExpr::Cases { arms } => {
+        CheckedExpr::Cases { arms, .. } => {
             for arm in arms {
-                collect_expr_external_link_names(arm, extern_links, out);
+                collect_expr_external_link_names(&arm.guard, extern_links, out);
+                collect_expr_external_link_names(&arm.body, extern_links, out);
             }
         }
-        CheckedExpr::Return { value } => {
+        CheckedExpr::Loop {
+            condition, body, ..
+        } => {
+            if let Some(condition) = condition.as_deref() {
+                collect_expr_external_link_names(condition, extern_links, out);
+            }
+            collect_expr_external_link_names(body, extern_links, out);
+        }
+        CheckedExpr::Return { value, .. } => {
             collect_expr_external_link_names(value, extern_links, out);
         }
-        CheckedExpr::Break { value } => {
+        CheckedExpr::Break { value, .. } => {
             if let Some(value) = value.as_deref() {
                 collect_expr_external_link_names(value, extern_links, out);
             }
@@ -1082,13 +1186,14 @@ fn collect_expr_external_link_names(
         | CheckedExpr::Closure { .. }
         | CheckedExpr::Any
         | CheckedExpr::Dict(_)
-        | CheckedExpr::Continue => {}
+        | CheckedExpr::Continue { .. } => {}
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{ProjectCompileOptions, compile_project};
+    use aura_typecheck::Ty;
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1158,14 +1263,18 @@ mod tests {
         .expect("project should compile");
 
         assert_eq!(build.modules.len(), 2);
-        assert!(build
-            .modules
-            .iter()
-            .any(|module| module.path.ends_with(Path::new("src").join("main.aura"))));
-        assert!(build
-            .modules
-            .iter()
-            .any(|module| module.path.ends_with(Path::new("src").join("helper.aura"))));
+        assert!(
+            build
+                .modules
+                .iter()
+                .any(|module| module.path.ends_with(Path::new("src").join("main.aura")))
+        );
+        assert!(
+            build
+                .modules
+                .iter()
+                .any(|module| module.path.ends_with(Path::new("src").join("helper.aura")))
+        );
 
         fs::remove_dir_all(root).expect("cleanup should succeed");
     }
@@ -1188,7 +1297,10 @@ mod tests {
             &dependency_root.join("src").join("hidden.aura"),
             "def hidden() -> Int { 7 }",
         );
-        create_file(&dependency_root.join("src").join("lib.aura"), "def exported = 1;");
+        create_file(
+            &dependency_root.join("src").join("lib.aura"),
+            "def exported = 1;",
+        );
 
         create_file(
             &root.join("project.auon"),
@@ -1219,18 +1331,22 @@ mod tests {
             .iter()
             .find(|module| module.path.ends_with(Path::new("src").join("main.aura")))
             .expect("main module should be present");
-        assert!(main_module
-            .checked
-            .ir
-            .declarations
-            .iter()
-            .any(|decl| decl.is_extern && decl.name == "exported"));
-        assert!(!main_module
-            .checked
-            .ir
-            .declarations
-            .iter()
-            .any(|decl| decl.name == "hidden"));
+        assert!(
+            main_module
+                .checked
+                .ir
+                .declarations
+                .iter()
+                .any(|decl| decl.is_extern && decl.name == "exported")
+        );
+        assert!(
+            !main_module
+                .checked
+                .ir
+                .declarations
+                .iter()
+                .any(|decl| decl.name == "hidden")
+        );
 
         fs::remove_dir_all(root).expect("cleanup should succeed");
     }
@@ -1290,18 +1406,88 @@ mod tests {
             .iter()
             .find(|module| module.path.ends_with(Path::new("src").join("main.aura")))
             .expect("main module should be present");
-        assert!(main_module
-            .checked
-            .ir
-            .declarations
+        assert!(
+            main_module
+                .checked
+                .ir
+                .declarations
+                .iter()
+                .any(|decl| decl.is_extern && decl.name == "exit")
+        );
+        assert!(
+            !main_module
+                .checked
+                .ir
+                .declarations
+                .iter()
+                .any(|decl| decl.is_extern && decl.name == "ExitCode")
+        );
+
+        fs::remove_dir_all(root).expect("cleanup should succeed");
+    }
+
+    #[test]
+    fn exported_generic_type_aliases_instantiate_in_consumers() {
+        let root = temp_test_dir("lib_generic_type_alias_auto_import");
+        let dependency_root = root.join("vendor").join("stl");
+
+        create_file(
+            &dependency_root.join("project.auon"),
+            r#"
+                name = "stl",
+                version = "0.1.0",
+                kind = .library,
+                dependencies = [],
+            "#,
+        );
+        create_file(
+            &dependency_root.join("src").join("lib.aura"),
+            r#"
+                def[T] Box = (value: T);
+            "#,
+        );
+
+        create_file(
+            &root.join("project.auon"),
+            r#"
+                name = "app",
+                version = "0.1.0",
+                kind = .binary,
+                dependencies = [
+                    "stl" = .path("vendor/stl"),
+                ],
+            "#,
+        );
+        create_file(
+            &root.join("src").join("main.aura"),
+            r#"
+                def x: Box[Int] = (value = 1);
+                def main() -> Void { () }
+            "#,
+        );
+
+        let build = compile_project(
+            &root.join("project.auon"),
+            ProjectCompileOptions {
+                enforce_entry_main_signature: false,
+            },
+        )
+        .expect("project should compile");
+
+        let main_module = build
+            .modules
             .iter()
-            .any(|decl| decl.is_extern && decl.name == "exit"));
-        assert!(!main_module
+            .find(|module| module.path.ends_with(Path::new("src").join("main.aura")))
+            .expect("main module should be present");
+        let x_ty = main_module
             .checked
-            .ir
-            .declarations
-            .iter()
-            .any(|decl| decl.is_extern && decl.name == "ExitCode"));
+            .value_types
+            .get("x")
+            .expect("x should be typed");
+        assert!(matches!(
+            main_module.checked.types.get(*x_ty),
+            Some(Ty::Struct(fields)) if fields.len() == 1 && fields[0].0 == "value"
+        ));
 
         fs::remove_dir_all(root).expect("cleanup should succeed");
     }

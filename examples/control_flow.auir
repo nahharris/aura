@@ -1,0 +1,55 @@
+# Aura Checked IR
+
+## Declarations
+- answer: ty#2
+Call {
+    callee: Ident(
+        "if",
+    ),
+    args: [
+        Ident(
+            "true",
+        ),
+    ],
+}
+
+- label: ty#2
+Call {
+    callee: Ident(
+        "cases",
+    ),
+    args: [],
+}
+
+## Value Types
+- answer: ty#2
+- label: ty#2
+
+## Type Table
+- ty#0: Int8
+- ty#1: Int16
+- ty#2: Int32
+- ty#3: Int64
+- ty#4: Int128
+- ty#5: ISize
+- ty#6: UInt8
+- ty#7: UInt16
+- ty#8: UInt32
+- ty#9: UInt64
+- ty#10: UInt128
+- ty#11: USize
+- ty#12: Float32
+- ty#13: Float64
+- ty#14: Bool
+- ty#15: Char
+- ty#16: Void
+- ty#17: Never
+- ty#18: Any
+- ty#19: Nominal("Bytes")
+- ty#20: Func { params: [TyId(19), TyId(11)], ret: TyId(6) }
+- ty#21: Func { params: [TyId(2)], ret: TyId(17) }
+- ty#22: Nominal("String")
+- ty#23: Func { params: [TyId(22)], ret: TyId(19) }
+- ty#24: Func { params: [TyId(11)], ret: TyId(19) }
+- ty#25: Func { params: [TyId(19), TyId(11), TyId(6)], ret: TyId(16) }
+- ty#26: Func { params: [TyId(2), TyId(19)], ret: TyId(5) }
