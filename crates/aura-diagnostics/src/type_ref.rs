@@ -60,6 +60,9 @@ pub enum TypeRef {
     Union(Vec<TypeRef>),
     Enum(Vec<(String, Option<TypeRef>)>),
     Unknown,
+    RawAlloc(Box<TypeRef>),
+    Slice(Box<TypeRef>),
+    Ref(Box<TypeRef>),
 }
 
 impl fmt::Display for PrimitiveType {
@@ -152,6 +155,9 @@ impl fmt::Display for TypeRef {
                 write!(f, "enum({joined})")
             }
             Self::Unknown => f.write_str("<unknown>"),
+            Self::RawAlloc(item) => write!(f, "RawAlloc[{item}]"),
+            Self::Slice(item) => write!(f, "Slice[{item}]"),
+            Self::Ref(item) => write!(f, "Ref[{item}]"),
         }
     }
 }

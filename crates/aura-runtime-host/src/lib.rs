@@ -76,6 +76,24 @@ pub struct AuraBytes {
     storage: Vec<u8>,
 }
 
+pub struct AuraRawAlloc {
+    len: usize,
+    elem_size: usize,
+    elem_align: usize,
+    storage: Vec<u8>,
+}
+
+pub struct AuraSlice {
+    alloc: *mut AuraRawAlloc,
+    start: usize,
+    len: usize,
+}
+
+pub struct AuraRef {
+    alloc: *mut AuraRawAlloc,
+    index: usize,
+}
+
 impl AuraBytes {
     fn new_zeroed(size: usize) -> Self {
         Self {
@@ -89,6 +107,28 @@ impl AuraBytes {
             len: storage.len(),
             storage,
         }
+    }
+}
+
+impl AuraRawAlloc {
+    fn new_zeroed(count: usize, elem_size: usize, elem_align: usize) -> Self {
+        let size = count.saturating_mul(elem_size);
+        Self {
+            len: count,
+            elem_size,
+            elem_align: elem_align.max(1),
+            storage: vec![0; size],
+        }
+    }
+
+    fn slot_range(&self, index: usize) -> Option<std::ops::Range<usize>> {
+        if index >= self.len {
+            return None;
+        }
+        debug_assert!(self.elem_align.is_power_of_two());
+        let start = index.checked_mul(self.elem_size)?;
+        let end = start.checked_add(self.elem_size)?;
+        (end <= self.storage.len()).then_some(start..end)
     }
 }
 
@@ -111,9 +151,158 @@ unsafe fn c_string_len(mut ptr: *const u8) -> usize {
     len
 }
 
+unsafe fn raw_alloc_ref<'a>(alloc: *const AuraRawAlloc) -> &'a AuraRawAlloc {
+    // RawAlloc handles are runtime-created opaque pointers and leak for process lifetime.
+    unsafe { &*alloc }
+}
+
+unsafe fn raw_alloc_mut<'a>(alloc: *mut AuraRawAlloc) -> &'a mut AuraRawAlloc {
+    // RawAlloc handles are unique runtime allocations; mutation is slot-local.
+    unsafe { &mut *alloc }
+}
+
+unsafe fn slice_ref<'a>(slice: *const AuraSlice) -> &'a AuraSlice {
+    // Slice handles are runtime-created opaque pointers and point at leak-only allocations.
+    unsafe { &*slice }
+}
+
+unsafe fn ref_ref<'a>(reference: *const AuraRef) -> &'a AuraRef {
+    // Ref handles are runtime-created opaque pointers and point at leak-only allocations.
+    unsafe { &*reference }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn bytes_new(size: usize) -> *mut AuraBytes {
     Box::into_raw(Box::new(AuraBytes::new_zeroed(size)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn raw_alloc_new(
+    count: usize,
+    elem_size: usize,
+    elem_align: usize,
+) -> *mut AuraRawAlloc {
+    Box::into_raw(Box::new(AuraRawAlloc::new_zeroed(
+        count, elem_size, elem_align,
+    )))
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// `alloc` must point to a valid `AuraRawAlloc`.
+pub unsafe extern "C" fn raw_alloc_len(alloc: *const AuraRawAlloc) -> usize {
+    unsafe { raw_alloc_ref(alloc).len }
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// `alloc` must point to a valid `AuraRawAlloc`.
+pub unsafe extern "C" fn raw_alloc_slice(alloc: *mut AuraRawAlloc) -> *mut AuraSlice {
+    let len = unsafe { raw_alloc_ref(alloc).len };
+    Box::into_raw(Box::new(AuraSlice {
+        alloc,
+        start: 0,
+        len,
+    }))
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// `slice` must point to a valid `AuraSlice`; `out` must point to writable storage of at least
+/// the allocation element size.
+pub unsafe extern "C" fn slice_get(slice: *const AuraSlice, index: usize, out: *mut u8) -> bool {
+    let slice = unsafe { slice_ref(slice) };
+    if index >= slice.len {
+        return false;
+    }
+    let absolute = slice.start + index;
+    let alloc = unsafe { raw_alloc_ref(slice.alloc) };
+    let Some(range) = alloc.slot_range(absolute) else {
+        return false;
+    };
+    unsafe {
+        std::ptr::copy_nonoverlapping(alloc.storage[range.clone()].as_ptr(), out, alloc.elem_size);
+    }
+    true
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// `slice` must point to a valid `AuraSlice`; `value` must point to readable storage of at least
+/// the allocation element size.
+pub unsafe extern "C" fn slice_set(slice: *mut AuraSlice, index: usize, value: *const u8) -> bool {
+    let slice = unsafe { slice_ref(slice) };
+    if index >= slice.len {
+        return false;
+    }
+    let absolute = slice.start + index;
+    let alloc = unsafe { raw_alloc_mut(slice.alloc) };
+    let Some(range) = alloc.slot_range(absolute) else {
+        return false;
+    };
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            value,
+            alloc.storage[range.clone()].as_mut_ptr(),
+            alloc.elem_size,
+        );
+    }
+    true
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// `slice` must point to a valid `AuraSlice`.
+pub unsafe extern "C" fn slice_ref_at(slice: *mut AuraSlice, index: usize) -> *mut AuraRef {
+    let slice = unsafe { slice_ref(slice) };
+    if index >= slice.len {
+        return std::ptr::null_mut();
+    }
+    Box::into_raw(Box::new(AuraRef {
+        alloc: slice.alloc,
+        index: slice.start + index,
+    }))
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// `reference` must point to a valid `AuraRef`; `out` must point to writable storage of at least
+/// the allocation element size.
+pub unsafe extern "C" fn ref_get(reference: *const AuraRef, out: *mut u8) {
+    let reference = unsafe { ref_ref(reference) };
+    let alloc = unsafe { raw_alloc_ref(reference.alloc) };
+    if let Some(range) = alloc.slot_range(reference.index) {
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                alloc.storage[range.clone()].as_ptr(),
+                out,
+                alloc.elem_size,
+            );
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// `reference` must point to a valid `AuraRef`; `value` must point to readable storage of at least
+/// the allocation element size.
+pub unsafe extern "C" fn ref_set(reference: *mut AuraRef, value: *const u8) {
+    let reference = unsafe { ref_ref(reference) };
+    let alloc = unsafe { raw_alloc_mut(reference.alloc) };
+    if let Some(range) = alloc.slot_range(reference.index) {
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                value,
+                alloc.storage[range.clone()].as_mut_ptr(),
+                alloc.elem_size,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+unsafe fn raw_alloc_ref_alloc(reference: *const AuraRef) -> *mut AuraRawAlloc {
+    unsafe { ref_ref(reference).alloc }
 }
 
 #[unsafe(no_mangle)]
@@ -174,7 +363,11 @@ pub extern "C" fn syscall_exit(code: i32) -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::{AuraBytes, bytes_get, bytes_new, bytes_set, string_into, syscall_write};
+    use super::{
+        bytes_get, bytes_new, bytes_set, raw_alloc_len, raw_alloc_new, raw_alloc_ref,
+        raw_alloc_ref_alloc, raw_alloc_slice, ref_get, ref_set, slice_get, slice_ref_at, slice_set,
+        string_into, syscall_write, AuraBytes,
+    };
 
     #[test]
     fn bytes_new_allocates_zeroed_storage() {
@@ -219,5 +412,50 @@ mod tests {
         let bytes = Box::into_raw(Box::new(AuraBytes::from_storage(b"oops".to_vec())));
         let written = unsafe { syscall_write(99, bytes) };
         assert_eq!(written, -1);
+    }
+
+    #[test]
+    fn raw_alloc_new_allocates_zeroed_stable_storage() {
+        let alloc = raw_alloc_new(3, 4, 4);
+        assert_eq!(unsafe { raw_alloc_len(alloc) }, 3);
+        assert_eq!(unsafe { raw_alloc_ref(alloc).elem_align }, 4);
+
+        let slice = unsafe { raw_alloc_slice(alloc) };
+        let mut value = [255u8; 4];
+        assert!(unsafe { slice_get(slice, 2, value.as_mut_ptr()) });
+        assert_eq!(value, [0, 0, 0, 0]);
+        assert_eq!(alloc, unsafe {
+            raw_alloc_ref_alloc(slice_ref_at(slice, 2))
+        });
+    }
+
+    #[test]
+    fn slice_set_get_and_ref_at_are_bounds_checked() {
+        let alloc = raw_alloc_new(2, 4, 4);
+        let slice = unsafe { raw_alloc_slice(alloc) };
+        let value = 42u32.to_le_bytes();
+        assert!(unsafe { slice_set(slice, 1, value.as_ptr()) });
+
+        let mut out = [0u8; 4];
+        assert!(unsafe { slice_get(slice, 1, out.as_mut_ptr()) });
+        assert_eq!(u32::from_le_bytes(out), 42);
+
+        assert!(!unsafe { slice_get(slice, 2, out.as_mut_ptr()) });
+        assert!(!unsafe { slice_set(slice, 2, value.as_ptr()) });
+        assert!(unsafe { slice_ref_at(slice, 2) }.is_null());
+    }
+
+    #[test]
+    fn refs_read_and_write_stable_alloc_slots() {
+        let alloc = raw_alloc_new(1, 4, 4);
+        let slice = unsafe { raw_alloc_slice(alloc) };
+        let reference = unsafe { slice_ref_at(slice, 0) };
+        let value = 7u32.to_le_bytes();
+        unsafe { ref_set(reference, value.as_ptr()) };
+
+        let mut out = [0u8; 4];
+        unsafe { ref_get(reference, out.as_mut_ptr()) };
+        assert_eq!(u32::from_le_bytes(out), 7);
+        assert_eq!(alloc, unsafe { raw_alloc_ref_alloc(reference) });
     }
 }

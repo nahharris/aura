@@ -32,6 +32,12 @@ Own the syntax-facing compiler surface: tokens, lexing, AST construction, parsin
 - Dot-variant patterns parse `.variant(field = binding, ...)` as a single `Pattern::Struct` payload so typecheck can bind struct fields by payload type.
 - Explicit wrapped forms such as `.variant((field = value))` remain accepted and format to the canonical sugar form.
 
+## Generic Type Receivers
+
+- Assignment-form `def` preserves static parameters for type aliases, so `def[T] Alias = ...` reaches typecheck with its alias scheme intact.
+- Member-call parsing accepts generic type receivers such as `RawAlloc[Int].new(4)` by representing `RawAlloc[Int]` as a type-application receiver before the `.new` call.
+- Macro application detection leaves uppercase generic receivers followed by `.` to the member-call parser instead of treating them as macro calls.
+
 ## Entry Points
 
 - `Parser` is re-exported from `crates/aura-frontend/src/lib.rs`

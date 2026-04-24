@@ -26,6 +26,18 @@ This note is a reader's map into `DESIGN.md`, not a replacement for it.
 
 - `true`, `false`, and `null` are not reserved keywords; Aura treats them as runtime aliases, matching `.true`, `.false`, and `.null`
 - AUON phase 1 reuses those alias spellings as source-level conveniences and normalizes them to dot-variant values
+- Generic type aliases preserve static parameters: `def[T] Box = (value: T)` can be used as `Box[Int]`, including when imported from a dependency entrypoint.
+
+## Managed Memory Surface
+
+- `RawAlloc[T]`, `Slice[T]`, and `Ref[T]` are opaque compiler-recognized handle types.
+- `RawAlloc[T].new(count)` allocates zero-initialized leak-only storage for the process lifetime.
+- `alloc.slice()` returns `Slice[T]`.
+- `slice.get(index)` returns `Option[T]`; out-of-bounds returns `null`.
+- `slice.set(index, value)` returns `Bool`; out-of-bounds returns `false`.
+- `slice.ref_at(index)` returns `Option[Ref[T]]`; out-of-bounds returns `null`.
+- `ref.get()` returns `T`; `ref.set(value)` returns `Void`.
+- The raw host ABI helpers are compiler-internal and are not available as Aura source stubs.
 
 ## Control Flow Surface
 

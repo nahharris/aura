@@ -139,11 +139,13 @@ mod tests {
         let program = Program {
             declarations: vec![
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("1".to_string()),
                 },
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("2".to_string()),
@@ -153,12 +155,10 @@ mod tests {
 
         let checked = check_module(&program);
         assert!(checked.module.is_none());
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .any(|d| d.code_str() == "E_RESOLVE_DUP")
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_RESOLVE_DUP"));
     }
 
     #[test]
@@ -166,11 +166,13 @@ mod tests {
         let program = Program {
             declarations: vec![
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("1".to_string()),
                 },
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Int("2".to_string()),

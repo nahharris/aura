@@ -74,6 +74,7 @@ fn semantically_checked_ir_has_no_any_nodes_for_core_operator_path() {
             CheckedExpr::Call { callee, args } => {
                 contains_any(callee) || args.iter().any(contains_any)
             }
+            CheckedExpr::MemoryOp { args, .. } => args.iter().any(contains_any),
             CheckedExpr::BinaryOp { lhs, rhs, .. } => contains_any(lhs) || contains_any(rhs),
             CheckedExpr::MacroApply { operand, .. } => contains_any(operand),
             CheckedExpr::Label { expr, .. } => contains_any(expr),
@@ -205,6 +206,7 @@ fn pipe_operator_consumes_placeholder_in_rhs_call_without_any_nodes() {
             CheckedExpr::Call { callee, args } => {
                 contains_any(callee) || args.iter().any(contains_any)
             }
+            CheckedExpr::MemoryOp { args, .. } => args.iter().any(contains_any),
             CheckedExpr::BinaryOp { lhs, rhs, .. } => contains_any(lhs) || contains_any(rhs),
             CheckedExpr::MacroApply { operand, .. } => contains_any(operand),
             CheckedExpr::Label { expr, .. } => contains_any(expr),
@@ -305,6 +307,7 @@ fn enum_constructor_forms_typecheck_without_any_nodes() {
             CheckedExpr::Call { callee, args } => {
                 contains_any(callee) || args.iter().any(contains_any)
             }
+            CheckedExpr::MemoryOp { args, .. } => args.iter().any(contains_any),
             CheckedExpr::BinaryOp { lhs, rhs, .. } => contains_any(lhs) || contains_any(rhs),
             CheckedExpr::MacroApply { operand, .. } => contains_any(operand),
             CheckedExpr::Label { expr, .. } => contains_any(expr),
@@ -443,6 +446,7 @@ fn struct_payload_enum_sugar_lowers_to_single_struct_payload() {
             CheckedExpr::Call { callee, args } => {
                 contains_any_or_dot_ident(callee) || args.iter().any(contains_any_or_dot_ident)
             }
+            CheckedExpr::MemoryOp { args, .. } => args.iter().any(contains_any_or_dot_ident),
             CheckedExpr::BinaryOp { lhs, rhs, .. } => {
                 contains_any_or_dot_ident(lhs) || contains_any_or_dot_ident(rhs)
             }

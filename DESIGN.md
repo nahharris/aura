@@ -1194,6 +1194,8 @@ def ToStr    = interface(to_string: Func[(), String])
 ```
 
 The optional generic type parameter list `[T, E]` immediately follows `def`.
+Generic aliases preserve their static parameters as an alias scheme and instantiate when used with
+type arguments, e.g. `Box[Int]` for `def[T] Box = (value: T)`.
 
 A `def` with a type-alias right-hand side automatically generates:
 
@@ -1413,6 +1415,38 @@ behavior until panic handlers exist.
 
 `String` remains the public string-literal type; converting it to a writeable buffer requires
 `String.into()`, which copies the UTF-8 bytes into a fresh owned `Bytes` value.
+
+### Managed memory handles
+
+Aura also has compiler-recognized opaque managed memory handles:
+
+- `RawAlloc[T]`
+- `Slice[T]`
+- `Ref[T]`
+
+The public safe surface is:
+
+```aura
+let alloc = RawAlloc[Int].new(4)
+let slice = alloc.slice()
+
+slice.get(0)        // Option[Int]
+slice.set(0, 42)    // Bool
+slice.ref_at(0)     // Option[Ref[Int]]
+
+let ref = slice.ref_at(0)!!
+ref.get()           // Int
+ref.set(7)          // Void
+```
+
+`RawAlloc[T].new(count)` allocates zero-initialized storage for `count` elements. v1 allocations are
+leak-only for the process lifetime, so `Ref[T]` values are non-null and cannot dangle once produced.
+`Slice[T]` and `Ref[T]` expose no raw pointer or unchecked source-level API.
+
+`Slice.get(index)` and `Slice.ref_at(index)` return `null` when `index` is out of bounds.
+`Slice.set(index, value)` returns `false` when out of bounds and `true` after a successful write.
+The compiler lowers these operations to internal runtime-host ABI helpers with concrete element
+size/alignment supplied by codegen; those helpers are not Aura-callable `defstub`s.
 
 ---
 

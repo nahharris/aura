@@ -42,6 +42,9 @@ pub fn classify_type(types: &TyInterner, ty_id: TyId) -> Result<AuraValueType, C
         Ty::Never
         | Ty::Any
         | Ty::Nominal(_)
+        | Ty::RawAlloc(_)
+        | Ty::Slice(_)
+        | Ty::Ref(_)
         | Ty::List(_)
         | Ty::Dict { .. }
         | Ty::Set(_)

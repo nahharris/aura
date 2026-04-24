@@ -367,9 +367,21 @@ impl ProjectCompiler {
                     source_name: name.clone(),
                     local_name: name.clone(),
                     ty: ty_to_type_ref(&checked.types, *ty),
+                    generic: None,
                 },
             })
             .collect::<Vec<_>>();
+        type_exports.extend(checked.generic_type_aliases.iter().map(|(name, generic)| {
+            TypeExportBinding {
+                owner_path: path.clone(),
+                binding: TypeImportBinding {
+                    source_name: name.clone(),
+                    local_name: name.clone(),
+                    ty: TypeRef::Unknown,
+                    generic: Some(generic.clone()),
+                },
+            }
+        }));
         type_exports.extend(explicit_type_reexports);
 
         self.loading_modules.remove(&path);
@@ -511,6 +523,7 @@ impl ProjectCompiler {
                                 source_name: field.source_name.clone(),
                                 local_name: field.local_name.clone(),
                                 ty: export.binding.ty.clone(),
+                                generic: export.binding.generic.clone(),
                             };
                             self.insert_imported_type(
                                 &mut context,
@@ -853,6 +866,9 @@ fn ty_to_type_ref(types: &TyInterner, ty_id: aura_typecheck::TyId) -> TypeRef {
         Some(Ty::Never) => TypeRef::Primitive(PrimitiveType::Never),
         Some(Ty::Any) => TypeRef::Primitive(PrimitiveType::Any),
         Some(Ty::Nominal(name)) => TypeRef::Nominal(name.clone()),
+        Some(Ty::RawAlloc(item)) => TypeRef::RawAlloc(Box::new(ty_to_type_ref(types, *item))),
+        Some(Ty::Slice(item)) => TypeRef::Slice(Box::new(ty_to_type_ref(types, *item))),
+        Some(Ty::Ref(item)) => TypeRef::Ref(Box::new(ty_to_type_ref(types, *item))),
         Some(Ty::List(item)) => TypeRef::List(Box::new(ty_to_type_ref(types, *item))),
         Some(Ty::Dict { key, value }) => TypeRef::Dict {
             key: Box::new(ty_to_type_ref(types, *key)),
@@ -940,6 +956,18 @@ fn ty_ref_to_ty_id(types: &mut TyInterner, ty: &TypeRef) -> aura_typecheck::TyId
         TypeRef::InferVar(v) => types.intern(Ty::InferVar(*v)),
         TypeRef::GenericParam(name) => types.intern(Ty::GenericParam(name.clone())),
         TypeRef::Nominal(name) => types.intern(Ty::Nominal(name.clone())),
+        TypeRef::RawAlloc(item) => {
+            let item = ty_ref_to_ty_id(types, item);
+            types.intern(Ty::RawAlloc(item))
+        }
+        TypeRef::Slice(item) => {
+            let item = ty_ref_to_ty_id(types, item);
+            types.intern(Ty::Slice(item))
+        }
+        TypeRef::Ref(item) => {
+            let item = ty_ref_to_ty_id(types, item);
+            types.intern(Ty::Ref(item))
+        }
         TypeRef::List(item) => {
             let item = ty_ref_to_ty_id(types, item);
             types.intern(Ty::List(item))
@@ -1085,6 +1113,11 @@ fn collect_expr_external_link_names(
                 collect_expr_external_link_names(arg, extern_links, out);
             }
         }
+        CheckedExpr::MemoryOp { args, .. } => {
+            for arg in args {
+                collect_expr_external_link_names(arg, extern_links, out);
+            }
+        }
         CheckedExpr::BinaryOp { lhs, rhs, .. } => {
             collect_expr_external_link_names(lhs, extern_links, out);
             collect_expr_external_link_names(rhs, extern_links, out);
@@ -1160,6 +1193,7 @@ fn collect_expr_external_link_names(
 #[cfg(test)]
 mod tests {
     use super::{ProjectCompileOptions, compile_project};
+    use aura_typecheck::Ty;
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1388,6 +1422,72 @@ mod tests {
                 .iter()
                 .any(|decl| decl.is_extern && decl.name == "ExitCode")
         );
+
+        fs::remove_dir_all(root).expect("cleanup should succeed");
+    }
+
+    #[test]
+    fn exported_generic_type_aliases_instantiate_in_consumers() {
+        let root = temp_test_dir("lib_generic_type_alias_auto_import");
+        let dependency_root = root.join("vendor").join("stl");
+
+        create_file(
+            &dependency_root.join("project.auon"),
+            r#"
+                name = "stl",
+                version = "0.1.0",
+                kind = .library,
+                dependencies = [],
+            "#,
+        );
+        create_file(
+            &dependency_root.join("src").join("lib.aura"),
+            r#"
+                def[T] Box = (value: T);
+            "#,
+        );
+
+        create_file(
+            &root.join("project.auon"),
+            r#"
+                name = "app",
+                version = "0.1.0",
+                kind = .binary,
+                dependencies = [
+                    "stl" = .path("vendor/stl"),
+                ],
+            "#,
+        );
+        create_file(
+            &root.join("src").join("main.aura"),
+            r#"
+                def x: Box[Int] = (value = 1);
+                def main() -> Void { () }
+            "#,
+        );
+
+        let build = compile_project(
+            &root.join("project.auon"),
+            ProjectCompileOptions {
+                enforce_entry_main_signature: false,
+            },
+        )
+        .expect("project should compile");
+
+        let main_module = build
+            .modules
+            .iter()
+            .find(|module| module.path.ends_with(Path::new("src").join("main.aura")))
+            .expect("main module should be present");
+        let x_ty = main_module
+            .checked
+            .value_types
+            .get("x")
+            .expect("x should be typed");
+        assert!(matches!(
+            main_module.checked.types.get(*x_ty),
+            Some(Ty::Struct(fields)) if fields.len() == 1 && fields[0].0 == "value"
+        ));
 
         fs::remove_dir_all(root).expect("cleanup should succeed");
     }
