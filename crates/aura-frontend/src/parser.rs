@@ -188,9 +188,11 @@ where
         doc: Option<DocAttribute>,
     ) -> Result<Decl, ParseError> {
         self.expect_ident_exact("def")?;
-        if self.peek_is(&TokenKind::LBracket) {
-            let _ = self.parse_static_params()?;
-        }
+        let static_params = if self.peek_is(&TokenKind::LBracket) {
+            self.parse_static_params()?
+        } else {
+            Vec::new()
+        };
         let name = self.expect_ident("expected declaration name after 'def'")?;
         self.ensure_not_macro_symbol(&name, "declaration name")?;
         let declared_ty = if self.peek_is(&TokenKind::Colon) {
@@ -229,7 +231,12 @@ where
                 rhs: Box::new(Expr::TypeExpr(ty)),
             };
         }
-        Ok(Decl::Assign { name, value, doc })
+        Ok(Decl::Assign {
+            name,
+            static_params,
+            value,
+            doc,
+        })
     }
 
     fn parse_doc_attribute(&mut self) -> Result<DocAttribute, ParseError> {
@@ -1213,10 +1220,19 @@ where
         let trailing = self.parse_labeled_closure_args()?;
 
         if !static_args.is_empty() && args.is_empty() && trailing.is_empty() {
+            if self.peek_is(&TokenKind::Dot) {
+                return Ok(self.with_span(
+                    mark,
+                    Expr::TypeApply {
+                        callee: Box::new(callee),
+                        static_args,
+                    },
+                ));
+            }
             return Err(self.error_here(
                 "expected '(' or labeled closure after static call arguments",
                 vec!["(", "identifier"],
-                Some("use either foo[T](x) or foo[T] label { ... }".to_string()),
+                Some("use either foo[T](x), foo[T] label { ... }, or Type[T].member".to_string()),
             ));
         }
 
@@ -1590,6 +1606,15 @@ where
         if matches!(self.peek_n(1), Some(TokenKind::LBracket)) {
             if known_macro {
                 return !self.looks_like_static_call_head();
+            }
+            if matches!(self.token_after_static_args(), Some(TokenKind::Dot))
+                && name
+                    .chars()
+                    .next()
+                    .map(|ch| ch.is_ascii_uppercase())
+                    .unwrap_or(false)
+            {
+                return false;
             }
             return matches!(
                 self.token_after_static_args(),
@@ -2418,6 +2443,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_generic_type_receiver_member_call() {
+        let src = "def alloc = RawAlloc[Int].new(4)";
+        let parsed = Parser::parse_source(src).expect("should parse generic type receiver call");
+        let Decl::Assign { value, .. } = parsed.declarations.first().expect("expected decl") else {
+            panic!("expected assignment")
+        };
+        let Expr::Call { callee, args, .. } = u(value) else {
+            panic!("expected call")
+        };
+        assert_eq!(args.len(), 1);
+        assert!(matches!(u(callee.as_ref()), Expr::Member { field, .. } if field == "new"));
+    }
+
+    #[test]
     fn unlabeled_trailing_closure_is_not_a_call() {
         let src = "def x = foo { 1 }";
         let parsed = Parser::parse_source(src).expect("should parse as macro-style apply");
@@ -2982,6 +3021,21 @@ mod tests {
             _ => panic!("expected assignment"),
         };
         assert!(matches!(u(person), Expr::TypeExpr(TypeExpr::Struct(fields)) if fields.len() == 2));
+
+        let result = match &parsed.declarations[3] {
+            Decl::Assign {
+                static_params,
+                value,
+                ..
+            } => {
+                assert_eq!(static_params.len(), 2);
+                value
+            }
+            _ => panic!("expected assignment"),
+        };
+        assert!(
+            matches!(u(result), Expr::TypeExpr(TypeExpr::Named { name, .. }) if name == "enum")
+        );
     }
 
     #[test]

@@ -49,6 +49,13 @@ Resolve symbols, enforce type rules, and emit checked IR for downstream codegen.
 - Non-macro `defstub` declarations are available as typed globals and lower to extern checked-IR declarations.
 - `Macro[...]` stubs are declaration-only and provide typing contracts for compiler-lowered builtin forms.
 - Legacy builtin-member lowering for `Bytes`/`String` still exists, but direct runtime callables are now typed through stubs.
+- `RawAlloc[T]`, `Slice[T]`, and `Ref[T]` are compiler-recognized opaque generic types. The checker types their public methods as safe managed-memory operations instead of Aura-callable runtime stubs.
+
+## Type Aliases
+
+- Assignment-form type aliases preserve static parameters: `def[T] Box = (value: T)` records an alias scheme.
+- Alias schemes instantiate during type resolution, so `Box[Int]` resolves under a temporary generic scope where `T = Int`.
+- Monomorphic aliases export as concrete `TypeRef`s. Generic aliases export their source-level alias scheme through `CheckContext` so consumers can instantiate imported aliases such as `Box[Int]`.
 
 ## Checked IR Notes
 
@@ -63,6 +70,7 @@ Resolve symbols, enforce type rules, and emit checked IR for downstream codegen.
 - Enum-match lowering records struct payload field bindings so backend lowering can bind `.variant(field = name)` arms without changing the single-payload enum representation.
 - `If`, `Cases`, and `Loop` are dedicated checked-IR control-flow nodes.
 - `Return`, `Break`, and `Continue` carry resolved target names so LLVM lowering can emit direct control transfer.
+- Managed-memory calls lower to `CheckedExpr::MemoryOp` nodes so backend codegen receives the operation kind, element type, result type, and already-lowered arguments without exposing raw pointers to Aura source.
 
 ## Testing
 

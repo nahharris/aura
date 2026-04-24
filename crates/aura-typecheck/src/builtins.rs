@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use aura_runtime_host::{RuntimeTypeRef, runtime_functions};
+use aura_runtime_host::{runtime_functions, RuntimeTypeRef};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuiltinTypeRef {
@@ -75,7 +75,7 @@ fn builtin_type_from_runtime(ty: &RuntimeTypeRef) -> BuiltinTypeRef {
 #[cfg(test)]
 mod tests {
     use crate::builtins::{BuiltinRegistry, BuiltinTypeRef};
-    use crate::{Ty, check_module};
+    use crate::{check_module, Ty};
     use aura_frontend::Parser;
 
     #[test]

@@ -50,6 +50,17 @@ For the first byte-buffer path, checked member calls are lowered to runtime symb
 
 String literals still lower to global NUL-terminated byte storage on the LLVM side. `String.into()` is what materializes owned mutable `Bytes` by copying from that literal/runtime string storage in the runtime host.
 
+Managed memory operations lower from `CheckedExpr::MemoryOp` nodes rather than public stubs:
+
+- `RawAlloc[T].new(count)` declares/calls `raw_alloc_new(count, elem_size, elem_align)`
+- `alloc.slice()` declares/calls `raw_alloc_slice(alloc)`
+- `slice.get(index)` declares/calls `slice_get(slice, index, out)` and builds `Option[T]`
+- `slice.set(index, value)` declares/calls `slice_set(slice, index, value)` and returns `Bool`
+- `slice.ref_at(index)` declares/calls `slice_ref_at(slice, index)` and builds `Option[Ref[T]]`
+- `ref.get()` and `ref.set(value)` copy through compiler-created stack slots via `ref_get` and `ref_set`
+
+The element size and alignment come from LLVM type layout classification in codegen; Aura source cannot call the raw helper symbols directly.
+
 ## Testing
 
 LLVM-specific validation runs through `cargo xtask llvm ...`.

@@ -80,6 +80,12 @@ pub enum CheckedExpr {
         callee: Box<CheckedExpr>,
         args: Vec<CheckedExpr>,
     },
+    MemoryOp {
+        op: MemoryOpKind,
+        item_ty: TyId,
+        result_ty: TyId,
+        args: Vec<CheckedExpr>,
+    },
     BinaryOp {
         op: BinaryOpKind,
         lhs: Box<CheckedExpr>,
@@ -185,6 +191,17 @@ pub enum BinaryOpKind {
     Neq,
     And,
     Or,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryOpKind {
+    RawAllocNew,
+    RawAllocSlice,
+    SliceGet,
+    SliceSet,
+    SliceRefAt,
+    RefGet,
+    RefSet,
 }
 
 impl CheckedIr {
