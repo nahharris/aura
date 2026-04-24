@@ -161,16 +161,6 @@ pub fn lower_expr<'ctx, 'm>(
             load_local_slot(cg, slot, name)
         }
         CheckedExpr::Ident(name) => {
-            if name == "true" {
-                return Ok(cg
-                    .context
-                    .bool_type()
-                    .const_int(1, false)
-                    .as_basic_value_enum());
-            }
-            if name == "false" {
-                return Ok(cg.context.bool_type().const_zero().as_basic_value_enum());
-            }
             if let Some(slot) = cg.lookup_local(name) {
                 return load_local_slot(cg, slot, name);
             }
@@ -191,6 +181,16 @@ pub fn lower_expr<'ctx, 'm>(
                     .build_load(value_ty, global.as_pointer_value(), &format!("load_{name}"))
                     .map_err(|_| CodegenError::UnsupportedExpression("ident"))?;
                 return Ok(loaded);
+            }
+            if name == "true" {
+                return Ok(cg
+                    .context
+                    .bool_type()
+                    .const_int(1, false)
+                    .as_basic_value_enum());
+            }
+            if name == "false" {
+                return Ok(cg.context.bool_type().const_zero().as_basic_value_enum());
             }
             Err(CodegenError::UnsupportedExpression("ident"))
         }

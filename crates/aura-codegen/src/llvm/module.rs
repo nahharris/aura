@@ -479,6 +479,21 @@ mod tests {
 
     #[cfg(feature = "llvm-backend")]
     #[test]
+    fn llvm_identifier_named_true_prefers_local_binding() {
+        let src = "def echo(true: Int) -> Int { true }";
+        let program = Parser::parse_source(src).expect("parse");
+        let checked = check_module(&program);
+        let module = checked.module.expect("checked module");
+
+        let ir = super::emit_module_stub("true_shadow", &module).expect("emit ir");
+
+        assert!(ir.contains("store i32 %0, ptr %param_true"));
+        assert!(ir.contains("load i32, ptr %param_true"));
+        assert!(!ir.contains("ret i1 true"));
+    }
+
+    #[cfg(feature = "llvm-backend")]
+    #[test]
     fn non_void_main_is_rejected_before_codegen() {
         let src = "def main() -> Result[Void, UInt8] { .err(7) }";
         let program = Parser::parse_source(src).expect("parse");
