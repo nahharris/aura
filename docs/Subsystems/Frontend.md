@@ -31,6 +31,7 @@ Own the syntax-facing compiler surface: tokens, lexing, AST construction, parsin
 - Dot-variant constructors parse `.variant(field = value, ...)` as a single `Expr::Struct` payload, preserving the enum invariant that variants carry one optional payload.
 - Dot-variant patterns parse `.variant(field = binding, ...)` as a single `Pattern::Struct` payload so typecheck can bind struct fields by payload type.
 - Explicit wrapped forms such as `.variant((field = value))` remain accepted and format to the canonical sugar form.
+- Destructuring imports use the same field-first convention: `use (exported = local_alias) = "module"` stores `exported` as `source_name` and `local_alias` as `local_name`.
 
 ## Entry Points
 

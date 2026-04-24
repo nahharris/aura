@@ -47,6 +47,7 @@ Bundle editor-facing language support and the shared parser/query assets used ac
 - Aura coverage tracks the current frontend surface, not the older pre-update syntax
 - top-level declarations are `def`, `defmacro`, and `use`
 - supported modern forms include `doc[...] def ...`, `defmacro[static_args] name(...) -> T { ... }`, macro application, static args, labeled trailing closures, label expressions, char literals, and current collection/comment forms
+- Tree-sitter `use_field` nodes label `source` before `local`, matching field-first `use (exported = local_alias) = "module"` syntax.
 - AUON coverage includes primitives, aliases, variants, tuples, structs, dicts, lists, comments, and document-level root wrapper omission for list/struct/dict
 
 ## Editor Split

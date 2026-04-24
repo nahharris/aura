@@ -21,6 +21,7 @@ This note is a reader's map into `DESIGN.md`, not a replacement for it.
 - `Macro[...]` is valid in `defstub` for declaration-only builtin forms such as `return`, `break`, and `continue`
 - `Func[...]` parameter shapes preserve names/labels so builtins such as `if`, `cases`, and `loop` can type labeled trailing closures
 - Enum variants still carry at most one payload value; when that payload is a struct, `.variant(field = value, ...)` and `.variant(field = binding, ...)` are surface sugar for the explicit wrapped struct payload.
+- Struct-like pattern surfaces use field-first spelling everywhere: `field = pattern`. Import renames follow the same rule with `exported_name = local_alias`.
 
 ## Alias Note
 

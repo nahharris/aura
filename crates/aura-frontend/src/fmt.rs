@@ -223,10 +223,12 @@ impl<'a> Formatter<'a> {
                         self.out.push_str(", ");
                     }
                     if field.local_name != field.source_name {
-                        self.out.push_str(&field.local_name);
+                        self.out.push_str(&field.source_name);
                         self.out.push_str(" = ");
+                        self.out.push_str(&field.local_name);
+                    } else {
+                        self.out.push_str(&field.source_name);
                     }
-                    self.out.push_str(&field.source_name);
                 }
                 self.out.push(')');
             }
@@ -873,5 +875,12 @@ mod tests {
         let src = "defstub[T] if: Func[(cond: Bool, then: Func[(), T], else: Func[(), T]), T]\n";
         let out = format_source(src, &FormatOptions::default());
         assert!(out.contains("defstub[T] if: Func["));
+    }
+
+    #[test]
+    fn formats_renamed_use_with_source_name_first() {
+        let src = "use (print = my_print, read) = \"@stl/io\"\n";
+        let out = format_source(src, &FormatOptions::default());
+        assert!(out.contains("use (print = my_print, read) = \"@stl/io\";"));
     }
 }

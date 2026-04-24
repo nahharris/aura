@@ -736,7 +736,7 @@ pattern  ::= literal
            | "." identifier ("(" pattern ")")?      // variant pattern: `.ok(x)` or `.null`
            | "(" pattern ("," pattern)* ","? ")"    // tuple pattern
 
-struct_field ::= identifier "=" identifier          // field rename: `alias = field`
+struct_field ::= identifier "=" pattern             // field pattern: `field = binding`
               |  identifier                         // plain field bind
 ```
 
@@ -744,7 +744,7 @@ struct_field ::= identifier "=" identifier          // field rename: `alias = fi
 - An identifier pattern always matches and binds the value to that name.
 - `_` matches and discards.
 - A type-check pattern `name: Type` matches if the value is of the given type and binds it to `name`.
-- A struct pattern `(alias = field, name)` destructures a struct by field name.
+- A struct pattern `(field = binding, name)` destructures a struct by field name.
 - A constructor pattern `TypeName(p1, p2)` destructures a named tuple or struct, optionally casting.
 - A rest pattern `..rest` captures remaining elements into a list; bare `..` discards them.
 - A variant pattern `.ok(inner)` matches a dot-identifier enum variant.
@@ -1205,7 +1205,7 @@ A `def` with a type-alias right-hand side automatically generates:
 ```aura
 def (x, y) = compute_coords()     // tuple destructuring
 def (name, age) = some_person      // struct destructuring
-def (some_name = name, age) = some_person // struct destructuring with rename
+def (name = some_name, age) = some_person // struct destructuring with rename
 def .ok(value) = some_result       // fallible — panics if result is .err
 ```
 
@@ -1358,10 +1358,10 @@ io.print("hello");
 use (print, read) = "@stl/io";
 ```
 
-**Rename on import** — `local_alias = exported_name` (alias = field, matching struct-pattern syntax):
+**Rename on import** — `exported_name = local_alias` (field = binding, matching struct-pattern syntax):
 
 ```aura
-use (my_print = print, read) = "@stl/io";
+use (print = my_print, read) = "@stl/io";
 my_print("hello");
 ```
 

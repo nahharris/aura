@@ -277,8 +277,8 @@ where
                 let first = self.expect_ident("expected imported symbol name")?;
                 let (local_name, source_name) = if self.peek_is(&TokenKind::Eq) {
                     self.bump();
-                    let source = self.expect_ident("expected exported symbol name after '='")?;
-                    (first, source)
+                    let local = self.expect_ident("expected local symbol name after '='")?;
+                    (local, first)
                 } else {
                     (first.clone(), first)
                 };
@@ -3018,7 +3018,7 @@ mod tests {
 
     #[test]
     fn parse_renamed_use_decl() {
-        let src = "use (my_print = print, read) = \"@stl/io\"";
+        let src = "use (print = my_print, read) = \"@stl/io\"";
         let parsed = Parser::parse_source(src).expect("should parse renamed use");
         assert!(matches!(
             &parsed.declarations[0],

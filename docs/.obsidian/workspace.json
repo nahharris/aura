@@ -182,6 +182,8 @@
   },
   "active": "64d3a652f7f86ae7",
   "lastOpenFiles": [
+    "Issues/Panic System.md",
+    "Issues",
     "Architecture/Repo Map.md",
     "Architecture/Build And Dev Workflow.md",
     "Templates/ADR.md",
