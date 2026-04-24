@@ -50,7 +50,7 @@ pub enum ProjectCompileError {
     ParseSource {
         path: PathBuf,
         source: String,
-        diagnostic: Diagnostic,
+        diagnostic: Box<Diagnostic>,
     },
     Typecheck {
         path: PathBuf,
@@ -134,6 +134,13 @@ struct ModuleRecord {
     value_exports: Vec<ExportBinding>,
     type_exports: Vec<TypeExportBinding>,
 }
+
+type BuildContextResult = (
+    CheckContext,
+    Vec<ExportBinding>,
+    Vec<TypeExportBinding>,
+    Vec<ImportBinding>,
+);
 
 #[derive(Debug, Default)]
 struct ProjectCompiler {
@@ -276,7 +283,7 @@ impl ProjectCompiler {
             ProjectCompileError::ParseSource {
                 path: path.clone(),
                 source: source.clone(),
-                diagnostic,
+                diagnostic: Box::new(diagnostic),
             }
         })?;
 
@@ -333,10 +340,7 @@ impl ProjectCompiler {
                     .iter()
                     .find(|decl| decl.is_extern && decl.name == binding.local_name)
                     .map(|decl| decl.ty)
-                    .unwrap_or_else(|| {
-                        let ty = ty_ref_to_ty_id(&mut checked.types, &binding.ty);
-                        ty
-                    }),
+                    .unwrap_or_else(|| ty_ref_to_ty_id(&mut checked.types, &binding.ty)),
                 is_extern: true,
                 value: CheckedExpr::Any,
             });
@@ -400,6 +404,7 @@ impl ProjectCompiler {
         Ok(())
     }
 
+    #[allow(clippy::type_complexity)]
     fn build_check_context(
         &mut self,
         package_root: &Path,
@@ -407,15 +412,7 @@ impl ProjectCompiler {
         program: &Program,
         entry_path: &Path,
         options: ProjectCompileOptions,
-    ) -> Result<
-        (
-            CheckContext,
-            Vec<ExportBinding>,
-            Vec<TypeExportBinding>,
-            Vec<ImportBinding>,
-        ),
-        ProjectCompileError,
-    > {
+    ) -> Result<BuildContextResult, ProjectCompileError> {
         let package = self
             .packages
             .get(package_root)
@@ -566,6 +563,7 @@ impl ProjectCompiler {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn import_library_exports(
         &self,
         context: &mut CheckContext,
@@ -652,6 +650,7 @@ impl ProjectCompiler {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_namespace(
         &self,
         context: &mut CheckContext,

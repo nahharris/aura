@@ -418,7 +418,7 @@ fn build_single_file_cmd(
             emit_object_file(&module_name, module, &obj_path)
                 .map_err(|e| anyhow::anyhow!("object emission failed: {e}"))?;
 
-            link_native_binary(&[obj_path.clone()], &executable_path)?;
+            link_native_binary(std::slice::from_ref(&obj_path), &executable_path)?;
             println!("native executable emitted to {}", executable_path.display());
             println!("kept intermediate LLVM IR at {}", ll_path.display());
             println!("kept intermediate object file at {}", obj_path.display());
@@ -446,7 +446,7 @@ fn build_project_cmd(
             source,
             diagnostic,
         }) => {
-            print_diagnostics(&[diagnostic], diagnostics_format, &path, &source)?;
+            print_diagnostics(&[*diagnostic], diagnostics_format, &path, &source)?;
             return Ok(ExitCode::from(1));
         }
         Err(ProjectCompileError::Typecheck {
