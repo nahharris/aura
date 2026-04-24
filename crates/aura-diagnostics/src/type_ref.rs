@@ -60,6 +60,9 @@ pub enum TypeRef {
     Union(Vec<TypeRef>),
     Enum(Vec<(String, Option<TypeRef>)>),
     Unknown,
+    RawAlloc(Box<TypeRef>),
+    Slice(Box<TypeRef>),
+    Ref(Box<TypeRef>),
 }
 
 impl fmt::Display for PrimitiveType {
@@ -152,23 +155,78 @@ impl fmt::Display for TypeRef {
                 write!(f, "enum({joined})")
             }
             Self::Unknown => f.write_str("<unknown>"),
+            Self::RawAlloc(item) => write!(f, "RawAlloc[{item}]"),
+            Self::Slice(item) => write!(f, "Slice[{item}]"),
+            Self::Ref(item) => write!(f, "Ref[{item}]"),
         }
     }
 }
 
 fn format_func_param(param: &FuncParamRef) -> String {
     let mut out = String::new();
-    if let Some(label) = &param.label {
-        out.push_str(label);
-        out.push(' ');
-    }
-    if let Some(name) = &param.name {
-        out.push_str(name);
-        out.push_str(": ");
+    match (&param.label, &param.name) {
+        (Some(label), Some(name)) if label == name => {
+            out.push_str(label);
+            out.push_str(": ");
+        }
+        (Some(label), Some(name)) => {
+            out.push_str(label);
+            out.push(' ');
+            out.push_str(name);
+            out.push_str(": ");
+        }
+        (Some(label), None) => {
+            out.push_str(label);
+            out.push_str(": ");
+        }
+        (None, Some(name)) => {
+            out.push_str(name);
+            out.push_str(": ");
+        }
+        (None, None) => {}
     }
     out.push_str(&param.ty.to_string());
     if param.trailing {
         out.push_str(" (trailing)");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FuncParamRef, PrimitiveType, TypeRef};
+
+    fn int_ref() -> Box<TypeRef> {
+        Box::new(TypeRef::Primitive(PrimitiveType::Int32))
+    }
+
+    #[test]
+    fn func_param_display_deduplicates_matching_label_and_name() {
+        let ty = TypeRef::Func {
+            params: vec![FuncParamRef {
+                name: Some("code".to_string()),
+                label: Some("code".to_string()),
+                trailing: false,
+                ty: int_ref(),
+            }],
+            ret: Box::new(TypeRef::Primitive(PrimitiveType::Void)),
+        };
+
+        assert_eq!(ty.to_string(), "(code: Int32) -> Void");
+    }
+
+    #[test]
+    fn func_param_display_preserves_distinct_label_and_name() {
+        let ty = TypeRef::Func {
+            params: vec![FuncParamRef {
+                name: Some("value".to_string()),
+                label: Some("as".to_string()),
+                trailing: false,
+                ty: int_ref(),
+            }],
+            ret: Box::new(TypeRef::Primitive(PrimitiveType::Void)),
+        };
+
+        assert_eq!(ty.to_string(), "(as value: Int32) -> Void");
+    }
 }

@@ -29,7 +29,12 @@ pub fn emit_object_file_with_options(
     out_path: &Path,
     include_native_entry: bool,
 ) -> Result<(), CodegenError> {
-    llvm::module::emit_object_file_with_options(module_name, checked, out_path, include_native_entry)
+    llvm::module::emit_object_file_with_options(
+        module_name,
+        checked,
+        out_path,
+        include_native_entry,
+    )
 }
 
 #[cfg(test)]

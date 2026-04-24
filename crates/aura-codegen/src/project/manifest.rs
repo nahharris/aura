@@ -270,12 +270,10 @@ fn parse_git_source(payload: Option<&Value>) -> Result<DependencySource, Manifes
         }
     }
 
-    let url = url.ok_or_else(|| {
-        ManifestError::InvalidDependencySource(".git requires `url`".to_string())
-    })?;
-    let reference = reference.ok_or_else(|| {
-        ManifestError::InvalidDependencySource(".git requires `ref`".to_string())
-    })?;
+    let url = url
+        .ok_or_else(|| ManifestError::InvalidDependencySource(".git requires `url`".to_string()))?;
+    let reference = reference
+        .ok_or_else(|| ManifestError::InvalidDependencySource(".git requires `ref`".to_string()))?;
 
     if url.is_empty() || reference.is_empty() {
         return Err(ManifestError::InvalidDependencySource(
@@ -414,7 +412,9 @@ mod tests {
             ],
         "#;
         let err = parse_manifest_source(src).expect_err("must fail");
-        assert!(matches!(err, ManifestError::InvalidDependencySource(source) if source.contains("git")));
+        assert!(
+            matches!(err, ManifestError::InvalidDependencySource(source) if source.contains("git"))
+        );
     }
 
     #[test]

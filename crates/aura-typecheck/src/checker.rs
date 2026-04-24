@@ -11,7 +11,7 @@ use crate::aliases::TypeAliases;
 use crate::checked_ir::{
     BinaryOpKind, CheckedBinding, CheckedCaseArm, CheckedDecl, CheckedEnumArm,
     CheckedEnumStructBinding, CheckedExpr, CheckedIr, CheckedStaticArg, CheckedStaticValue,
-    CheckedTypeExpr,
+    CheckedTypeExpr, MemoryOpKind,
 };
 use crate::interfaces::InterfaceRegistry;
 use crate::modules::ModuleChecker;
@@ -21,7 +21,7 @@ use crate::types::{FuncParam, Ty, TyId, TyInterner};
 use crate::unify::Unifier;
 
 use crate::generics::GenericConstraint;
-use crate::{CheckContext, CheckOptions, ImportBinding, TypeImportBinding};
+use crate::{CheckContext, CheckOptions, GenericTypeAlias, ImportBinding, TypeImportBinding};
 
 #[derive(Debug, Clone)]
 pub struct TypeChecker {
@@ -161,6 +161,9 @@ enum BuiltinMemberCall {
     BytesGet,
     BytesSet,
     StringInto,
+    RawAllocNew,
+    RawAllocSlice,
+    SliceRefAt,
 }
 
 #[derive(Debug, Clone)]
@@ -254,8 +257,16 @@ impl TypeChecker {
 
         let imported_type_bindings = checker.imported_types.values().cloned().collect::<Vec<_>>();
         for binding in imported_type_bindings {
-            let ty = checker.type_ref_to_ty(&binding.ty);
-            checker.aliases.insert(binding.local_name, ty);
+            if let Some(generic) = binding.generic {
+                checker.aliases.insert_generic(
+                    binding.local_name,
+                    generic.static_params,
+                    generic.body,
+                );
+            } else {
+                let ty = checker.type_ref_to_ty(&binding.ty);
+                checker.aliases.insert(binding.local_name, ty);
+            }
         }
 
         checker
@@ -314,6 +325,18 @@ impl TypeChecker {
             TypeRef::InferVar(v) => self.interner.intern(Ty::InferVar(*v)),
             TypeRef::GenericParam(name) => self.interner.intern(Ty::GenericParam(name.clone())),
             TypeRef::Nominal(name) => self.nominal_ty(name),
+            TypeRef::RawAlloc(item) => {
+                let item_ty = self.type_ref_to_ty(item);
+                self.interner.intern(Ty::RawAlloc(item_ty))
+            }
+            TypeRef::Slice(item) => {
+                let item_ty = self.type_ref_to_ty(item);
+                self.interner.intern(Ty::Slice(item_ty))
+            }
+            TypeRef::Ref(item) => {
+                let item_ty = self.type_ref_to_ty(item);
+                self.interner.intern(Ty::Ref(item_ty))
+            }
             TypeRef::List(item) => {
                 let item_ty = self.type_ref_to_ty(item);
                 self.interner.intern(Ty::List(item_ty))
@@ -805,11 +828,56 @@ impl TypeChecker {
     fn classify_builtin_member_call(object: &Expr, field: &str) -> Option<BuiltinMemberCall> {
         match (Self::base_expr(object), field) {
             (Expr::Ident(name), "new") if name == "Bytes" => Some(BuiltinMemberCall::BytesNew),
+            (
+                Expr::TypeApply {
+                    callee,
+                    static_args: _,
+                },
+                "new",
+            ) if matches!(Self::base_expr(callee), Expr::Ident(name) if name == "RawAlloc") => {
+                Some(BuiltinMemberCall::RawAllocNew)
+            }
+            (_, "slice") => Some(BuiltinMemberCall::RawAllocSlice),
             (_, "get") => Some(BuiltinMemberCall::BytesGet),
             (_, "set") => Some(BuiltinMemberCall::BytesSet),
+            (_, "ref_at") => Some(BuiltinMemberCall::SliceRefAt),
             (_, "into") => Some(BuiltinMemberCall::StringInto),
             _ => None,
         }
+    }
+
+    fn type_apply_arg(&mut self, object: &Expr, expected_name: &str) -> Option<TyId> {
+        let Expr::TypeApply {
+            callee,
+            static_args,
+        } = Self::base_expr(object)
+        else {
+            return None;
+        };
+        let Expr::Ident(name) = Self::base_expr(callee) else {
+            return None;
+        };
+        if name != expected_name {
+            return None;
+        }
+        if static_args.len() != 1 {
+            self.diagnostics.push(
+                self.typecheck_error(
+                    Issue::TypeArgArity,
+                    format!("{expected_name} requires exactly one type argument"),
+                )
+                .with_hint(format!("use `{expected_name}[T]`")),
+            );
+            return Some(self.unknown_ty());
+        }
+        Some(self.resolve_required_type_arg(static_args, 0, expected_name, "item"))
+    }
+
+    fn option_ty(&mut self, payload: TyId) -> TyId {
+        self.interner.intern(Ty::Enum(vec![
+            ("null".to_string(), None),
+            ("some".to_string(), Some(payload)),
+        ]))
     }
 
     fn emit_builtin_method_arity_error(&mut self, name: &str, expected: usize, actual: usize) {
@@ -861,28 +929,74 @@ impl TypeChecker {
                 bytes_ty
             }
             BuiltinMemberCall::BytesGet => {
-                if args.len() != 1 {
-                    self.emit_builtin_method_arity_error("Bytes.get", 1, args.len());
-                    return Some(self.unknown_ty());
+                let inferred_receiver = self.infer_expr(object);
+                let receiver_ty = self.unifier.resolve(inferred_receiver);
+                match self.interner.get(receiver_ty).cloned() {
+                    Some(Ty::Slice(item)) => {
+                        if args.len() != 1 {
+                            self.emit_builtin_method_arity_error("Slice.get", 1, args.len());
+                            return Some(self.unknown_ty());
+                        }
+                        let index_ty = self.infer_expr_with_expected(&args[0], usize_ty);
+                        self.require_assignable(usize_ty, index_ty, "Slice.get index");
+                        self.option_ty(item)
+                    }
+                    Some(Ty::Ref(item)) => {
+                        if !args.is_empty() {
+                            self.emit_builtin_method_arity_error("Ref.get", 0, args.len());
+                            return Some(self.unknown_ty());
+                        }
+                        item
+                    }
+                    _ => {
+                        if args.len() != 1 {
+                            self.emit_builtin_method_arity_error("Bytes.get", 1, args.len());
+                            return Some(self.unknown_ty());
+                        }
+                        self.require_assignable(bytes_ty, receiver_ty, "Bytes.get receiver");
+                        let index_ty = self.infer_expr_with_expected(&args[0], usize_ty);
+                        self.require_assignable(usize_ty, index_ty, "Bytes.get index");
+                        uint8_ty
+                    }
                 }
-                let receiver_ty = self.infer_expr(object);
-                self.require_assignable(bytes_ty, receiver_ty, "Bytes.get receiver");
-                let index_ty = self.infer_expr_with_expected(&args[0], usize_ty);
-                self.require_assignable(usize_ty, index_ty, "Bytes.get index");
-                uint8_ty
             }
             BuiltinMemberCall::BytesSet => {
-                if args.len() != 2 {
-                    self.emit_builtin_method_arity_error("Bytes.set", 2, args.len());
-                    return Some(self.unknown_ty());
+                let inferred_receiver = self.infer_expr(object);
+                let receiver_ty = self.unifier.resolve(inferred_receiver);
+                match self.interner.get(receiver_ty).cloned() {
+                    Some(Ty::Ref(item)) => {
+                        if args.len() != 1 {
+                            self.emit_builtin_method_arity_error("Ref.set", 1, args.len());
+                            return Some(self.unknown_ty());
+                        }
+                        let value_ty = self.infer_expr_with_expected(&args[0], item);
+                        self.require_assignable(item, value_ty, "Ref.set value");
+                        void_ty
+                    }
+                    Some(Ty::Slice(item)) => {
+                        if args.len() != 2 {
+                            self.emit_builtin_method_arity_error("Slice.set", 2, args.len());
+                            return Some(self.unknown_ty());
+                        }
+                        let index_ty = self.infer_expr_with_expected(&args[0], usize_ty);
+                        self.require_assignable(usize_ty, index_ty, "Slice.set index");
+                        let value_ty = self.infer_expr_with_expected(&args[1], item);
+                        self.require_assignable(item, value_ty, "Slice.set value");
+                        self.interner.intern(Ty::Bool)
+                    }
+                    _ => {
+                        if args.len() != 2 {
+                            self.emit_builtin_method_arity_error("Bytes.set", 2, args.len());
+                            return Some(self.unknown_ty());
+                        }
+                        self.require_assignable(bytes_ty, receiver_ty, "Bytes.set receiver");
+                        let index_ty = self.infer_expr_with_expected(&args[0], usize_ty);
+                        self.require_assignable(usize_ty, index_ty, "Bytes.set index");
+                        let value_ty = self.infer_expr_with_expected(&args[1], uint8_ty);
+                        self.require_assignable(uint8_ty, value_ty, "Bytes.set value");
+                        void_ty
+                    }
                 }
-                let receiver_ty = self.infer_expr(object);
-                self.require_assignable(bytes_ty, receiver_ty, "Bytes.set receiver");
-                let index_ty = self.infer_expr_with_expected(&args[0], usize_ty);
-                self.require_assignable(usize_ty, index_ty, "Bytes.set index");
-                let value_ty = self.infer_expr_with_expected(&args[1], uint8_ty);
-                self.require_assignable(uint8_ty, value_ty, "Bytes.set value");
-                void_ty
             }
             BuiltinMemberCall::StringInto => {
                 if !args.is_empty() {
@@ -892,6 +1006,47 @@ impl TypeChecker {
                 let receiver_ty = self.infer_expr(object);
                 self.require_assignable(string_ty, receiver_ty, "String.into receiver");
                 bytes_ty
+            }
+            BuiltinMemberCall::RawAllocNew => {
+                if args.len() != 1 {
+                    self.emit_builtin_method_arity_error("RawAlloc.new", 1, args.len());
+                    return Some(self.unknown_ty());
+                }
+                let item = self
+                    .type_apply_arg(object, "RawAlloc")
+                    .unwrap_or_else(|| self.unknown_ty());
+                let count_ty = self.infer_expr_with_expected(&args[0], usize_ty);
+                self.require_assignable(usize_ty, count_ty, "RawAlloc.new count");
+                self.interner.intern(Ty::RawAlloc(item))
+            }
+            BuiltinMemberCall::RawAllocSlice => {
+                if !args.is_empty() {
+                    self.emit_builtin_method_arity_error("RawAlloc.slice", 0, args.len());
+                    return Some(self.unknown_ty());
+                }
+                let inferred_receiver = self.infer_expr(object);
+                let receiver_ty = self.unifier.resolve(inferred_receiver);
+                if let Some(Ty::RawAlloc(item)) = self.interner.get(receiver_ty).cloned() {
+                    self.interner.intern(Ty::Slice(item))
+                } else {
+                    self.unknown_ty()
+                }
+            }
+            BuiltinMemberCall::SliceRefAt => {
+                if args.len() != 1 {
+                    self.emit_builtin_method_arity_error("Slice.ref_at", 1, args.len());
+                    return Some(self.unknown_ty());
+                }
+                let inferred_receiver = self.infer_expr(object);
+                let receiver_ty = self.unifier.resolve(inferred_receiver);
+                let index_ty = self.infer_expr_with_expected(&args[0], usize_ty);
+                self.require_assignable(usize_ty, index_ty, "Slice.ref_at index");
+                if let Some(Ty::Slice(item)) = self.interner.get(receiver_ty).cloned() {
+                    let ref_ty = self.interner.intern(Ty::Ref(item));
+                    self.option_ty(ref_ty)
+                } else {
+                    self.unknown_ty()
+                }
             }
         };
 
@@ -907,6 +1062,7 @@ impl TypeChecker {
         object: &Expr,
         field: &str,
         args: &[Expr],
+        result_ty: TyId,
     ) -> Option<CheckedExpr> {
         let kind = Self::classify_builtin_member_call(object, field)?;
         let (name, lowered_args): (&str, Vec<CheckedExpr>) = match kind {
@@ -914,19 +1070,108 @@ impl TypeChecker {
                 "bytes_new",
                 args.iter().map(|arg| self.lower_expr(arg)).collect(),
             ),
+            BuiltinMemberCall::RawAllocNew => {
+                let item_ty = self
+                    .type_apply_arg(object, "RawAlloc")
+                    .unwrap_or_else(|| self.unknown_ty());
+                return Some(CheckedExpr::MemoryOp {
+                    op: MemoryOpKind::RawAllocNew,
+                    item_ty,
+                    result_ty,
+                    args: args.iter().map(|arg| self.lower_expr(arg)).collect(),
+                });
+            }
+            BuiltinMemberCall::RawAllocSlice => {
+                let preview_receiver = self.preview_expr_ty(object);
+                let receiver_ty = self.unifier.resolve(preview_receiver);
+                if let Some(Ty::RawAlloc(item_ty)) = self.interner.get(receiver_ty).cloned() {
+                    return Some(CheckedExpr::MemoryOp {
+                        op: MemoryOpKind::RawAllocSlice,
+                        item_ty,
+                        result_ty,
+                        args: vec![self.lower_expr(object)],
+                    });
+                }
+                return None;
+            }
             BuiltinMemberCall::BytesGet => (
-                "bytes_get",
+                {
+                    let preview_receiver = self.preview_expr_ty(object);
+                    let receiver_ty = self.unifier.resolve(preview_receiver);
+                    match self.interner.get(receiver_ty).cloned() {
+                        Some(Ty::Slice(item_ty)) => {
+                            return Some(CheckedExpr::MemoryOp {
+                                op: MemoryOpKind::SliceGet,
+                                item_ty,
+                                result_ty,
+                                args: std::iter::once(self.lower_expr(object))
+                                    .chain(args.iter().map(|arg| self.lower_expr(arg)))
+                                    .collect(),
+                            });
+                        }
+                        Some(Ty::Ref(item_ty)) => {
+                            return Some(CheckedExpr::MemoryOp {
+                                op: MemoryOpKind::RefGet,
+                                item_ty,
+                                result_ty,
+                                args: vec![self.lower_expr(object)],
+                            });
+                        }
+                        _ => "bytes_get",
+                    }
+                },
                 std::iter::once(self.lower_expr(object))
                     .chain(args.iter().map(|arg| self.lower_expr(arg)))
                     .collect(),
             ),
-            BuiltinMemberCall::BytesSet => (
-                "bytes_set",
-                std::iter::once(self.lower_expr(object))
-                    .chain(args.iter().map(|arg| self.lower_expr(arg)))
-                    .collect(),
-            ),
+            BuiltinMemberCall::BytesSet => {
+                let preview_receiver = self.preview_expr_ty(object);
+                let receiver_ty = self.unifier.resolve(preview_receiver);
+                match self.interner.get(receiver_ty).cloned() {
+                    Some(Ty::Slice(item_ty)) => {
+                        return Some(CheckedExpr::MemoryOp {
+                            op: MemoryOpKind::SliceSet,
+                            item_ty,
+                            result_ty,
+                            args: std::iter::once(self.lower_expr(object))
+                                .chain(args.iter().map(|arg| self.lower_expr(arg)))
+                                .collect(),
+                        });
+                    }
+                    Some(Ty::Ref(item_ty)) => {
+                        return Some(CheckedExpr::MemoryOp {
+                            op: MemoryOpKind::RefSet,
+                            item_ty,
+                            result_ty,
+                            args: std::iter::once(self.lower_expr(object))
+                                .chain(args.iter().map(|arg| self.lower_expr(arg)))
+                                .collect(),
+                        });
+                    }
+                    _ => (
+                        "bytes_set",
+                        std::iter::once(self.lower_expr(object))
+                            .chain(args.iter().map(|arg| self.lower_expr(arg)))
+                            .collect(),
+                    ),
+                }
+            }
             BuiltinMemberCall::StringInto => ("string_into", vec![self.lower_expr(object)]),
+            BuiltinMemberCall::SliceRefAt => {
+                let preview_receiver = self.preview_expr_ty(object);
+                let receiver_ty = self.unifier.resolve(preview_receiver);
+                if let Some(Ty::Slice(item_ty)) = self.interner.get(receiver_ty).cloned() {
+                    return Some(CheckedExpr::MemoryOp {
+                        op: MemoryOpKind::SliceRefAt,
+                        item_ty,
+                        result_ty,
+                        args: std::iter::once(self.lower_expr(object))
+                            .chain(args.iter().map(|arg| self.lower_expr(arg)))
+                            .collect(),
+                    });
+                }
+                return None;
+            }
         };
 
         Some(CheckedExpr::Call {
@@ -982,13 +1227,24 @@ impl TypeChecker {
     pub fn check_program(
         &mut self,
         program: &Program,
-    ) -> (HashMap<String, TyId>, HashMap<String, TyId>) {
+    ) -> (
+        HashMap<String, TyId>,
+        HashMap<String, TyId>,
+        HashMap<String, GenericTypeAlias>,
+    ) {
         let mut values = HashMap::new();
         let mut type_aliases = HashMap::new();
+        let mut generic_type_aliases = HashMap::new();
         self.module_checker.check_program(program);
 
         for decl in &program.declarations {
-            if let Decl::Assign { name, value, .. } = decl {
+            if let Decl::Assign {
+                name,
+                static_params,
+                value,
+                ..
+            } = decl
+            {
                 if let Expr::TypeExpr(type_expr) = value {
                     if self.imported_binding(name).is_some()
                         || self.imported_type_binding(name).is_some()
@@ -1001,6 +1257,21 @@ impl TypeChecker {
                             )
                             .with_stage(Stage::Resolver)
                             .with_hint("rename the type or adjust the imports"),
+                        );
+                        continue;
+                    }
+                    if !static_params.is_empty() {
+                        self.aliases.insert_generic(
+                            name.clone(),
+                            static_params.clone(),
+                            type_expr.clone(),
+                        );
+                        generic_type_aliases.insert(
+                            name.clone(),
+                            GenericTypeAlias {
+                                static_params: static_params.clone(),
+                                body: type_expr.clone(),
+                            },
                         );
                         continue;
                     }
@@ -1287,7 +1558,7 @@ impl TypeChecker {
         self.diagnostics
             .extend(std::mem::take(&mut self.module_checker).into_diagnostics());
 
-        (values, type_aliases)
+        (values, type_aliases, generic_type_aliases)
     }
 
     pub fn into_parts(self) -> (TyInterner, Vec<Diagnostic>, CheckedIr) {
@@ -1326,6 +1597,7 @@ impl TypeChecker {
             Expr::Float(_) => self.aliases.get("Float").expect("Float alias must exist"),
             Expr::Char(_) => self.interner.intern(Ty::Char),
             Expr::String(_) => self.interner.intern(Ty::Nominal("String".to_string())),
+            Expr::TypeApply { .. } => self.unknown_ty(),
             Expr::DotIdent { payload, .. } => {
                 if let Some(inner) = payload {
                     self.infer_expr(inner)
@@ -2741,7 +3013,11 @@ impl TypeChecker {
             }
             TypeExpr::Named { name, args } => {
                 if let Some(alias) = self.aliases.get(name) {
+                    self.enforce_exact_type_arity(name, args, 0);
                     return alias;
+                }
+                if let Some((static_params, body)) = self.aliases.get_generic(name) {
+                    return self.instantiate_type_alias(name, args, &static_params, &body);
                 }
 
                 if name == "union" {
@@ -2879,6 +3155,21 @@ impl TypeChecker {
                         self.enforce_exact_type_arity("String", args, 0);
                         self.nominal_ty("String")
                     }
+                    "RawAlloc" => {
+                        self.enforce_exact_type_arity("RawAlloc", args, 1);
+                        let item = self.resolve_required_type_arg(args, 0, "RawAlloc", "item");
+                        self.interner.intern(Ty::RawAlloc(item))
+                    }
+                    "Slice" => {
+                        self.enforce_exact_type_arity("Slice", args, 1);
+                        let item = self.resolve_required_type_arg(args, 0, "Slice", "item");
+                        self.interner.intern(Ty::Slice(item))
+                    }
+                    "Ref" => {
+                        self.enforce_exact_type_arity("Ref", args, 1);
+                        let item = self.resolve_required_type_arg(args, 0, "Ref", "item");
+                        self.interner.intern(Ty::Ref(item))
+                    }
                     "List" => {
                         self.enforce_exact_type_arity("List", args, 1);
                         let item = self.resolve_required_type_arg(args, 0, "List", "item");
@@ -2951,6 +3242,42 @@ impl TypeChecker {
                 }
             }
         }
+    }
+
+    fn instantiate_type_alias(
+        &mut self,
+        name: &str,
+        args: &[StaticArg],
+        static_params: &[StaticParam],
+        body: &TypeExpr,
+    ) -> TyId {
+        self.enforce_exact_type_arity(name, args, static_params.len());
+        let mut resolved_args = Vec::with_capacity(static_params.len());
+        for (index, param) in static_params.iter().enumerate() {
+            let ty = match args.get(index) {
+                Some(StaticArg::Type(ty)) => self.resolve_type_expr(ty),
+                Some(StaticArg::Value(_)) => {
+                    self.diagnostics.push(
+                        self.typecheck_error(
+                            Issue::TypeArgKind,
+                            format!("{name} static argument '{}' must be a type", param.name),
+                        )
+                        .with_hint("pass a type argument such as `Int`"),
+                    );
+                    self.unknown_ty()
+                }
+                None => self.unknown_ty(),
+            };
+            resolved_args.push((param.name.clone(), ty));
+        }
+
+        self.push_generic_scope();
+        for (param_name, ty) in resolved_args {
+            self.insert_generic(param_name, ty);
+        }
+        let resolved = self.resolve_type_expr(body);
+        self.pop_generic_scope();
+        resolved
     }
 
     fn validate_method_receiver(&mut self, receiver: &TypeExpr) {
@@ -4386,6 +4713,7 @@ impl TypeChecker {
                     }
                 }
             }
+            Expr::TypeApply { .. } => CheckedExpr::Any,
             Expr::Tuple(items) => {
                 CheckedExpr::Tuple(items.iter().map(|item| self.lower_expr(item)).collect())
             }
@@ -4404,7 +4732,21 @@ impl TypeChecker {
             },
             Expr::Placeholder => CheckedExpr::Any,
             Expr::Block(items) => {
-                CheckedExpr::Block(items.iter().map(|item| self.lower_expr(item)).collect())
+                self.push_scope();
+                let mut lowered_items = Vec::with_capacity(items.len());
+                for item in items {
+                    let lowered = self.lower_expr(item);
+                    if let CheckedExpr::LocalBind { bindings, mutable } = &lowered {
+                        for binding in bindings {
+                            if let Some(name) = binding.name.as_ref() {
+                                self.insert_value(name.clone(), binding.ty, *mutable);
+                            }
+                        }
+                    }
+                    lowered_items.push(lowered);
+                }
+                self.pop_scope();
+                CheckedExpr::Block(lowered_items)
             }
             Expr::Bindings(_) => CheckedExpr::Any,
             Expr::Assign { name, value } => CheckedExpr::AssignLocal {
@@ -4537,7 +4879,10 @@ impl TypeChecker {
                     }
                 }
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
-                    if let Some(lowered) = self.lower_builtin_member_call(object, field, args) {
+                    let result_ty = self.preview_expr_ty(expr);
+                    if let Some(lowered) =
+                        self.lower_builtin_member_call(object, field, args, result_ty)
+                    {
                         return lowered;
                     }
                 }
@@ -4941,6 +5286,7 @@ impl TypeChecker {
                 self.interner.intern(Ty::Void)
             }
             Expr::TypeExpr(_) => self.unknown_ty(),
+            Expr::TypeApply { .. } => self.unknown_ty(),
             _ => self.infer_expr(expr),
         }
     }
@@ -5045,6 +5391,24 @@ fn ty_to_ref(ty: &Ty, interner: &TyInterner) -> TypeRef {
         Ty::Never => TypeRef::Primitive(PrimitiveType::Never),
         Ty::Any => TypeRef::Primitive(PrimitiveType::Any),
         Ty::Nominal(name) => TypeRef::Nominal(name.clone()),
+        Ty::RawAlloc(item) => TypeRef::RawAlloc(Box::new(
+            interner
+                .get(*item)
+                .map(|t| ty_to_ref(t, interner))
+                .unwrap_or(TypeRef::Unknown),
+        )),
+        Ty::Slice(item) => TypeRef::Slice(Box::new(
+            interner
+                .get(*item)
+                .map(|t| ty_to_ref(t, interner))
+                .unwrap_or(TypeRef::Unknown),
+        )),
+        Ty::Ref(item) => TypeRef::Ref(Box::new(
+            interner
+                .get(*item)
+                .map(|t| ty_to_ref(t, interner))
+                .unwrap_or(TypeRef::Unknown),
+        )),
         Ty::List(item) => {
             let item_ref = interner
                 .get(*item)
@@ -5208,11 +5572,13 @@ mod tests {
         let program = Program {
             declarations: vec![
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("1".to_string()),
                 },
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("2".to_string()),
@@ -5353,6 +5719,7 @@ mod tests {
     fn string_is_not_primitive_and_is_nominal() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "s".to_string(),
                 value: Expr::String("ok".to_string()),
@@ -5378,6 +5745,7 @@ mod tests {
     fn checked_ir_is_emitted_for_assignments() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "x".to_string(),
                 value: Expr::Int("1".to_string()),
@@ -5422,6 +5790,7 @@ mod tests {
     fn checked_ir_preserves_call_shape() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "v".to_string(),
                 value: Expr::Call {
@@ -5447,11 +5816,13 @@ mod tests {
         let program = Program {
             declarations: vec![
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("1".to_string()),
                 },
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "x".to_string(),
                     value: Expr::Float("2.0".to_string()),
@@ -5551,6 +5922,7 @@ mod tests {
     fn unknown_builtin_symbol_reports_diagnostic() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
@@ -5574,11 +5946,13 @@ mod tests {
         let program = Program {
             declarations: vec![
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "x".to_string(),
                     value: Expr::List(vec![Expr::Int("1".to_string())]),
                 },
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "x".to_string(),
                     value: Expr::Dict(vec![(
@@ -5604,11 +5978,13 @@ mod tests {
         let program = Program {
             declarations: vec![
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "f".to_string(),
                     value: Expr::Ident("unknown_callable".to_string()),
                 },
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
@@ -5634,6 +6010,7 @@ mod tests {
     fn unify_mismatch_includes_obligation_trace() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "x".to_string(),
                 value: Expr::Call {
@@ -5660,6 +6037,7 @@ mod tests {
     fn numeric_operator_requires_numeric_operands() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "x".to_string(),
                 value: Expr::Binary {
@@ -5682,6 +6060,7 @@ mod tests {
     fn builtin_macro_is_rejected() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "y".to_string(),
                 value: Expr::MacroApply {
@@ -5704,6 +6083,7 @@ mod tests {
     fn if_call_typechecks_with_labeled_closures() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "x".to_string(),
                 value: Expr::Call {
@@ -5738,6 +6118,7 @@ mod tests {
     fn cases_call_typechecks_with_when_closure() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "x".to_string(),
                 value: Expr::Call {
@@ -5861,6 +6242,7 @@ mod tests {
     fn if_macro_form_is_rejected() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
@@ -5887,6 +6269,7 @@ mod tests {
     fn cases_macro_form_is_rejected() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
@@ -6040,6 +6423,7 @@ mod tests {
     fn cast_macro_lowers_to_explicit_cast_ir() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
@@ -6065,6 +6449,7 @@ mod tests {
     fn unresolved_identifier_reports_diagnostic() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "x".to_string(),
                 value: Expr::Ident("missing".to_string()),
@@ -6087,6 +6472,7 @@ mod tests {
     fn closure_lowers_to_typed_closure_ir() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "f".to_string(),
                 value: Expr::Closure {
@@ -6262,6 +6648,7 @@ mod tests {
     fn dot_identifier_without_payload_is_void_typed() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "v".to_string(),
                 value: Expr::DotIdent {
@@ -6285,6 +6672,7 @@ mod tests {
     fn empty_tuple_expression_is_void_typed() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "v".to_string(),
                 value: Expr::Tuple(Vec::new()),
@@ -6393,6 +6781,7 @@ mod tests {
                     body: Expr::Ident("x".to_string()),
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "z".to_string(),
                     value: Expr::Ident("x".to_string()),
@@ -6416,6 +6805,7 @@ mod tests {
     fn multi_arm_pattern_identifier_is_scoped_to_arm_body() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "m".to_string(),
                 value: Expr::MultiArm(vec![
@@ -6450,6 +6840,7 @@ mod tests {
         let program = Program {
             declarations: vec![
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "m".to_string(),
                     value: Expr::MultiArm(vec![
@@ -6466,6 +6857,7 @@ mod tests {
                     ]),
                 },
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "z".to_string(),
                     value: Expr::Ident("v".to_string()),
@@ -6508,6 +6900,7 @@ mod tests {
                     body: Expr::Ident("x".to_string()),
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
@@ -6558,6 +6951,7 @@ mod tests {
                     body: Expr::Ident("x".to_string()),
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
@@ -6605,6 +6999,7 @@ mod tests {
                     body: Expr::Ident("x".to_string()),
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
@@ -6619,6 +7014,7 @@ mod tests {
                     },
                 },
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "z".to_string(),
                     value: Expr::Call {
@@ -6663,6 +7059,7 @@ mod tests {
                     body: Expr::Ident("x".to_string()),
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
@@ -6713,6 +7110,7 @@ mod tests {
                     body: Expr::Int("0".to_string()),
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
@@ -6770,6 +7168,7 @@ mod tests {
                     body: Expr::Int("0".to_string()),
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
@@ -6917,6 +7316,7 @@ mod tests {
     fn arm_guard_must_typecheck_as_bool() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "m".to_string(),
                 value: Expr::MultiArm(vec![
@@ -6968,6 +7368,7 @@ mod tests {
                     body: Expr::Int("0".to_string()),
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
@@ -7021,6 +7422,7 @@ mod tests {
                     body: Expr::Int("0".to_string()),
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
@@ -7071,6 +7473,7 @@ mod tests {
                     body: Expr::Int("0".to_string()),
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
@@ -7209,6 +7612,7 @@ mod tests {
     fn untyped_macro_rule_is_error() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
@@ -7231,6 +7635,7 @@ mod tests {
     fn malformed_if_lowering_uses_macro_apply_fallback_not_any() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
@@ -7253,6 +7658,7 @@ mod tests {
     fn malformed_cases_lowering_uses_macro_apply_fallback_not_any() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "x".to_string(),
                 value: Expr::MacroApply {
@@ -7470,6 +7876,7 @@ mod tests {
                     body: Expr::Ident("x".to_string()),
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "f".to_string(),
                     value: Expr::Ident("id".to_string()),
@@ -7518,6 +7925,7 @@ mod tests {
                     body: Expr::Int("0".to_string()),
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "g".to_string(),
                     value: Expr::Ident("f".to_string()),
@@ -7562,6 +7970,7 @@ mod tests {
                     body: Expr::Ident("x".to_string()),
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
@@ -7617,6 +8026,7 @@ mod tests {
                     body: Expr::Ident("x".to_string()),
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
@@ -7676,6 +8086,7 @@ mod tests {
                     body: Expr::Ident("x".to_string()),
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
@@ -7735,6 +8146,7 @@ mod tests {
                     body: Expr::Ident("x".to_string()),
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
@@ -7785,6 +8197,7 @@ mod tests {
                     body: Expr::Ident("x".to_string()),
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Call {
@@ -7814,11 +8227,13 @@ mod tests {
         let program = Program {
             declarations: vec![
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("1".to_string()),
                 },
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("2".to_string()),
@@ -7840,11 +8255,13 @@ mod tests {
         let program = Program {
             declarations: vec![
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "x".to_string(),
                     value: Expr::Float("1.5".to_string()),
                 },
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "x".to_string(),
                     value: Expr::Int("1".to_string()),
@@ -7864,6 +8281,7 @@ mod tests {
     fn comparison_operator_returns_bool() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "x".to_string(),
                 value: Expr::Binary {
@@ -7885,6 +8303,7 @@ mod tests {
     fn logical_operator_requires_bool_operands() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "x".to_string(),
                 value: Expr::Binary {
@@ -7907,6 +8326,7 @@ mod tests {
     fn mod_operator_is_typed_as_numeric_operator() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "x".to_string(),
                 value: Expr::Binary {
@@ -7928,6 +8348,7 @@ mod tests {
     fn parsed_cast_expression_typechecks_and_lowers_to_cast_ir() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "x".to_string(),
                 value: Expr::Cast {
@@ -7974,6 +8395,7 @@ mod tests {
                     body: Expr::Ident("x".to_string()),
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Binary {
@@ -8027,6 +8449,7 @@ mod tests {
                     },
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "p".to_string(),
                     value: Expr::Call {
@@ -8086,6 +8509,7 @@ mod tests {
                     },
                 }),
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "y".to_string(),
                     value: Expr::Binary {
@@ -8112,6 +8536,7 @@ mod tests {
     fn enum_variant_assignment_typechecks_with_expected_enum() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "res".to_string(),
                 value: Expr::Binary {
@@ -8234,6 +8659,7 @@ mod tests {
     fn union_assignment_typechecks_when_value_matches_member() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "n".to_string(),
                 value: Expr::Binary {
@@ -8324,6 +8750,84 @@ mod tests {
         let module = checked.module.expect("module should exist");
         let v_ty = module.value_types.get("v").expect("v should exist");
         assert!(matches!(module.types.get(*v_ty), Some(Ty::Void)));
+    }
+
+    #[test]
+    fn raw_alloc_slice_and_ref_methods_typecheck() {
+        let program = Parser::parse_source(
+            "def alloc = RawAlloc[Int].new(4); \
+             def slice = alloc.slice(); \
+             def got = slice.get(0); \
+             def set_ok = slice.set(0, 42); \
+             def ref_value = slice.ref_at(0)",
+        )
+        .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+
+        let module = checked.module.expect("module should exist");
+        let got_ty = module.value_types.get("got").expect("got should exist");
+        let set_ok_ty = module
+            .value_types
+            .get("set_ok")
+            .expect("set_ok should exist");
+        let ref_ty = module
+            .value_types
+            .get("ref_value")
+            .expect("ref_value should exist");
+        assert!(
+            matches!(module.types.get(*got_ty), Some(Ty::Enum(variants)) if variants.len() == 2)
+        );
+        assert!(matches!(module.types.get(*set_ok_ty), Some(Ty::Bool)));
+        assert!(
+            matches!(module.types.get(*ref_ty), Some(Ty::Enum(variants)) if variants.len() == 2)
+        );
+    }
+
+    #[test]
+    fn generic_type_aliases_instantiate_static_params() {
+        let program = Parser::parse_source(
+            "def[T] Box = (value: T); \
+             def x: Box[Int] = (value = 1)",
+        )
+        .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+
+        let module = checked.module.expect("module should exist");
+        let x_ty = module.value_types.get("x").expect("x should exist");
+        assert!(matches!(
+            module.types.get(*x_ty),
+            Some(Ty::Struct(fields))
+                if fields.len() == 1
+                    && fields[0].0 == "value"
+                    && matches!(module.types.get(fields[0].1), Some(Ty::Int32))
+        ));
+    }
+
+    #[test]
+    fn ref_get_and_set_methods_typecheck() {
+        let program = Parser::parse_source(
+            "def use_ref(reference: Ref[Int]) -> Int { reference.set(7); reference.get() }",
+        )
+        .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(
+            checked.module.is_some(),
+            "expected module, got diagnostics: {:?}",
+            checked.diagnostics
+        );
     }
 
     #[test]
@@ -8422,6 +8926,7 @@ mod tests {
         let program = Program {
             declarations: vec![
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "value".to_string(),
                     value: Expr::Cast {
@@ -8433,6 +8938,7 @@ mod tests {
                     },
                 },
                 Decl::Assign {
+                    static_params: Vec::new(),
                     doc: None,
                     name: "narrowed".to_string(),
                     value: Expr::Cast {
@@ -8455,6 +8961,7 @@ mod tests {
     fn enum_variant_payload_mismatch_reports_type_error() {
         let program = Program {
             declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
                 doc: None,
                 name: "res".to_string(),
                 value: Expr::Binary {

@@ -191,7 +191,10 @@ impl<'a> Formatter<'a> {
     fn write_decl(&mut self, decl: &Decl) {
         match decl {
             Decl::Assign {
-                name, value, doc, ..
+                name,
+                static_params,
+                value,
+                doc,
             } => {
                 self.write_indent();
                 if let Some(doc) = doc {
@@ -199,6 +202,7 @@ impl<'a> Formatter<'a> {
                     self.out.push(' ');
                 }
                 self.out.push_str("def ");
+                self.write_static_params(static_params);
                 self.out.push_str(name);
                 self.out.push_str(" = ");
                 self.write_expr(value, false);
@@ -420,6 +424,13 @@ impl<'a> Formatter<'a> {
                 args,
                 trailing,
             } => self.write_call(callee, static_args, args, trailing),
+            Expr::TypeApply {
+                callee,
+                static_args,
+            } => {
+                self.write_expr(callee, false);
+                self.write_static_args(static_args);
+            }
             Expr::Member { object, field } => {
                 self.write_expr(object, false);
                 self.out.push('.');
@@ -794,6 +805,10 @@ fn expr_to_inline(expr: &Expr) -> String {
         Expr::Ident(v) | Expr::Int(v) | Expr::Float(v) | Expr::String(v) | Expr::Char(v) => {
             v.clone()
         }
+        Expr::TypeApply {
+            callee,
+            static_args: _,
+        } => expr_to_inline(callee),
         Expr::Member { object, field } => format!("{}.{}", expr_to_inline(object), field),
         _ => "<expr>".to_string(),
     }

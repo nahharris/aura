@@ -1,26 +1,71 @@
 use std::collections::HashMap;
 
+use aura_frontend::ast::{StaticParam, TypeExpr};
+
 use crate::types::{Ty, TyId, TyInterner};
 
 #[derive(Debug, Clone)]
 pub struct TypeAliases {
-    aliases: HashMap<String, TyId>,
+    aliases: HashMap<String, TypeAlias>,
+}
+
+#[derive(Debug, Clone)]
+pub enum TypeAlias {
+    Concrete(TyId),
+    Generic {
+        static_params: Vec<StaticParam>,
+        body: TypeExpr,
+    },
 }
 
 impl TypeAliases {
     pub fn with_prelude(interner: &mut TyInterner) -> Self {
         let mut aliases = HashMap::new();
-        aliases.insert("Int".to_string(), interner.intern(Ty::Int32));
-        aliases.insert("Float".to_string(), interner.intern(Ty::Float32));
+        aliases.insert(
+            "Int".to_string(),
+            TypeAlias::Concrete(interner.intern(Ty::Int32)),
+        );
+        aliases.insert(
+            "Float".to_string(),
+            TypeAlias::Concrete(interner.intern(Ty::Float32)),
+        );
         Self { aliases }
     }
 
     pub fn get(&self, name: &str) -> Option<TyId> {
-        self.aliases.get(name).copied()
+        match self.aliases.get(name) {
+            Some(TypeAlias::Concrete(ty)) => Some(*ty),
+            Some(TypeAlias::Generic { .. }) | None => None,
+        }
+    }
+
+    pub fn get_generic(&self, name: &str) -> Option<(Vec<StaticParam>, TypeExpr)> {
+        match self.aliases.get(name) {
+            Some(TypeAlias::Generic {
+                static_params,
+                body,
+            }) => Some((static_params.clone(), body.clone())),
+            Some(TypeAlias::Concrete(_)) | None => None,
+        }
     }
 
     pub fn insert(&mut self, name: impl Into<String>, ty: TyId) {
-        self.aliases.insert(name.into(), ty);
+        self.aliases.insert(name.into(), TypeAlias::Concrete(ty));
+    }
+
+    pub fn insert_generic(
+        &mut self,
+        name: impl Into<String>,
+        static_params: Vec<StaticParam>,
+        body: TypeExpr,
+    ) {
+        self.aliases.insert(
+            name.into(),
+            TypeAlias::Generic {
+                static_params,
+                body,
+            },
+        );
     }
 
     pub fn contains(&self, name: &str) -> bool {

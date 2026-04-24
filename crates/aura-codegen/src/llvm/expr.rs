@@ -2,9 +2,9 @@
 use aura_runtime_host::{RuntimeTypeRef, runtime_function};
 #[cfg(feature = "llvm-backend")]
 use aura_typecheck::Ty;
-#[cfg(feature = "llvm-backend")]
-use aura_typecheck::checked_ir::BinaryOpKind;
 use aura_typecheck::checked_ir::CheckedExpr;
+#[cfg(feature = "llvm-backend")]
+use aura_typecheck::checked_ir::{BinaryOpKind, MemoryOpKind};
 #[cfg(feature = "llvm-backend")]
 use aura_typecheck::checked_ir::{CheckedCaseArm, CheckedEnumArm};
 
@@ -15,14 +15,14 @@ use super::error::CodegenError;
 use inkwell::{
     AddressSpace,
     module::Linkage,
-    types::{BasicType, BasicTypeEnum},
-    values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum},
+    types::BasicTypeEnum,
+    values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, IntValue},
 };
 
 #[cfg(feature = "llvm-backend")]
 use super::context::{CodegenContext, LoopTarget};
 #[cfg(feature = "llvm-backend")]
-use super::types::{AuraFunctionType, AuraValueType, lower_basic_type};
+use super::types::{AuraFunctionType, AuraValueType, lower_basic_type, type_layout};
 
 pub fn classify_expr_kind(expr: &CheckedExpr) -> &'static str {
     match expr {
@@ -33,6 +33,7 @@ pub fn classify_expr_kind(expr: &CheckedExpr) -> &'static str {
         CheckedExpr::String(_) => "string",
         CheckedExpr::EnumCtor { .. } => "enum_ctor",
         CheckedExpr::Call { .. } => "call",
+        CheckedExpr::MemoryOp { .. } => "memory_op",
         CheckedExpr::BinaryOp { .. } => "binary_op",
         CheckedExpr::DotIdent { .. } => "dot_ident",
         CheckedExpr::Tuple(_) => "tuple",
@@ -160,16 +161,6 @@ pub fn lower_expr<'ctx, 'm>(
             load_local_slot(cg, slot, name)
         }
         CheckedExpr::Ident(name) => {
-            if name == "true" {
-                return Ok(cg
-                    .context
-                    .bool_type()
-                    .const_int(1, false)
-                    .as_basic_value_enum());
-            }
-            if name == "false" {
-                return Ok(cg.context.bool_type().const_zero().as_basic_value_enum());
-            }
             if let Some(slot) = cg.lookup_local(name) {
                 return load_local_slot(cg, slot, name);
             }
@@ -190,6 +181,16 @@ pub fn lower_expr<'ctx, 'm>(
                     .build_load(value_ty, global.as_pointer_value(), &format!("load_{name}"))
                     .map_err(|_| CodegenError::UnsupportedExpression("ident"))?;
                 return Ok(loaded);
+            }
+            if name == "true" {
+                return Ok(cg
+                    .context
+                    .bool_type()
+                    .const_int(1, false)
+                    .as_basic_value_enum());
+            }
+            if name == "false" {
+                return Ok(cg.context.bool_type().const_zero().as_basic_value_enum());
             }
             Err(CodegenError::UnsupportedExpression("ident"))
         }
@@ -231,6 +232,12 @@ pub fn lower_expr<'ctx, 'm>(
         CheckedExpr::Continue { target } => lower_continue_expr(cg, target),
         CheckedExpr::Label { expr, .. } => lower_expr(cg, expr),
         CheckedExpr::Call { callee, args } => lower_call(cg, callee, args),
+        CheckedExpr::MemoryOp {
+            op,
+            item_ty,
+            result_ty,
+            args,
+        } => lower_memory_op(cg, *op, *item_ty, *result_ty, args),
         CheckedExpr::BinaryOp { op, lhs, rhs, .. } => lower_binary_op(cg, *op, lhs, rhs),
         _ => Err(CodegenError::UnsupportedExpression(classify_expr_kind(
             expr,
@@ -294,6 +301,331 @@ fn coerce_basic_value_for_slot<'ctx, 'm>(
 }
 
 #[cfg(feature = "llvm-backend")]
+fn memory_runtime_function<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    name: &str,
+) -> Result<FunctionValue<'ctx>, CodegenError> {
+    if let Some(function) = cg.module.get_function(name) {
+        return Ok(function);
+    }
+
+    let ptr = cg.context.ptr_type(AddressSpace::default());
+    let usize_ty = cg.context.i64_type();
+    let bool_ty = cg.context.bool_type();
+    let fn_ty = match name {
+        "raw_alloc_new" => ptr.fn_type(&[usize_ty.into(), usize_ty.into(), usize_ty.into()], false),
+        "raw_alloc_slice" => ptr.fn_type(&[ptr.into()], false),
+        "slice_get" => bool_ty.fn_type(&[ptr.into(), usize_ty.into(), ptr.into()], false),
+        "slice_set" => bool_ty.fn_type(&[ptr.into(), usize_ty.into(), ptr.into()], false),
+        "slice_ref_at" => ptr.fn_type(&[ptr.into(), usize_ty.into()], false),
+        "ref_get" => cg
+            .context
+            .void_type()
+            .fn_type(&[ptr.into(), ptr.into()], false),
+        "ref_set" => cg
+            .context
+            .void_type()
+            .fn_type(&[ptr.into(), ptr.into()], false),
+        _ => return Err(CodegenError::UnsupportedExpression("memory_op")),
+    };
+
+    Ok(cg.module.add_function(name, fn_ty, Some(Linkage::External)))
+}
+
+#[cfg(feature = "llvm-backend")]
+fn call_memory_runtime<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    name: &str,
+    args: &[BasicValueEnum<'ctx>],
+) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+    let function = memory_runtime_function(cg, name)?;
+    let args = args
+        .iter()
+        .copied()
+        .map(BasicMetadataValueEnum::from)
+        .collect::<Vec<_>>();
+    let call = cg
+        .builder
+        .build_call(function, &args, &format!("call_{name}"))
+        .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+    Ok(call.try_as_basic_value().left())
+}
+
+#[cfg(feature = "llvm-backend")]
+fn coerce_to_usize<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    value: BasicValueEnum<'ctx>,
+) -> Result<IntValue<'ctx>, CodegenError> {
+    let BasicValueEnum::IntValue(int_val) = value else {
+        return Err(CodegenError::UnsupportedExpression("memory_op"));
+    };
+    let usize_ty = cg.context.i64_type();
+    let from_w = int_val.get_type().get_bit_width();
+    let to_w = usize_ty.get_bit_width();
+    if from_w == to_w {
+        Ok(int_val)
+    } else if from_w > to_w {
+        cg.builder
+            .build_int_truncate(int_val, usize_ty, "memory_usize_trunc")
+            .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))
+    } else {
+        cg.builder
+            .build_int_z_extend(int_val, usize_ty, "memory_usize_zext")
+            .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))
+    }
+}
+
+#[cfg(feature = "llvm-backend")]
+fn build_option_from_payload<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    option_ty: aura_typecheck::TyId,
+    present: IntValue<'ctx>,
+    payload_value: BasicValueEnum<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    let current_block = cg
+        .builder
+        .get_insert_block()
+        .ok_or(CodegenError::UnsupportedExpression("memory_op"))?;
+    let function = current_block
+        .get_parent()
+        .ok_or(CodegenError::UnsupportedExpression("memory_op"))?;
+    let option_basic_ty =
+        lower_basic_type(cg.context, &cg.checked.types, option_ty)?.into_struct_type();
+    let slot = cg
+        .builder
+        .build_alloca(option_basic_ty, "memory_option")
+        .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+    cg.builder
+        .build_store(slot, option_basic_ty.const_zero())
+        .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+
+    let tag_ptr = cg
+        .builder
+        .build_struct_gep(option_basic_ty, slot, 0, "memory_option_tag_ptr")
+        .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+    let tag = cg
+        .builder
+        .build_int_z_extend(present, cg.context.i32_type(), "memory_option_tag")
+        .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+    cg.builder
+        .build_store(tag_ptr, tag)
+        .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+
+    let some_block = cg
+        .context
+        .append_basic_block(function, "memory_option_some");
+    let merge_block = cg
+        .context
+        .append_basic_block(function, "memory_option_merge");
+    cg.builder
+        .build_conditional_branch(present, some_block, merge_block)
+        .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+
+    cg.builder.position_at_end(some_block);
+    let payload_ptr = cg
+        .builder
+        .build_struct_gep(option_basic_ty, slot, 1, "memory_option_payload_ptr")
+        .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+    let typed_payload_ptr = cg
+        .builder
+        .build_bit_cast(
+            payload_ptr,
+            cg.context.ptr_type(AddressSpace::default()),
+            "memory_option_payload_cast",
+        )
+        .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?
+        .into_pointer_value();
+    cg.builder
+        .build_store(typed_payload_ptr, payload_value)
+        .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+    cg.builder
+        .build_unconditional_branch(merge_block)
+        .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+
+    cg.builder.position_at_end(merge_block);
+    cg.builder
+        .build_load(option_basic_ty, slot, "memory_option_load")
+        .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))
+}
+
+#[cfg(feature = "llvm-backend")]
+fn lower_memory_op<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    op: MemoryOpKind,
+    item_ty: aura_typecheck::TyId,
+    result_ty: aura_typecheck::TyId,
+    args: &[CheckedExpr],
+) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    match op {
+        MemoryOpKind::RawAllocNew => {
+            let count = args
+                .first()
+                .ok_or(CodegenError::UnsupportedExpression("memory_op"))
+                .and_then(|arg| lower_expr(cg, arg))
+                .and_then(|value| coerce_to_usize(cg, value))?;
+            let layout = type_layout(&cg.checked.types, item_ty)?;
+            let size = cg.context.i64_type().const_int(layout.size, false);
+            let align = cg.context.i64_type().const_int(layout.align, false);
+            call_memory_runtime(
+                cg,
+                "raw_alloc_new",
+                &[
+                    count.as_basic_value_enum(),
+                    size.as_basic_value_enum(),
+                    align.as_basic_value_enum(),
+                ],
+            )?
+            .ok_or(CodegenError::UnsupportedExpression("memory_op"))
+        }
+        MemoryOpKind::RawAllocSlice => {
+            let alloc = args
+                .first()
+                .ok_or(CodegenError::UnsupportedExpression("memory_op"))
+                .and_then(|arg| lower_expr(cg, arg))?;
+            call_memory_runtime(cg, "raw_alloc_slice", &[alloc])?
+                .ok_or(CodegenError::UnsupportedExpression("memory_op"))
+        }
+        MemoryOpKind::SliceGet => {
+            let slice = args
+                .first()
+                .ok_or(CodegenError::UnsupportedExpression("memory_op"))
+                .and_then(|arg| lower_expr(cg, arg))?;
+            let index = args
+                .get(1)
+                .ok_or(CodegenError::UnsupportedExpression("memory_op"))
+                .and_then(|arg| lower_expr(cg, arg))
+                .and_then(|value| coerce_to_usize(cg, value))?;
+            let item_basic_ty = lower_basic_type(cg.context, &cg.checked.types, item_ty)?;
+            let out_slot = cg
+                .builder
+                .build_alloca(item_basic_ty, "slice_get_out")
+                .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+            cg.builder
+                .build_store(out_slot, item_basic_ty.const_zero())
+                .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+            let ok = call_memory_runtime(
+                cg,
+                "slice_get",
+                &[
+                    slice,
+                    index.as_basic_value_enum(),
+                    out_slot.as_basic_value_enum(),
+                ],
+            )?
+            .ok_or(CodegenError::UnsupportedExpression("memory_op"))?
+            .into_int_value();
+            let payload = cg
+                .builder
+                .build_load(item_basic_ty, out_slot, "slice_get_value")
+                .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+            build_option_from_payload(cg, result_ty, ok, payload)
+        }
+        MemoryOpKind::SliceSet => {
+            let slice = args
+                .first()
+                .ok_or(CodegenError::UnsupportedExpression("memory_op"))
+                .and_then(|arg| lower_expr(cg, arg))?;
+            let index = args
+                .get(1)
+                .ok_or(CodegenError::UnsupportedExpression("memory_op"))
+                .and_then(|arg| lower_expr(cg, arg))
+                .and_then(|value| coerce_to_usize(cg, value))?;
+            let value = args
+                .get(2)
+                .ok_or(CodegenError::UnsupportedExpression("memory_op"))
+                .and_then(|arg| lower_expr(cg, arg))?;
+            let item_basic_ty = lower_basic_type(cg.context, &cg.checked.types, item_ty)?;
+            let value_slot = cg
+                .builder
+                .build_alloca(item_basic_ty, "slice_set_value")
+                .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+            let stored = coerce_basic_value_for_slot(cg, value, item_ty)?;
+            cg.builder
+                .build_store(value_slot, stored)
+                .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+            call_memory_runtime(
+                cg,
+                "slice_set",
+                &[
+                    slice,
+                    index.as_basic_value_enum(),
+                    value_slot.as_basic_value_enum(),
+                ],
+            )?
+            .ok_or(CodegenError::UnsupportedExpression("memory_op"))
+        }
+        MemoryOpKind::SliceRefAt => {
+            let slice = args
+                .first()
+                .ok_or(CodegenError::UnsupportedExpression("memory_op"))
+                .and_then(|arg| lower_expr(cg, arg))?;
+            let index = args
+                .get(1)
+                .ok_or(CodegenError::UnsupportedExpression("memory_op"))
+                .and_then(|arg| lower_expr(cg, arg))
+                .and_then(|value| coerce_to_usize(cg, value))?;
+            let reference =
+                call_memory_runtime(cg, "slice_ref_at", &[slice, index.as_basic_value_enum()])?
+                    .ok_or(CodegenError::UnsupportedExpression("memory_op"))?
+                    .into_pointer_value();
+            let present = cg
+                .builder
+                .build_is_not_null(reference, "slice_ref_at_present")
+                .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+            build_option_from_payload(cg, result_ty, present, reference.as_basic_value_enum())
+        }
+        MemoryOpKind::RefGet => {
+            let reference = args
+                .first()
+                .ok_or(CodegenError::UnsupportedExpression("memory_op"))
+                .and_then(|arg| lower_expr(cg, arg))?;
+            let item_basic_ty = lower_basic_type(cg.context, &cg.checked.types, item_ty)?;
+            let out_slot = cg
+                .builder
+                .build_alloca(item_basic_ty, "ref_get_out")
+                .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+            cg.builder
+                .build_store(out_slot, item_basic_ty.const_zero())
+                .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+            let _ =
+                call_memory_runtime(cg, "ref_get", &[reference, out_slot.as_basic_value_enum()])?;
+            cg.builder
+                .build_load(item_basic_ty, out_slot, "ref_get_value")
+                .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))
+        }
+        MemoryOpKind::RefSet => {
+            let reference = args
+                .first()
+                .ok_or(CodegenError::UnsupportedExpression("memory_op"))
+                .and_then(|arg| lower_expr(cg, arg))?;
+            let value = args
+                .get(1)
+                .ok_or(CodegenError::UnsupportedExpression("memory_op"))
+                .and_then(|arg| lower_expr(cg, arg))?;
+            let item_basic_ty = lower_basic_type(cg.context, &cg.checked.types, item_ty)?;
+            let value_slot = cg
+                .builder
+                .build_alloca(item_basic_ty, "ref_set_value")
+                .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+            let stored = coerce_basic_value_for_slot(cg, value, item_ty)?;
+            cg.builder
+                .build_store(value_slot, stored)
+                .map_err(|_| CodegenError::UnsupportedExpression("memory_op"))?;
+            let _ = call_memory_runtime(
+                cg,
+                "ref_set",
+                &[reference, value_slot.as_basic_value_enum()],
+            )?;
+            Ok(cg
+                .context
+                .ptr_type(AddressSpace::default())
+                .const_null()
+                .as_basic_value_enum())
+        }
+    }
+}
+
+#[cfg(feature = "llvm-backend")]
 fn lower_enum_ctor<'ctx, 'm>(
     cg: &CodegenContext<'ctx, 'm>,
     enum_ty: aura_typecheck::TyId,
@@ -330,12 +662,11 @@ fn lower_enum_ctor<'ctx, 'm>(
         else {
             return Err(CodegenError::UnsupportedExpression("enum_ctor"));
         };
-        if let Some(payload_ty) = variants
+        if let Some(_payload_ty) = variants
             .get(variant_index)
             .and_then(|(_, payload)| *payload)
         {
             let payload_value = lower_expr(cg, payload_expr)?;
-            let payload_basic_ty = lower_basic_type(cg.context, &cg.checked.types, payload_ty)?;
             let payload_ptr = cg
                 .builder
                 .build_struct_gep(enum_basic_ty, slot, 1, "enum_payload_ptr")
@@ -344,7 +675,7 @@ fn lower_enum_ctor<'ctx, 'm>(
                 .builder
                 .build_bit_cast(
                     payload_ptr,
-                    payload_basic_ty.ptr_type(AddressSpace::default()),
+                    cg.context.ptr_type(AddressSpace::default()),
                     "enum_payload_cast",
                 )
                 .map_err(|_| CodegenError::UnsupportedExpression("enum_ctor"))?
@@ -563,7 +894,7 @@ fn load_enum_payload<'ctx, 'm>(
         .builder
         .build_bit_cast(
             payload_ptr,
-            payload_basic_ty.ptr_type(AddressSpace::default()),
+            cg.context.ptr_type(AddressSpace::default()),
             "enum_payload_cast",
         )
         .map_err(|_| CodegenError::UnsupportedExpression("enum_match"))?

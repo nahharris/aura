@@ -206,8 +206,7 @@ pub fn emit_module_stub(
         cg.push_local_scope();
         bind_function_params(&cg, decl, function)?;
 
-        let lowered = lower_expr(&cg, &decl.value)
-            .map_err(|_| CodegenError::UnsupportedExpression(classify_expr_kind(&decl.value)))?;
+        let lowered = lower_expr(&cg, &decl.value)?;
 
         if function.get_type().get_return_type().is_some() {
             cg.builder.build_return(Some(&lowered)).map_err(|_| {
@@ -292,8 +291,7 @@ pub fn emit_object_file_with_options(
         cg.push_local_scope();
         bind_function_params(&cg, decl, function)?;
 
-        let lowered = lower_expr(&cg, &decl.value)
-            .map_err(|_| CodegenError::UnsupportedExpression(classify_expr_kind(&decl.value)))?;
+        let lowered = lower_expr(&cg, &decl.value)?;
 
         if function.get_type().get_return_type().is_some() {
             cg.builder.build_return(Some(&lowered)).map_err(|_| {
@@ -437,6 +435,61 @@ mod tests {
         assert!(ir.contains("declare void @syscall_exit(i32)"));
         assert!(ir.contains("call ptr @string_into(ptr"));
         assert!(ir.contains("call i64 @syscall_write(i32 1, ptr"));
+    }
+
+    #[cfg(feature = "llvm-backend")]
+    #[test]
+    fn llvm_ir_declares_managed_memory_runtime_symbols() {
+        let src = r#"
+            def touch(reference: Ref[Int]) -> Int {
+                reference.set(7);
+                reference.get()
+            }
+
+            def main() -> Void {
+                let alloc = RawAlloc[Int].new(2);
+                let slice = alloc.slice();
+                slice.set(0, 42);
+                let value = slice.get(0);
+                let reference = slice.ref_at(0);
+                ()
+            }
+        "#;
+        let program = Parser::parse_source(src).expect("parse");
+        let checked = check_module(&program);
+        let module = checked.module.expect("checked module");
+
+        let ir = super::emit_module_stub("managed_memory", &module).expect("emit ir");
+
+        assert!(ir.contains("declare ptr @raw_alloc_new(i64, i64, i64)"));
+        assert!(ir.contains("declare ptr @raw_alloc_slice(ptr)"));
+        assert!(ir.contains("declare i1 @slice_set(ptr, i64, ptr)"));
+        assert!(ir.contains("declare i1 @slice_get(ptr, i64, ptr)"));
+        assert!(ir.contains("declare ptr @slice_ref_at(ptr, i64)"));
+        assert!(ir.contains("declare void @ref_set(ptr, ptr)"));
+        assert!(ir.contains("declare void @ref_get(ptr, ptr)"));
+        assert!(ir.contains("call ptr @raw_alloc_new(i64 2, i64 4, i64 4)"));
+        assert!(ir.contains("call ptr @raw_alloc_slice(ptr"));
+        assert!(ir.contains("call i1 @slice_set(ptr"));
+        assert!(ir.contains("call i1 @slice_get(ptr"));
+        assert!(ir.contains("call ptr @slice_ref_at(ptr"));
+        assert!(ir.contains("call void @ref_set(ptr"));
+        assert!(ir.contains("call void @ref_get(ptr"));
+    }
+
+    #[cfg(feature = "llvm-backend")]
+    #[test]
+    fn llvm_identifier_named_true_prefers_local_binding() {
+        let src = "def echo(true: Int) -> Int { true }";
+        let program = Parser::parse_source(src).expect("parse");
+        let checked = check_module(&program);
+        let module = checked.module.expect("checked module");
+
+        let ir = super::emit_module_stub("true_shadow", &module).expect("emit ir");
+
+        assert!(ir.contains("store i32 %0, ptr %param_true"));
+        assert!(ir.contains("load i32, ptr %param_true"));
+        assert!(!ir.contains("ret i1 true"));
     }
 
     #[cfg(feature = "llvm-backend")]

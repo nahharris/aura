@@ -8,6 +8,7 @@ pub enum Decl {
     Macro(MacroDecl),
     Assign {
         name: String,
+        static_params: Vec<StaticParam>,
         value: Expr,
         doc: Option<DocAttribute>,
     },
@@ -148,6 +149,10 @@ pub enum Expr {
         static_args: Vec<StaticArg>,
         args: Vec<Expr>,
         trailing: Vec<LabeledClosureArg>,
+    },
+    TypeApply {
+        callee: Box<Expr>,
+        static_args: Vec<StaticArg>,
     },
     Member {
         object: Box<Expr>,

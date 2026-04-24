@@ -33,6 +33,12 @@ Own the syntax-facing compiler surface: tokens, lexing, AST construction, parsin
 - Explicit wrapped forms such as `.variant((field = value))` remain accepted and format to the canonical sugar form.
 - Destructuring imports use the same field-first convention: `use (exported = local_alias) = "module"` stores `exported` as `source_name` and `local_alias` as `local_name`.
 
+## Generic Type Receivers
+
+- Assignment-form `def` preserves static parameters for type aliases, so `def[T] Alias = ...` reaches typecheck with its alias scheme intact.
+- Member-call parsing accepts generic type receivers such as `RawAlloc[Int].new(4)` by representing `RawAlloc[Int]` as a type-application receiver before the `.new` call.
+- Macro application detection leaves uppercase generic receivers followed by `.` to the member-call parser instead of treating them as macro calls.
+
 ## Entry Points
 
 - `Parser` is re-exported from `crates/aura-frontend/src/lib.rs`
