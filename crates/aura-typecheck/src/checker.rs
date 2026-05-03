@@ -176,6 +176,7 @@ enum ConversionMode {
 enum ConversionDecision {
     Identity,
     Coerce,
+    MakeInterfaceObj,
     Cast,
     Incompatible,
 }
@@ -876,6 +877,95 @@ impl TypeChecker {
             }
         }
         None
+    }
+
+    fn interface_method_sig(
+        &self,
+        interface_ty: TyId,
+        field: &str,
+    ) -> Option<(usize, Vec<FuncParam>, TyId)> {
+        let interface_ty = self.unifier.resolve(interface_ty);
+        let Some(Ty::Interface(members) | Ty::InterfaceObject(members)) = self.interner.get(interface_ty)
+        else {
+            return None;
+        };
+        let (method_index, (_, method_ty)) = members
+            .iter()
+            .enumerate()
+            .find(|(_, (name, _))| name == field)?;
+        let resolved_method_ty = self.unifier.resolve(*method_ty);
+        let Some(Ty::Func { params, ret }) = self.interner.get(resolved_method_ty).cloned() else {
+            return None;
+        };
+        Some((method_index, params, ret))
+    }
+
+    fn infer_interface_member_call(
+        &mut self,
+        receiver_ty: TyId,
+        field: &str,
+        args: &[Expr],
+        trailing: &[LabeledClosureArg],
+        expected: Option<TyId>,
+    ) -> Option<TyId> {
+        let Some((_, params, ret)) = self.interface_method_sig(receiver_ty, field) else {
+            return None;
+        };
+        if !trailing.is_empty() {
+            self.diagnostics.push(
+                self.typecheck_error(
+                    Issue::TypeMismatch {
+                        context: TypingContext::Custom("call".to_string()),
+                        expected: TypeRef::Unknown,
+                        actual: TypeRef::Unknown,
+                    },
+                    "interface dispatch does not support trailing closure arguments",
+                )
+                .with_hint("pass all interface call arguments positionally"),
+            );
+            return Some(self.unknown_ty());
+        }
+        if args.len() != params.len() {
+            self.diagnostics.push(
+                self.typecheck_error(
+                    Issue::TypeMismatch {
+                        context: TypingContext::Custom("call".to_string()),
+                        expected: TypeRef::Unknown,
+                        actual: TypeRef::Unknown,
+                    },
+                    format!(
+                        "interface method expects {} argument(s), found {}",
+                        params.len(),
+                        args.len()
+                    ),
+                )
+                .with_hint("match the interface method signature arity"),
+            );
+            return Some(self.unknown_ty());
+        }
+        for (arg, param) in args.iter().zip(params.iter()) {
+            let actual = self.infer_expr_with_expected(arg, param.ty);
+            self.require_assignable(param.ty, actual, "interface method argument");
+        }
+        if let Some(expected) = expected {
+            self.require_assignable(expected, ret, "bidirectional expected type");
+        }
+        Some(ret)
+    }
+
+    fn interface_method_links(&mut self, concrete_ty: TyId, interface_ty: TyId) -> Vec<String> {
+        let interface_ty = self.unifier.resolve(interface_ty);
+        let Some(Ty::Interface(members)) = self.interner.get(interface_ty).cloned() else {
+            return Vec::new();
+        };
+        members
+            .iter()
+            .map(|(method, _)| {
+                self.lookup_method(concrete_ty, method)
+                    .map(|binding| binding.link_name)
+                    .unwrap_or_else(|| method.clone())
+            })
+            .collect()
     }
 
     fn match_receiver_ty(
@@ -2204,6 +2294,11 @@ impl TypeChecker {
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
                     if let Some(receiver_ty) = self.resolve_type_receiver_expr(object) {
                         let receiver_ty = self.unifier.resolve(receiver_ty);
+                        if let Some(ret) =
+                            self.infer_interface_member_call(receiver_ty, field, args, trailing, None)
+                        {
+                            return ret;
+                        }
                         if let Some(method) = self.lookup_method(receiver_ty, field) {
                             self.record_method_call(expr, method.link_name.clone());
                             self.record_method_call(callee.as_ref(), method.link_name.clone());
@@ -2219,6 +2314,11 @@ impl TypeChecker {
                     }
                     let receiver_ty = self.infer_expr(object);
                     let receiver_ty = self.unifier.resolve(receiver_ty);
+                    if let Some(ret) =
+                        self.infer_interface_member_call(receiver_ty, field, args, trailing, None)
+                    {
+                        return ret;
+                    }
                     if let Some(method) = self.lookup_method(receiver_ty, field) {
                         self.record_method_call(expr, method.link_name.clone());
                         self.record_method_call(callee.as_ref(), method.link_name.clone());
@@ -2285,6 +2385,7 @@ impl TypeChecker {
                 ) {
                     ConversionDecision::Identity
                     | ConversionDecision::Coerce
+                    | ConversionDecision::MakeInterfaceObj
                     | ConversionDecision::Cast => target,
                     ConversionDecision::Incompatible => {
                         self.diagnostics.push(
@@ -2459,6 +2560,7 @@ impl TypeChecker {
                 ) {
                     ConversionDecision::Identity
                     | ConversionDecision::Coerce
+                    | ConversionDecision::MakeInterfaceObj
                     | ConversionDecision::Cast => return target,
                     ConversionDecision::Incompatible => {}
                 }
@@ -2703,6 +2805,16 @@ impl TypeChecker {
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
                     if let Some(receiver_ty) = self.resolve_type_receiver_expr(object) {
                         let receiver_ty = self.unifier.resolve(receiver_ty);
+                        if let Some(actual) = self.infer_interface_member_call(
+                            receiver_ty,
+                            field,
+                            args,
+                            trailing,
+                            Some(expected),
+                        ) {
+                            self.require_assignable(expected, actual, "bidirectional expected type");
+                            return actual;
+                        }
                         if let Some(method) = self.lookup_method(receiver_ty, field) {
                             self.record_method_call(expr, method.link_name.clone());
                             self.record_method_call(callee.as_ref(), method.link_name.clone());
@@ -2720,6 +2832,16 @@ impl TypeChecker {
                     }
                     let receiver_ty = self.infer_expr(object);
                     let receiver_ty = self.unifier.resolve(receiver_ty);
+                    if let Some(actual) = self.infer_interface_member_call(
+                        receiver_ty,
+                        field,
+                        args,
+                        trailing,
+                        Some(expected),
+                    ) {
+                        self.require_assignable(expected, actual, "bidirectional expected type");
+                        return actual;
+                    }
                     if let Some(method) = self.lookup_method(receiver_ty, field) {
                         self.record_method_call(expr, method.link_name.clone());
                         self.record_method_call(callee.as_ref(), method.link_name.clone());
@@ -2821,6 +2943,7 @@ impl TypeChecker {
                 ) {
                     ConversionDecision::Identity
                     | ConversionDecision::Coerce
+                    | ConversionDecision::MakeInterfaceObj
                     | ConversionDecision::Cast => target,
                     ConversionDecision::Incompatible => {
                         self.emit_type_mismatch(
@@ -2956,7 +3079,9 @@ impl TypeChecker {
                                 ConversionMode::ImplicitOnly,
                                 "union payload"
                             ),
-                            ConversionDecision::Identity | ConversionDecision::Coerce
+                            ConversionDecision::Identity
+                                | ConversionDecision::Coerce
+                                | ConversionDecision::MakeInterfaceObj
                         ) {
                             return expected;
                         }
@@ -3240,6 +3365,7 @@ impl TypeChecker {
                 ) {
                     ConversionDecision::Identity
                     | ConversionDecision::Coerce
+                    | ConversionDecision::MakeInterfaceObj
                     | ConversionDecision::Cast => target,
                     ConversionDecision::Incompatible => {
                         self.diagnostics.push(
@@ -3413,13 +3539,17 @@ impl TypeChecker {
 
         if matches!(
             self.conversion_decision(lhs, rhs, ConversionMode::ImplicitOnly, context),
-            ConversionDecision::Identity | ConversionDecision::Coerce
+            ConversionDecision::Identity
+                | ConversionDecision::Coerce
+                | ConversionDecision::MakeInterfaceObj
         ) {
             return lhs;
         }
         if matches!(
             self.conversion_decision(rhs, lhs, ConversionMode::ImplicitOnly, context),
-            ConversionDecision::Identity | ConversionDecision::Coerce
+            ConversionDecision::Identity
+                | ConversionDecision::Coerce
+                | ConversionDecision::MakeInterfaceObj
         ) {
             return rhs;
         }
@@ -3451,6 +3581,9 @@ impl TypeChecker {
                 .iter()
                 .any(|(_, field_ty)| self.type_contains_infer_var(*field_ty)),
             Some(Ty::Interface(members)) => members
+                .iter()
+                .any(|(_, member_ty)| self.type_contains_infer_var(*member_ty)),
+            Some(Ty::InterfaceObject(members)) => members
                 .iter()
                 .any(|(_, member_ty)| self.type_contains_infer_var(*member_ty)),
             Some(Ty::Enum(variants)) => variants
@@ -4325,6 +4458,20 @@ impl TypeChecker {
                     .collect();
                 self.interner.intern(Ty::Struct(out))
             }
+            Ty::Interface(members) => {
+                let out = members
+                    .iter()
+                    .map(|(n, t)| (n.clone(), self.substitute_ty_id(*t, subst)))
+                    .collect();
+                self.interner.intern(Ty::Interface(out))
+            }
+            Ty::InterfaceObject(members) => {
+                let out = members
+                    .iter()
+                    .map(|(n, t)| (n.clone(), self.substitute_ty_id(*t, subst)))
+                    .collect();
+                self.interner.intern(Ty::InterfaceObject(out))
+            }
             Ty::Enum(variants) => {
                 let out = variants
                     .iter()
@@ -4379,7 +4526,9 @@ impl TypeChecker {
         });
         if matches!(
             self.conversion_decision(expected, actual, ConversionMode::ImplicitOnly, context),
-            ConversionDecision::Identity | ConversionDecision::Coerce
+            ConversionDecision::Identity
+                | ConversionDecision::Coerce
+                | ConversionDecision::MakeInterfaceObj
         ) {
             return;
         }
@@ -4432,7 +4581,9 @@ impl TypeChecker {
                             ConversionMode::ImplicitOnly,
                             &context,
                         ),
-                        ConversionDecision::Identity | ConversionDecision::Coerce
+                        ConversionDecision::Identity
+                            | ConversionDecision::Coerce
+                            | ConversionDecision::MakeInterfaceObj
                     ) {
                         self.obligation_stack = prev_obligations;
                         self.current_expr_span = prev_span;
@@ -4491,7 +4642,9 @@ impl TypeChecker {
                             ConversionMode::ImplicitOnly,
                             &context,
                         ),
-                        ConversionDecision::Identity | ConversionDecision::Coerce
+                        ConversionDecision::Identity
+                            | ConversionDecision::Coerce
+                            | ConversionDecision::MakeInterfaceObj
                     ) {
                         self.obligation_stack = prev_obligations;
                         self.current_expr_span = prev_span;
@@ -4866,6 +5019,12 @@ impl TypeChecker {
                 to: expected,
                 expr: Box::new(expr),
             },
+            ConversionDecision::MakeInterfaceObj => CheckedExpr::MakeInterfaceObj {
+                expr: Box::new(expr),
+                interface_ty: expected,
+                concrete_ty: actual,
+                method_links: self.interface_method_links(actual, expected),
+            },
             ConversionDecision::Cast => CheckedExpr::Cast {
                 from: actual,
                 to: expected,
@@ -4921,7 +5080,10 @@ impl TypeChecker {
                 .interface_failure_for_interface_ty(actual, expected)
                 .is_none()
             {
-                return ConversionDecision::Identity;
+                if matches!(actual_ty, Ty::Interface(_) | Ty::InterfaceObject(_)) {
+                    return ConversionDecision::Identity;
+                }
+                return ConversionDecision::MakeInterfaceObj;
             }
             return ConversionDecision::Incompatible;
         }
@@ -5608,6 +5770,20 @@ impl TypeChecker {
                     .cloned()
                     .or_else(|| self.resolved_method_call(callee.as_ref()).cloned());
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
+                    let receiver_preview = self.preview_expr_ty(object);
+                    let receiver_ty = self.unifier.resolve(receiver_preview);
+                    if let Some((method_index, _, ret_ty)) =
+                        self.interface_method_sig(receiver_ty, field)
+                    {
+                        return CheckedExpr::InterfaceCall {
+                            receiver: Box::new(self.lower_expr(object)),
+                            interface_ty: receiver_ty,
+                            method: field.clone(),
+                            method_index,
+                            args: args.iter().map(|a| self.lower_expr(a)).collect(),
+                            ret_ty,
+                        };
+                    }
                     let method_link_name = resolved_method.or_else(|| {
                         let receiver_ty = self.preview_expr_ty(object);
                         let receiver_ty = self.unifier.resolve(receiver_ty);
@@ -5694,6 +5870,12 @@ impl TypeChecker {
                         from: source_ty,
                         to: target_ty,
                         expr: Box::new(self.lower_expr(expr)),
+                    },
+                    ConversionDecision::MakeInterfaceObj => CheckedExpr::MakeInterfaceObj {
+                        expr: Box::new(self.lower_expr(expr)),
+                        interface_ty: target_ty,
+                        concrete_ty: source_ty,
+                        method_links: self.interface_method_links(source_ty, target_ty),
                     },
                     ConversionDecision::Cast | ConversionDecision::Incompatible => {
                         CheckedExpr::Cast {
@@ -6097,6 +6279,7 @@ impl TypeChecker {
                 ) {
                     ConversionDecision::Identity
                     | ConversionDecision::Coerce
+                    | ConversionDecision::MakeInterfaceObj
                     | ConversionDecision::Cast => target,
                     ConversionDecision::Incompatible => self.unknown_ty(),
                 }
@@ -6358,7 +6541,7 @@ fn ty_to_ref(ty: &Ty, interner: &TyInterner) -> TypeRef {
                 .collect::<Vec<_>>();
             TypeRef::Union(refs)
         }
-        Ty::Interface(members) => {
+        Ty::Interface(members) | Ty::InterfaceObject(members) => {
             let refs = members
                 .iter()
                 .map(|(name, id)| {
@@ -9154,6 +9337,44 @@ mod tests {
             .diagnostics
             .iter()
             .any(|d| d.code_str() == "E_INTERFACE_METHOD_MISMATCH"));
+    }
+
+    #[test]
+    fn empty_interface_annotation_resolves_as_any_type() {
+        let src = r#"
+            def x: interface() = 1
+        "#;
+        let parsed = Parser::parse_source(src).expect("parse should succeed");
+        let checked = check_module(&parsed);
+        let module = checked.module.expect("module should exist");
+        let x_ty = module.value_types.get("x").copied().expect("x should be typed");
+        assert!(matches!(module.types.get(x_ty), Some(Ty::Any)));
+    }
+
+    #[test]
+    fn named_interface_alias_lowers_member_signature_to_interface_ty() {
+        let src = r#"
+            def ToDouble = interface(double: Func[(), Int]);
+            def Int.double() -> Int { 2 }
+            def x: ToDouble = 1
+        "#;
+        let parsed = Parser::parse_source(src).expect("parse should succeed");
+        let checked = check_module(&parsed);
+        let module = checked.module.expect("module should exist");
+        let alias_ty = module
+            .type_aliases
+            .get("ToDouble")
+            .copied()
+            .expect("ToDouble alias should exist");
+        let Some(Ty::Interface(members)) = module.types.get(alias_ty) else {
+            panic!("ToDouble should lower to Ty::Interface");
+        };
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].0, "double");
+        let Some(Ty::Func { params, .. }) = module.types.get(members[0].1) else {
+            panic!("double member should lower to function type");
+        };
+        assert!(params.is_empty(), "double signature should have no args");
     }
 
     #[test]

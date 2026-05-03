@@ -15,6 +15,7 @@ use super::error::CodegenError;
 use inkwell::{
     AddressSpace,
     module::Linkage,
+    types::BasicType,
     types::BasicTypeEnum,
     values::{
         BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, IntValue, PointerValue,
@@ -25,8 +26,8 @@ use inkwell::{
 use super::context::{CodegenContext, LoopTarget};
 #[cfg(feature = "llvm-backend")]
 use super::types::{
-    AuraFunctionType, AuraValueType, aggregate_storage_type, lower_basic_type, type_layout,
-    type_layout_id, type_trace_kind,
+    AuraFunctionType, AuraValueType, aggregate_storage_type, classify_type, lower_basic_type,
+    type_layout, type_layout_id, type_trace_kind,
 };
 
 pub fn classify_expr_kind(expr: &CheckedExpr) -> &'static str {
@@ -38,6 +39,8 @@ pub fn classify_expr_kind(expr: &CheckedExpr) -> &'static str {
         CheckedExpr::String(_) => "string",
         CheckedExpr::EnumCtor { .. } => "enum_ctor",
         CheckedExpr::Call { .. } => "call",
+        CheckedExpr::MakeInterfaceObj { .. } => "make_interface_obj",
+        CheckedExpr::InterfaceCall { .. } => "interface_call",
         CheckedExpr::MemoryOp { .. } => "memory_op",
         CheckedExpr::BinaryOp { .. } => "binary_op",
         CheckedExpr::DotIdent { .. } => "dot_ident",
@@ -286,6 +289,19 @@ pub fn lower_expr<'ctx, 'm>(
         CheckedExpr::Continue { target } => lower_continue_expr(cg, target),
         CheckedExpr::Label { expr, .. } => lower_expr(cg, expr),
         CheckedExpr::Call { callee, args } => lower_call(cg, callee, args),
+        CheckedExpr::MakeInterfaceObj {
+            expr,
+            interface_ty,
+            concrete_ty,
+            method_links,
+        } => lower_make_interface_obj(cg, expr, *interface_ty, *concrete_ty, method_links),
+        CheckedExpr::InterfaceCall {
+            receiver,
+            interface_ty,
+            method_index,
+            args,
+            ..
+        } => lower_interface_call(cg, receiver, *interface_ty, *method_index, args),
         CheckedExpr::MemoryOp {
             op,
             item_ty,
@@ -297,6 +313,300 @@ pub fn lower_expr<'ctx, 'm>(
             expr,
         ))),
     }
+}
+
+#[cfg(feature = "llvm-backend")]
+fn interface_object_type<'ctx>(
+    cg: &CodegenContext<'ctx, '_>,
+) -> inkwell::types::StructType<'ctx> {
+    let ptr = cg.context.ptr_type(AddressSpace::default());
+    cg.context.struct_type(&[ptr.into(), ptr.into()], false)
+}
+
+#[cfg(feature = "llvm-backend")]
+fn lower_make_interface_obj<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    expr: &CheckedExpr,
+    interface_ty: aura_typecheck::TyId,
+    concrete_ty: aura_typecheck::TyId,
+    method_links: &[String],
+) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    let lowered = lower_expr(cg, expr)?;
+    let object_ty = interface_object_type(cg);
+    let object_slot = cg
+        .builder
+        .build_malloc(object_ty, "iface_obj")
+        .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?;
+    let data_ptr = cg
+        .builder
+        .build_malloc(lowered.get_type(), "iface_data")
+        .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?;
+    cg.builder
+        .build_store(data_ptr, lowered)
+        .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?;
+
+    let ptr_ty = cg.context.ptr_type(AddressSpace::default());
+    let table_ty = ptr_ty.array_type(method_links.len() as u32);
+    let table_slot = cg
+        .builder
+        .build_malloc(table_ty, "iface_vtable")
+        .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?;
+    for (index, link_name) in method_links.iter().enumerate() {
+        if let Some(function) = cg.module.get_function(link_name) {
+            let thunk =
+                ensure_interface_thunk(cg, interface_ty, concrete_ty, index, link_name, function)?;
+            let slot_ptr = unsafe {
+                cg.builder
+                    .build_in_bounds_gep(
+                        table_ty,
+                        table_slot,
+                        &[
+                            cg.context.i64_type().const_zero(),
+                            cg.context.i64_type().const_int(index as u64, false),
+                        ],
+                        &format!("iface_slot_{index}"),
+                    )
+                    .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?
+            };
+            let fn_ptr = thunk.as_global_value().as_pointer_value().as_basic_value_enum();
+            cg.builder
+                .build_store(slot_ptr, fn_ptr)
+                .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?;
+        }
+    }
+
+    let data_gep = cg
+        .builder
+        .build_struct_gep(object_ty, object_slot, 0, "iface_data_gep")
+        .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?;
+    cg.builder
+        .build_store(data_gep, data_ptr.as_basic_value_enum())
+        .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?;
+    let vtable_gep = cg
+        .builder
+        .build_struct_gep(object_ty, object_slot, 1, "iface_vtable_gep")
+        .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?;
+    cg.builder
+        .build_store(vtable_gep, table_slot.as_basic_value_enum())
+        .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?;
+    Ok(object_slot.as_basic_value_enum())
+}
+
+#[cfg(feature = "llvm-backend")]
+fn lower_interface_call<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    receiver: &CheckedExpr,
+    interface_ty: aura_typecheck::TyId,
+    method_index: usize,
+    args: &[CheckedExpr],
+) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    let receiver_value = lower_expr(cg, receiver)?;
+    let receiver_ptr = receiver_value.into_pointer_value();
+    let object_ty = interface_object_type(cg);
+    let data_gep = cg
+        .builder
+        .build_struct_gep(object_ty, receiver_ptr, 0, "iface_call_data_gep")
+        .map_err(|_| CodegenError::UnsupportedExpression("interface_call"))?;
+    let data_ptr = cg
+        .builder
+        .build_load(
+            cg.context.ptr_type(AddressSpace::default()),
+            data_gep,
+            "iface_call_data",
+        )
+        .map_err(|_| CodegenError::UnsupportedExpression("interface_call"))?;
+    let vtable_gep = cg
+        .builder
+        .build_struct_gep(object_ty, receiver_ptr, 1, "iface_call_vtable_gep")
+        .map_err(|_| CodegenError::UnsupportedExpression("interface_call"))?;
+    let vtable_ptr = cg
+        .builder
+        .build_load(
+            cg.context.ptr_type(AddressSpace::default()),
+            vtable_gep,
+            "iface_call_vtable",
+        )
+        .map_err(|_| CodegenError::UnsupportedExpression("interface_call"))?
+        .into_pointer_value();
+    let ptr_ty = cg.context.ptr_type(AddressSpace::default());
+    let vtable_as_ptr_ptr = cg
+        .builder
+        .build_bit_cast(
+            vtable_ptr,
+            ptr_ty.ptr_type(AddressSpace::default()),
+            "iface_call_vtable_cast",
+        )
+        .map_err(|_| CodegenError::UnsupportedExpression("interface_call"))?
+        .into_pointer_value();
+    let slot_ptr = unsafe {
+        cg.builder
+            .build_in_bounds_gep(
+                ptr_ty,
+                vtable_as_ptr_ptr,
+                &[cg.context.i64_type().const_int(method_index as u64, false)],
+                "iface_call_slot",
+            )
+            .map_err(|_| CodegenError::UnsupportedExpression("interface_call"))?
+    };
+    let fn_ptr = cg
+        .builder
+        .build_load(ptr_ty, slot_ptr, "iface_call_fnptr")
+        .map_err(|_| CodegenError::UnsupportedExpression("interface_call"))?;
+    let fn_ty = interface_thunk_type(cg, interface_ty, method_index)?;
+    let callable = cg
+        .builder
+        .build_bit_cast(
+            fn_ptr.into_pointer_value(),
+            fn_ty.ptr_type(AddressSpace::default()),
+            "iface_call_callable",
+        )
+        .map_err(|_| CodegenError::UnsupportedExpression("interface_call"))?
+        .into_pointer_value();
+    let mut lowered_args = Vec::with_capacity(args.len() + 1);
+    lowered_args.push(BasicMetadataValueEnum::from(data_ptr));
+    for arg in args {
+        lowered_args.push(BasicMetadataValueEnum::from(lower_expr(cg, arg)?));
+    }
+    let call = cg
+        .builder
+        .build_indirect_call(fn_ty, callable, &lowered_args, "iface_call")
+        .map_err(|_| CodegenError::UnsupportedExpression("interface_call"))?;
+    if let Some(value) = call.try_as_basic_value().left() {
+        Ok(value)
+    } else {
+        Ok(cg
+            .context
+            .ptr_type(AddressSpace::default())
+            .const_null()
+            .as_basic_value_enum())
+    }
+}
+
+#[cfg(feature = "llvm-backend")]
+fn interface_method_signature(
+    cg: &CodegenContext<'_, '_>,
+    interface_ty: aura_typecheck::TyId,
+    method_index: usize,
+) -> Result<(Vec<aura_typecheck::types::FuncParam>, aura_typecheck::TyId), CodegenError> {
+    let Some(Ty::Interface(members)) = cg.checked.types.get(interface_ty) else {
+        return Err(CodegenError::UnsupportedExpression("interface_call"));
+    };
+    let (_, method_ty) = members
+        .get(method_index)
+        .ok_or(CodegenError::UnsupportedExpression("interface_call"))?;
+    let Some(Ty::Func { params, ret }) = cg.checked.types.get(*method_ty).cloned() else {
+        return Err(CodegenError::UnsupportedExpression("interface_call"));
+    };
+    Ok((params, ret))
+}
+
+#[cfg(feature = "llvm-backend")]
+fn interface_thunk_type<'ctx>(
+    cg: &CodegenContext<'ctx, '_>,
+    interface_ty: aura_typecheck::TyId,
+    method_index: usize,
+) -> Result<inkwell::types::FunctionType<'ctx>, CodegenError> {
+    let (params, ret) = interface_method_signature(cg, interface_ty, method_index)?;
+    let mut llvm_params = Vec::with_capacity(params.len() + 1);
+    llvm_params.push(
+        cg.context
+            .ptr_type(AddressSpace::default())
+            .as_basic_type_enum()
+            .into(),
+    );
+    for param in params {
+        llvm_params.push(lower_basic_type(cg.context, &cg.checked.types, param.ty)?.into());
+    }
+    let ret_kind = classify_type(&cg.checked.types, ret)?;
+    Ok(match ret_kind {
+        AuraValueType::Void => cg.context.void_type().fn_type(&llvm_params, false),
+        _ => lower_basic_type(cg.context, &cg.checked.types, ret)?.fn_type(&llvm_params, false),
+    })
+}
+
+#[cfg(feature = "llvm-backend")]
+fn ensure_interface_thunk<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    interface_ty: aura_typecheck::TyId,
+    concrete_ty: aura_typecheck::TyId,
+    method_index: usize,
+    method_link: &str,
+    method_fn: FunctionValue<'ctx>,
+) -> Result<FunctionValue<'ctx>, CodegenError> {
+    let thunk_name = format!("__aura_iface_thunk_{}_{}_{}", concrete_ty.0, method_index, method_link);
+    if let Some(existing) = cg.module.get_function(&thunk_name) {
+        return Ok(existing);
+    }
+    let thunk_ty = interface_thunk_type(cg, interface_ty, method_index)?;
+    let thunk = cg.module.add_function(&thunk_name, thunk_ty, None);
+    let entry = cg.context.append_basic_block(thunk, "entry");
+    cg.builder.position_at_end(entry);
+
+    let data_param = thunk
+        .get_nth_param(0)
+        .ok_or(CodegenError::UnsupportedExpression("make_interface_obj"))?
+        .into_pointer_value();
+    let concrete_basic = lower_basic_type(cg.context, &cg.checked.types, concrete_ty)?;
+    let concrete_ptr = cg
+        .builder
+        .build_bit_cast(
+            data_param,
+            concrete_basic.ptr_type(AddressSpace::default()),
+            "iface_thunk_concrete_ptr",
+        )
+        .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?
+        .into_pointer_value();
+    let concrete_value = cg
+        .builder
+        .build_load(concrete_basic, concrete_ptr, "iface_thunk_concrete")
+        .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?;
+
+    let mut call_args = Vec::new();
+    call_args.push(BasicMetadataValueEnum::from(concrete_value));
+    for idx in 1..thunk.count_params() {
+        if let Some(param) = thunk.get_nth_param(idx) {
+            call_args.push(BasicMetadataValueEnum::from(param));
+        }
+    }
+    let call = cg
+        .builder
+        .build_call(method_fn, &call_args, "iface_thunk_call")
+        .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?;
+    if method_fn.get_type().get_return_type().is_some() {
+        let mut ret = call
+            .try_as_basic_value()
+            .left()
+            .ok_or(CodegenError::UnsupportedExpression("make_interface_obj"))?;
+        if let Some(expected_ret) = thunk.get_type().get_return_type() {
+            if let (BasicValueEnum::IntValue(ret_int), BasicTypeEnum::IntType(expected_int)) =
+                (ret, expected_ret)
+            {
+                let from_w = ret_int.get_type().get_bit_width();
+                let to_w = expected_int.get_bit_width();
+                if from_w != to_w {
+                    ret = if from_w > to_w {
+                        cg.builder
+                            .build_int_truncate(ret_int, expected_int, "iface_ret_trunc")
+                            .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?
+                            .as_basic_value_enum()
+                    } else {
+                        cg.builder
+                            .build_int_z_extend(ret_int, expected_int, "iface_ret_zext")
+                            .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?
+                            .as_basic_value_enum()
+                    };
+                }
+            }
+        }
+        cg.builder
+            .build_return(Some(&ret))
+            .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?;
+    } else {
+        cg.builder
+            .build_return(None)
+            .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?;
+    }
+    Ok(thunk)
 }
 
 #[cfg(feature = "llvm-backend")]

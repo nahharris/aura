@@ -33,7 +33,22 @@ impl GenericChecker {
                     let name = match interface {
                         TypeExpr::Named { name, .. } => name.as_str(),
                         TypeExpr::Interface(_) => "interface",
-                        _ => continue,
+                        other => {
+                            diagnostics.push(
+                                Diagnostic::error(Issue::UnknownInterface)
+                                    .with_related(
+                                        format!(
+                                            "generic parameter '{}' uses unsupported interface constraint form: {:?}",
+                                            param.name, other
+                                        ),
+                                        None,
+                                    )
+                                    .with_hint(
+                                        "use a named interface alias or `interface(...)` constraint",
+                                    ),
+                            );
+                            continue;
+                        }
                     };
                     if !self.interfaces.contains(name) {
                         diagnostics.push(
@@ -144,5 +159,23 @@ mod tests {
             &[StaticArg::Value(StaticValueExpr::Int("4".to_string()))],
         );
         assert!(ok.is_empty());
+    }
+
+    #[test]
+    fn malformed_interface_constraint_form_reports_diagnostic() {
+        let checker = GenericChecker::new();
+        let params = vec![GenericParam {
+            name: "T".to_string(),
+            constraints: vec![GenericConstraint::Interface(TypeExpr::Static(Box::new(
+                TypeExpr::Named {
+                    name: "Int".to_string(),
+                    args: Vec::new(),
+                },
+            )))],
+        }];
+
+        let diagnostics = checker.validate_constraints(&params);
+        assert!(!diagnostics.is_empty());
+        assert_eq!(diagnostics[0].code_str(), "E_UNKNOWN_INTERFACE");
     }
 }

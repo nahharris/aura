@@ -108,6 +108,20 @@ pub enum CheckedExpr {
         callee: Box<CheckedExpr>,
         args: Vec<CheckedExpr>,
     },
+    MakeInterfaceObj {
+        expr: Box<CheckedExpr>,
+        interface_ty: TyId,
+        concrete_ty: TyId,
+        method_links: Vec<String>,
+    },
+    InterfaceCall {
+        receiver: Box<CheckedExpr>,
+        interface_ty: TyId,
+        method: String,
+        method_index: usize,
+        args: Vec<CheckedExpr>,
+        ret_ty: TyId,
+    },
     MemoryOp {
         op: MemoryOpKind,
         item_ty: TyId,

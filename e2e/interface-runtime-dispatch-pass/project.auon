@@ -1,0 +1,4 @@
+name = "e2e/interface-runtime-dispatch-pass",
+version = "0.1.0",
+kind = .binary,
+dependencies = []

@@ -567,4 +567,30 @@ mod tests {
         assert!(out.exists());
         let _ = std::fs::remove_file(out);
     }
+
+    #[cfg(feature = "llvm-backend")]
+    #[test]
+    fn llvm_ir_lowers_interface_dispatch_through_vtable_indirection() {
+        let src = r#"
+            def ToDouble = interface(double: Func[(), ISize]);
+            def Int.double() -> ISize { 2 }
+            def call(x: ToDouble) -> ISize { x.double() }
+            def make_value() -> ToDouble { 1 }
+            def main() -> Void {
+                let value = make_value();
+                call(value);
+                ()
+            }
+        "#;
+        let program = Parser::parse_source(src).expect("parse");
+        let checked = check_module(&program);
+        let module = checked.module.expect("checked module");
+
+        let ir = super::emit_module_stub("iface_dispatch", &module).expect("emit ir");
+        assert!(ir.contains("__aura_iface_thunk_"));
+        assert!(
+            ir.contains("call i32 %iface_call") || ir.contains("call i64 %iface_call"),
+            "expected indirect iface call in IR:\n{ir}"
+        );
+    }
 }

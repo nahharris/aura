@@ -132,6 +132,10 @@ fn semantically_checked_ir_has_no_any_nodes_for_core_operator_path() {
             }
             CheckedExpr::Coerce { expr, .. } => contains_any(expr),
             CheckedExpr::Cast { expr, .. } => contains_any(expr),
+            CheckedExpr::MakeInterfaceObj { expr, .. } => contains_any(expr),
+            CheckedExpr::InterfaceCall { receiver, args, .. } => {
+                contains_any(receiver) || args.iter().any(contains_any)
+            }
             CheckedExpr::Continue { .. }
             | CheckedExpr::Ident(_)
             | CheckedExpr::Int(_)
@@ -287,6 +291,10 @@ fn pipe_operator_consumes_placeholder_in_rhs_call_without_any_nodes() {
             }
             CheckedExpr::Coerce { expr, .. } => contains_any(expr),
             CheckedExpr::Cast { expr, .. } => contains_any(expr),
+            CheckedExpr::MakeInterfaceObj { expr, .. } => contains_any(expr),
+            CheckedExpr::InterfaceCall { receiver, args, .. } => {
+                contains_any(receiver) || args.iter().any(contains_any)
+            }
             CheckedExpr::Continue { .. }
             | CheckedExpr::Ident(_)
             | CheckedExpr::Int(_)
@@ -397,6 +405,10 @@ fn enum_constructor_forms_typecheck_without_any_nodes() {
             }
             CheckedExpr::Coerce { expr, .. } => contains_any(expr),
             CheckedExpr::Cast { expr, .. } => contains_any(expr),
+            CheckedExpr::MakeInterfaceObj { expr, .. } => contains_any(expr),
+            CheckedExpr::InterfaceCall { receiver, args, .. } => {
+                contains_any(receiver) || args.iter().any(contains_any)
+            }
             CheckedExpr::Continue { .. }
             | CheckedExpr::Ident(_)
             | CheckedExpr::Int(_)
@@ -548,6 +560,10 @@ fn struct_payload_enum_sugar_lowers_to_single_struct_payload() {
             CheckedExpr::Coerce { expr, .. } | CheckedExpr::Cast { expr, .. } => {
                 contains_any_or_dot_ident(expr)
             }
+            CheckedExpr::MakeInterfaceObj { expr, .. } => contains_any_or_dot_ident(expr),
+            CheckedExpr::InterfaceCall { receiver, args, .. } => {
+                contains_any_or_dot_ident(receiver) || args.iter().any(contains_any_or_dot_ident)
+            }
             CheckedExpr::Continue { .. }
             | CheckedExpr::Ident(_)
             | CheckedExpr::Int(_)
@@ -616,4 +632,35 @@ fn enum_match_struct_payload_pattern_records_field_bindings() {
     assert_eq!(err_arm.struct_bindings[0].field_index, 0);
     assert_eq!(err_arm.struct_bindings[1].name, "status");
     assert_eq!(err_arm.struct_bindings[1].field_index, 1);
+}
+
+#[test]
+fn interface_values_lower_with_runtime_object_and_dynamic_dispatch_nodes() {
+    let src = r#"
+        def ToDouble = interface(double: Func[(), ISize]);
+        def Int.double() -> ISize { 2 }
+        def call(x: ToDouble) -> ISize { x.double() }
+        def value: ToDouble = 1;
+        def main() -> Void {
+            call(value);
+            ()
+        }
+    "#;
+    let parsed = Parser::parse_source(src).expect("parse should succeed");
+    let checked = check_module(&parsed);
+    let module = checked
+        .module
+        .unwrap_or_else(|| panic!("module should exist: {:?}", checked.diagnostics));
+
+    let call_decl = module
+        .ir
+        .declarations
+        .iter()
+        .find(|decl| decl.name == "call")
+        .expect("call function should exist");
+    assert!(matches!(
+        call_decl.value,
+        CheckedExpr::InterfaceCall { .. }
+    ));
+
 }

@@ -84,6 +84,10 @@ The exported helpers use this object model:
 
 Generated code treats `RawAlloc[T]`, `Slice[T]`, and `Ref[T]` as opaque pointer-shaped handles. The runtime host owns the concrete structs and stores managed allocation bytes in zero-initialized leak-only storage.
 
+### Interface object ABI (compiler-side)
+
+Compiler-generated LLVM IR represents interface values as a data pointer plus a vtable/witness pointer. The runtime host does not currently expose dedicated helper symbols for interface objects; dispatch support is emitted directly by codegen.
+
 - `raw_alloc_new(count, elem_size, elem_align, layout_id, trace_kind)` allocates process-lifetime storage for `count` elements and records GC-prep metadata.
 - `raw_alloc_slice(alloc)` creates an opaque full-allocation slice handle.
 - `slice_get(slice, index, out)` copies one element into compiler-provided stack storage and returns `false` when out of bounds.
