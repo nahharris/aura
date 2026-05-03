@@ -91,6 +91,7 @@ const RUNTIME_FUNCTIONS: [RuntimeFunctionAbi; 10] = [
 thread_local! {
     static PANIC_ACTIVE: Cell<bool> = const { Cell::new(false) };
     static PANIC_HOOK_ENABLED: Cell<bool> = const { Cell::new(false) };
+    static CATCH_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
 const BYTES_GET_OOB_MSG: &[u8] = b"Bytes.get index out of bounds\0";
@@ -405,15 +406,26 @@ pub unsafe extern "C" fn aura_panic(message: *const u8) {
         }
     });
     PANIC_ACTIVE.with(|active| active.set(true));
+    let in_catch_scope = CATCH_DEPTH.with(|depth| depth.get() > 0);
+    if !in_catch_scope {
+        std::process::exit(1);
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn aura_catch_begin() {
+    CATCH_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
     PANIC_ACTIVE.with(|active| active.set(false));
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn aura_catch_end() -> i32 {
+    CATCH_DEPTH.with(|depth| {
+        let current = depth.get();
+        if current > 0 {
+            depth.set(current - 1);
+        }
+    });
     PANIC_ACTIVE.with(|active| {
         let was_active = active.get();
         active.set(false);
