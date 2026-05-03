@@ -186,6 +186,12 @@ fn gc_roots() -> &'static Mutex<std::collections::HashMap<usize, usize>> {
     ROOTS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
+fn lock_gc_roots() -> std::sync::MutexGuard<'static, std::collections::HashMap<usize, usize>> {
+    gc_roots()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 unsafe fn bytes_ref<'a>(bytes: *const AuraBytes) -> &'a AuraBytes {
     // The Aura runtime treats `Bytes` as an opaque owned pointer.
     unsafe { &*bytes }
@@ -251,9 +257,8 @@ pub extern "C" fn gc_register_root(slot_ptr: *mut u8, layout_id: usize) {
     if slot_ptr.is_null() {
         return;
     }
-    if let Ok(mut roots) = gc_roots().lock() {
-        roots.insert(slot_ptr as usize, layout_id);
-    }
+    let mut roots = lock_gc_roots();
+    roots.insert(slot_ptr as usize, layout_id);
 }
 
 #[unsafe(no_mangle)]
@@ -261,9 +266,8 @@ pub extern "C" fn gc_unregister_root(slot_ptr: *mut u8) {
     if slot_ptr.is_null() {
         return;
     }
-    if let Ok(mut roots) = gc_roots().lock() {
-        roots.remove(&(slot_ptr as usize));
-    }
+    let mut roots = lock_gc_roots();
+    roots.remove(&(slot_ptr as usize));
 }
 
 #[unsafe(no_mangle)]
@@ -514,7 +518,7 @@ pub extern "C" fn syscall_exit(code: i32) -> ! {
 mod tests {
     use super::{
         aura_catch_begin, aura_catch_end, bytes_get, bytes_new, bytes_set, gc_register_root,
-        gc_roots, gc_safepoint, gc_unregister_root, raw_alloc_len, raw_alloc_new, raw_alloc_ref,
+        gc_safepoint, gc_unregister_root, lock_gc_roots, raw_alloc_len, raw_alloc_new, raw_alloc_ref,
         raw_alloc_ref_alloc, raw_alloc_slice, ref_get, ref_set, slice_get, slice_ref_at, slice_set,
         string_into, syscall_write, AuraBytes,
     };
@@ -654,19 +658,20 @@ mod tests {
         let root = Box::into_raw(Box::new(7u8));
         let key = root as usize;
         {
-            let mut roots = gc_roots().lock().expect("root lock");
+            let mut roots = lock_gc_roots();
             roots.clear();
         }
         gc_register_root(root, 99);
         {
-            let roots = gc_roots().lock().expect("root lock");
+            let roots = lock_gc_roots();
             assert_eq!(roots.get(&key), Some(&99));
         }
         gc_unregister_root(root);
         {
-            let roots = gc_roots().lock().expect("root lock");
+            let roots = lock_gc_roots();
             assert!(!roots.contains_key(&key));
         }
+        unsafe { drop(Box::from_raw(root)) };
     }
 
     #[test]

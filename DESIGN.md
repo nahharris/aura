@@ -792,7 +792,7 @@ Operators are listed from **lowest** to **highest** precedence. All binary opera
 | ------------ | ----------------- | ----------------------------------------- |
 | 1 (lowest)   | `=`               | Assignment (right-associative)            |
 | 2            | `?:`              | Elvis / null-coalescing                   |
-| 3            | `                 |                                           |
+| 3            | &#124;&#124;      | Logical OR                                |
 | 4            | `&&`              | Logical AND                               |
 | 5            | `==` `!=`         | Equality / Inequality                     |
 | 6            | `<` `>` `<=` `>=` | Comparison                                |
@@ -977,7 +977,7 @@ The `then` label may be written explicitly on the trailing lambda when desired f
 if (ok) then { doThing(); } else { doOther(); }
 ```
 
-Multi-branch conditionals are handled by `cases` — see `[cases](#cases)`.
+Multi-branch conditionals are handled by `cases` — see [cases](#cases).
 
 ### `cases`
 

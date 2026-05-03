@@ -1633,7 +1633,6 @@ fn lower_call<'ctx, 'm>(
     callee: &CheckedExpr,
     args: &[CheckedExpr],
 ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
-    let _ = call_memory_runtime(cg, "gc_safepoint", &[])?;
     if let CheckedExpr::DotIdent { name, payload } = callee {
         if let Some(payload_expr) = payload {
             let _ = lower_expr(cg, payload_expr)?;
