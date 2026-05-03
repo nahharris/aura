@@ -1412,8 +1412,19 @@ defstub string_into: Func[(text: String), Bytes];
 of bytes written. The current host implementation recognizes `1` as stdout and `2` as stderr; it
 returns `-1` on host write failure.
 
-`Bytes.get` and `Bytes.set` are intentionally unchecked for now. Out-of-bounds access is undefined
-behavior until panic handlers exist.
+`Bytes.get` and `Bytes.set` perform runtime bounds checks. Out-of-bounds access now routes through
+the panic path.
+
+Aura provides panic primitives:
+
+```aura
+panic "something went wrong"
+let recovered = catch (panic "boom") else { "fallback" }
+```
+
+- `panic "message"` raises a runtime panic with a string payload.
+- `catch (expr) else { fallback }` evaluates `expr` in a guarded region and returns `fallback` if
+  panic is raised while evaluating `expr`.
 
 `String` remains the public string-literal type; converting it to a writeable buffer requires
 `String.into()`, which copies the UTF-8 bytes into a fresh owned `Bytes` value.

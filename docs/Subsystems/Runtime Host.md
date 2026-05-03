@@ -28,6 +28,10 @@ Provide the native runtime boundary required by generated code and act as the si
 - `bytes_get`
 - `bytes_set`
 - `string_into`
+- `aura_panic`
+- `aura_catch_begin`
+- `aura_catch_end`
+- `aura_panic_set_hook`
 
 The host also implements compiler-internal managed-memory helpers:
 
@@ -64,7 +68,14 @@ The exported helpers use this object model:
 - `bytes_set(bytes, index, value)` writes one byte
 - `string_into(string)` copies a NUL-terminated Aura string literal/runtime string into fresh owned `Bytes`
 
-Bounds checks are intentionally absent right now; out-of-bounds `get`/`set` is UB until panic handling exists.
+`bytes_get`/`bytes_set` now perform runtime bounds checks and route out-of-bounds access through the panic runtime path.
+
+## Panic Runtime Surface
+
+- `aura_panic(message)` marks panic state and reports the message to stderr.
+- `aura_catch_begin()` clears per-thread panic state before evaluating a guarded expression.
+- `aura_catch_end()` returns `1` when panic was observed in the guarded region and clears state.
+- `aura_panic_set_hook(message)` enables a host-side panic-hook marker (current hook behavior is intentionally minimal).
 
 ## Managed Memory ABI
 

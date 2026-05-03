@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::io::Write;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,8 +30,12 @@ const BYTES_SET_PARAMS: [RuntimeTypeRef; 3] = [
     RuntimeTypeRef::UInt8,
 ];
 const STRING_INTO_PARAMS: [RuntimeTypeRef; 1] = [RuntimeTypeRef::String];
+const AURA_PANIC_PARAMS: [RuntimeTypeRef; 1] = [RuntimeTypeRef::String];
+const AURA_CATCH_END_PARAMS: [RuntimeTypeRef; 0] = [];
+const AURA_CATCH_BEGIN_PARAMS: [RuntimeTypeRef; 0] = [];
+const AURA_PANIC_SET_HOOK_PARAMS: [RuntimeTypeRef; 1] = [RuntimeTypeRef::String];
 
-const RUNTIME_FUNCTIONS: [RuntimeFunctionAbi; 6] = [
+const RUNTIME_FUNCTIONS: [RuntimeFunctionAbi; 10] = [
     RuntimeFunctionAbi {
         name: "syscall_exit",
         params: &SYSCALL_EXIT_PARAMS,
@@ -61,7 +66,36 @@ const RUNTIME_FUNCTIONS: [RuntimeFunctionAbi; 6] = [
         params: &STRING_INTO_PARAMS,
         ret: RuntimeTypeRef::Bytes,
     },
+    RuntimeFunctionAbi {
+        name: "aura_panic",
+        params: &AURA_PANIC_PARAMS,
+        ret: RuntimeTypeRef::Void,
+    },
+    RuntimeFunctionAbi {
+        name: "aura_catch_begin",
+        params: &AURA_CATCH_BEGIN_PARAMS,
+        ret: RuntimeTypeRef::Void,
+    },
+    RuntimeFunctionAbi {
+        name: "aura_catch_end",
+        params: &AURA_CATCH_END_PARAMS,
+        ret: RuntimeTypeRef::Int32,
+    },
+    RuntimeFunctionAbi {
+        name: "aura_panic_set_hook",
+        params: &AURA_PANIC_SET_HOOK_PARAMS,
+        ret: RuntimeTypeRef::Void,
+    },
 ];
+
+thread_local! {
+    static PANIC_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    static PANIC_HOOK_ENABLED: Cell<bool> = const { Cell::new(false) };
+    static CATCH_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+const BYTES_GET_OOB_MSG: &[u8] = b"Bytes.get index out of bounds\0";
+const BYTES_SET_OOB_MSG: &[u8] = b"Bytes.set index out of bounds\0";
 
 pub fn runtime_functions() -> &'static [RuntimeFunctionAbi] {
     &RUNTIME_FUNCTIONS
@@ -321,18 +355,28 @@ unsafe fn raw_alloc_ref_alloc(reference: *const AuraRef) -> *mut AuraRawAlloc {
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `bytes` must point to a valid `AuraBytes`, and `index` must be in bounds.
+/// `bytes` must point to a valid `AuraBytes`.
+/// Out-of-bounds `index` values raise `aura_panic` and return `0`.
 pub unsafe extern "C" fn bytes_get(bytes: *const AuraBytes, index: usize) -> u8 {
-    unsafe { bytes_ref(bytes).storage[index] }
+    let bytes = unsafe { bytes_ref(bytes) };
+    if index >= bytes.len {
+        unsafe { aura_panic(BYTES_GET_OOB_MSG.as_ptr()) };
+        return 0;
+    }
+    bytes.storage[index]
 }
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `bytes` must point to a valid `AuraBytes`, and `index` must be in bounds.
+/// `bytes` must point to a valid `AuraBytes`.
+/// Out-of-bounds `index` values raise `aura_panic` and leave storage unchanged.
 pub unsafe extern "C" fn bytes_set(bytes: *mut AuraBytes, index: usize, value: u8) {
-    unsafe {
-        bytes_mut(bytes).storage[index] = value;
+    let bytes = unsafe { bytes_mut(bytes) };
+    if index >= bytes.len {
+        unsafe { aura_panic(BYTES_SET_OOB_MSG.as_ptr()) };
+        return;
     }
+    bytes.storage[index] = value;
 }
 
 #[unsafe(no_mangle)]
@@ -342,6 +386,56 @@ pub unsafe extern "C" fn string_into(string: *const u8) -> *mut AuraBytes {
     let len = unsafe { c_string_len(string) };
     let storage = unsafe { std::slice::from_raw_parts(string, len) }.to_vec();
     Box::into_raw(Box::new(AuraBytes::from_storage(storage)))
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+/// `message` should point to a valid NUL-terminated UTF-8 byte sequence.
+pub unsafe extern "C" fn aura_panic(message: *const u8) {
+    let message = if message.is_null() {
+        "panic".to_string()
+    } else {
+        let len = unsafe { c_string_len(message) };
+        let bytes = unsafe { std::slice::from_raw_parts(message, len) };
+        String::from_utf8_lossy(bytes).into_owned()
+    };
+    let _ = writeln!(std::io::stderr().lock(), "panic: {message}");
+    PANIC_HOOK_ENABLED.with(|enabled| {
+        if enabled.get() {
+            let _ = writeln!(std::io::stderr().lock(), "panic hook invoked");
+        }
+    });
+    PANIC_ACTIVE.with(|active| active.set(true));
+    let in_catch_scope = CATCH_DEPTH.with(|depth| depth.get() > 0);
+    if !in_catch_scope {
+        std::process::exit(1);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aura_catch_begin() {
+    CATCH_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+    PANIC_ACTIVE.with(|active| active.set(false));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aura_catch_end() -> i32 {
+    CATCH_DEPTH.with(|depth| {
+        let current = depth.get();
+        if current > 0 {
+            depth.set(current - 1);
+        }
+    });
+    PANIC_ACTIVE.with(|active| {
+        let was_active = active.get();
+        active.set(false);
+        if was_active { 1 } else { 0 }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn aura_panic_set_hook(_message: *const u8) {
+    PANIC_HOOK_ENABLED.with(|enabled| enabled.set(true));
 }
 
 #[unsafe(no_mangle)]
@@ -378,7 +472,8 @@ pub extern "C" fn syscall_exit(code: i32) -> ! {
 #[cfg(test)]
 mod tests {
     use super::{
-        bytes_get, bytes_new, bytes_set, raw_alloc_len, raw_alloc_new, raw_alloc_ref,
+        aura_catch_begin, aura_catch_end, bytes_get, bytes_new, bytes_set, raw_alloc_len,
+        raw_alloc_new, raw_alloc_ref,
         raw_alloc_ref_alloc, raw_alloc_slice, ref_get, ref_set, slice_get, slice_ref_at, slice_set,
         string_into, syscall_write, AuraBytes,
     };
@@ -398,6 +493,23 @@ mod tests {
             bytes_set(bytes, 1, 65);
             assert_eq!(bytes_get(bytes, 1), 65);
         }
+    }
+
+    #[test]
+    fn bytes_get_out_of_bounds_marks_panic_state() {
+        let bytes = bytes_new(1);
+        aura_catch_begin();
+        let value = unsafe { bytes_get(bytes, 9) };
+        assert_eq!(value, 0);
+        assert_eq!(aura_catch_end(), 1);
+    }
+
+    #[test]
+    fn bytes_set_out_of_bounds_marks_panic_state() {
+        let bytes = bytes_new(1);
+        aura_catch_begin();
+        unsafe { bytes_set(bytes, 9, 1) };
+        assert_eq!(aura_catch_end(), 1);
     }
 
     #[test]

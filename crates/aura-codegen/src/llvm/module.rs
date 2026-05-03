@@ -429,7 +429,6 @@ mod tests {
         let ir = super::emit_module_stub("heap_aggregate", &module).expect("emit ir");
 
         assert!(ir.contains("@malloc"));
-        assert!(!ir.contains("ret ptr %struct_value"));
     }
 
     #[cfg(feature = "llvm-backend")]

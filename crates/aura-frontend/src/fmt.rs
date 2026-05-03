@@ -440,6 +440,12 @@ impl<'a> Formatter<'a> {
                 self.write_expr(expr, false);
                 self.out.push_str("!!");
             }
+            Expr::Catch { expr, fallback } => {
+                self.out.push_str("catch (");
+                self.write_expr(expr, false);
+                self.out.push_str(") else ");
+                self.write_block_expr(fallback, true);
+            }
             Expr::MacroApply {
                 macro_name,
                 static_args,

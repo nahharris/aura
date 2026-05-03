@@ -1203,6 +1203,13 @@ fn collect_expr_external_link_names(
         CheckedExpr::ForceUnwrap { expr, .. } => {
             collect_expr_external_link_names(expr, extern_links, out);
         }
+        CheckedExpr::Panic { message } => {
+            collect_expr_external_link_names(message, extern_links, out);
+        }
+        CheckedExpr::Catch { expr, fallback, .. } => {
+            collect_expr_external_link_names(expr, extern_links, out);
+            collect_expr_external_link_names(fallback, extern_links, out);
+        }
         CheckedExpr::AssignField { object, value, .. } => {
             collect_expr_external_link_names(object, extern_links, out);
             collect_expr_external_link_names(value, extern_links, out);

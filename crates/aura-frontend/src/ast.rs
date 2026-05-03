@@ -161,6 +161,10 @@ pub enum Expr {
     ForceUnwrap {
         expr: Box<Expr>,
     },
+    Catch {
+        expr: Box<Expr>,
+        fallback: Box<Expr>,
+    },
     MacroApply {
         macro_name: String,
         static_args: Vec<StaticArg>,

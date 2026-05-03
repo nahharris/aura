@@ -39,10 +39,11 @@ Hold the Aura standard library package as Aura source rather than Rust implement
 ## Internal Structure
 
 - `src/runtime.aura` is the only Aura source file in the STL that names host ABI symbols directly.
-- `src/core.aura` owns `defstub` declarations for `syscall_*`, byte/string runtime helpers, and builtin forms such as `if`, `cases`, `loop`, `return`, `break`, and `continue`.
+- `src/core.aura` owns `defstub` declarations for `syscall_*`, byte/string runtime helpers, panic/catch runtime hooks, and builtin forms such as `if`, `cases`, `loop`, `return`, `break`, and `continue`.
 - `src/memory.aura` documents the safe managed-memory method surface. It intentionally does not define `defstub`s for raw allocation helpers.
 - `src/io.aura` and `src/os.aura` call through `runtime.aura` instead of binding `syscall_*` or `string_into` themselves.
 - `src/lib.aura` re-exports the prelude-like surface consumed by programs, including the `core.aura` stub surface.
+- `src/panic.aura` provides the `std::panic` module surface (`panic`, `catch`, `set_hook`, and `Panic` payload enum).
 - `src/os.aura` now defines the real `ExitCode = enum(success, failure, custom: Int)` surface and `ExitCode.into(self)` as ordinary Aura declarations.
 
 ## Import Behavior
