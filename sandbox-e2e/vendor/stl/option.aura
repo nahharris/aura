@@ -1,1 +1,0 @@
-def[T] Option = enum(null: (), some: T);

@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Architecture/Testing Strategy.md",
+                "file": "Home.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Testing Strategy"
+              "title": "Home"
             }
           }
         ]
@@ -182,6 +182,13 @@
   },
   "active": "64d3a652f7f86ae7",
   "lastOpenFiles": [
+    "_meta/taxonomy.md",
+    "Home.md",
+    "hot.md",
+    "log.md",
+    "index.md",
+    "typecheck-ir.md",
+    "Architecture/Testing Strategy.md",
     "Issues/Panic System.md",
     "Issues",
     "Architecture/Repo Map.md",
@@ -192,7 +199,6 @@
     "Subsystems/Runtime Host.md",
     "Subsystems/Diagnostics.md",
     "Language/AUON.md",
-    "Architecture/Testing Strategy.md",
     "Bases/Subsystems.base",
     "Bases/Decisions.base",
     "Contracts/Typecheck IR.md",
@@ -204,8 +210,6 @@
     "Language/Examples Index.md",
     "Language/Syntax And Semantics.md",
     "Language/Design Overview.md",
-    "Subsystems/CLI.md",
-    "Home.md",
-    "Bem-vindo.md"
+    "Subsystems/CLI.md"
   ]
 }

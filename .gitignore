@@ -5,3 +5,4 @@ target
 /e2e/*/target/
 /e2e/*/toolchains/
 node_modules/
+.worktrees/

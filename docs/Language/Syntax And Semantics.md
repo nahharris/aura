@@ -52,3 +52,12 @@ This note is a reader's map into `DESIGN.md`, not a replacement for it.
 - lexing: `crates/aura-frontend/src/lexer.rs`
 - parsing: `crates/aura-frontend/src/parser.rs`
 - static constraints: `crates/aura-frontend/src/static_eval.rs`
+
+## Related
+
+- [[Language/Design Overview]]
+- [[Language/AUON]]
+- [[Contracts/Typecheck IR]]
+- [[Subsystems/Frontend]]
+- [[Subsystems/Typecheck]]
+- [[Home]]

@@ -14,7 +14,7 @@ related_contracts:
   []
 related_notes:
   - "Language/Syntax And Semantics"
-last_reviewed: 2026-04-22
+last_reviewed: 2026-05-03
 ---
 
 # Editor Tooling
@@ -41,13 +41,14 @@ Bundle editor-facing language support and the shared parser/query assets used ac
 - `tool/tree-sitter-aura/grammar.js` parses both Aura module/source files and AUON documents
 - canonical Tree-sitter query source now lives under `tool/tree-sitter-aura/queries/`
 - editor integrations should copy from those queries only when an editor needs capture-name or behavior deltas
+- `tool/aura-zed/` pins an external `tree-sitter-aura` revision in `extension.toml`; its language query files must match the node names in the checked-out grammar's `src/node-types.json`
 
 ## Current Syntax Coverage
 
 - Aura coverage tracks the current frontend surface, not the older pre-update syntax
 - top-level declarations are `def`, `defmacro`, and `use`
-- supported modern forms include `doc[...] def ...`, `defmacro[static_args] name(...) -> T { ... }`, macro application, static args, labeled trailing closures, label expressions, char literals, and current collection/comment forms
-- Tree-sitter `use_field` nodes label `source` before `local`, matching field-first `use (exported = local_alias) = "module"` syntax.
+- supported modern forms include function and value `def` declarations, `defmacro`, `pub`, `let`, control-flow expressions, labeled trailing closures, atoms, dot variants, and current collection/comment forms
+- Tree-sitter `use_field` nodes are positional in the Zed-pinned grammar, so Zed queries should avoid field predicates such as `source:` or `local:` unless the pinned grammar adds those fields.
 - AUON coverage includes primitives, aliases, variants, tuples, structs, dicts, lists, comments, and document-level root wrapper omission for list/struct/dict
 
 ## Editor Split
@@ -55,8 +56,16 @@ Bundle editor-facing language support and the shared parser/query assets used ac
 - Zed and Neovim consume the shared Tree-sitter parser for both `aura` and `auon`
 - VS Code remains TextMate-based in this phase, with separate Aura and AUON grammars plus snippets and language configuration
 - query changes should be made in `tool/tree-sitter-aura/queries/` first, then mirrored into editor-specific folders where needed
+- Zed query drift commonly appears as `Invalid node type` during extension reload; compare `tool/aura-zed/languages/**.scm` against `tool/aura-zed/grammars/aura/src/node-types.json` before changing captures.
 
 ## Verification
 
 - parser changes should be checked with `tree-sitter generate` and `tree-sitter test`
 - doc-affecting tooling changes should also run `cargo xtask docs sync` and `cargo xtask docs check`
+
+## Related
+
+- [[Subsystems/Frontend]]
+- [[Language/Syntax And Semantics]]
+- [[Architecture/Testing Strategy]]
+- [[Home]]

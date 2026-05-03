@@ -16,7 +16,7 @@ related_contracts:
   - "Contracts/Typecheck IR"
 related_notes:
   - "Language/Syntax And Semantics"
-last_reviewed: 2026-04-23
+last_reviewed: 2026-05-03
 ---
 
 # Typecheck
@@ -38,9 +38,12 @@ Resolve symbols, enforce type rules, and emit checked IR for downstream codegen.
 - Project/module resolution constructs a `CheckContext` before typechecking and supplies:
   - direct imported values with stable link names
   - direct imported type aliases from dependency `src/lib.aura` entrypoints
+  - imported method metadata keyed by receiver type shape
   - namespace imports keyed by alias
 - Imported values are emitted into checked IR as extern declarations so downstream codegen can declare or link them without re-typechecking provider modules.
 - Imported type aliases stay in the type namespace only; they do not create extern runtime declarations.
+- Imported generic methods match structurally against instantiated receiver types, so methods declared on `List[T]` are available through an imported `List[String]`.
+- Member call dispatch resolves imported methods before builtin-member fallback; this ordering is required so generic `List[T]` methods (`new`, `push`, `get`) do not degrade into unrelated builtin memory/bytes operations.
 
 ## Runtime Surface
 
@@ -74,7 +77,17 @@ Resolve symbols, enforce type rules, and emit checked IR for downstream codegen.
 - Panic/catch lowering now introduces dedicated `CheckedExpr::Panic` and `CheckedExpr::Catch` nodes.
 - `Return`, `Break`, and `Continue` carry resolved target names so LLVM lowering can emit direct control transfer.
 - Managed-memory calls lower to `CheckedExpr::MemoryOp` nodes so backend codegen receives the operation kind, element type, result type, and already-lowered arguments without exposing raw pointers to Aura source.
+- Postfix `!!` lowers to `CheckedExpr::ForceUnwrap` by inspecting enum shape, not by hardcoding `Option`: the source type must be an enum with `null` and exactly one payload variant.
+- Blocks with a trailing unit after a diverging expression remain `Never`, allowing `return value;` to typecheck in non-`Void` functions.
 
 ## Testing
 
 Contract snapshots and diagnostics snapshots live under `crates/aura-typecheck/tests/`.
+
+## Related
+
+- [[Subsystems/Frontend]]
+- [[Subsystems/Codegen]]
+- [[Subsystems/Diagnostics]]
+- [[Contracts/Typecheck IR]]
+- [[Home]]

@@ -1,6 +1,9 @@
 ---
 title: "Typecheck IR"
 kind: contract
+aliases:
+  - "typecheck-ir"
+  - "Aura Typecheck IR Contract"
 tags:
   - aura
   - contract

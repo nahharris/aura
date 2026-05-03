@@ -9,4 +9,5 @@ def main() -> Void {
     l.push("b");
     l.push("c");
     println(to_string(l.get(0)));
+    println(to_string(l.get(5)));
 }

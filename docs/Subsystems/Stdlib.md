@@ -1,19 +1,21 @@
 ---
-title: "Stdlib"
+
+## title: "Stdlib"
+
 kind: subsystem
 status: active
 owner: repo
 source_paths:
-  - "aura-stl/project.auon"
-  - "aura-stl/src/"
+
+- "aura-stl/project.auon"
+- "aura-stl/src/"
 depends_on:
   []
 related_contracts:
   []
 related_notes:
-  - "Language/Examples Index"
-last_reviewed: 2026-04-21
----
+- "Language/Examples Index"
+last_reviewed: 2026-05-03
 
 # Stdlib
 
@@ -33,17 +35,18 @@ Hold the Aura standard library package as Aura source rather than Rust implement
 - I/O helpers such as `print`, `println`, `printerr`, and `printerrln`
 - process-exit helpers exported through `os.aura`
 - prelude exports such as `Option`, `Result`, `ExitCode`, `print`, and `exit`
+- `List[T]` and its methods are ordinary Aura source over managed `Slice[T]`, with `Option[T]` imported from `option.aura`
 - real library-defined enums and methods used by consumers through normal import/type resolution
 - documented managed-memory handles `RawAlloc[T]`, `Slice[T]`, and `Ref[T]`; these are compiler-recognized opaque types, not Aura-defined raw pointer stubs
 
 ## Internal Structure
 
 - `src/runtime.aura` is the only Aura source file in the STL that names host ABI symbols directly.
-- `src/core.aura` owns `defstub` declarations for `syscall_*`, byte/string runtime helpers, panic/catch runtime hooks, and builtin forms such as `if`, `cases`, `loop`, `return`, `break`, and `continue`.
+- `src/core.aura` owns `defstub` declarations for `syscall_*`, byte/string runtime helpers, and builtin forms such as `if`, `cases`, `loop`, `return`, `break`, and `continue`.
 - `src/memory.aura` documents the safe managed-memory method surface. It intentionally does not define `defstub`s for raw allocation helpers.
 - `src/io.aura` and `src/os.aura` call through `runtime.aura` instead of binding `syscall_*` or `string_into` themselves.
-- `src/lib.aura` re-exports the prelude-like surface consumed by programs, including the `core.aura` stub surface.
-- `src/panic.aura` provides the `std::panic` module surface (`panic`, `catch`, `set_hook`, and `Panic` payload enum).
+- `src/lib.aura` re-exports the prelude-like value/type surface consumed by programs and avoids importing control-flow macro symbols (`return`, `break`, `continue`) through module value exports.
+- `src/list.aura` imports `Option` from `option.aura` and uses postfix `!!` only when copying from safe `Slice.get` results inside capacity growth.
 - `src/os.aura` now defines the real `ExitCode = enum(success, failure, custom: Int)` surface and `ExitCode.into(self)` as ordinary Aura declarations.
 
 ## Import Behavior
@@ -56,3 +59,11 @@ Hold the Aura standard library package as Aura source rather than Rust implement
 
 - Consumers can rely on `ExitCode.success`, `.success`, `ExitCode.custom(100)`, and `.custom(100)` because enum constructor lowering now comes from the imported type alias definition, not compiler name checks.
 - `exit(code: ExitCode)` is a normal STL function that converts the enum to an `Int` through `ExitCode.into(self)` and then calls `runtime.exit_process`.
+
+## Related
+
+- [[Language/Syntax And Semantics]]
+- [[Language/Examples Index]]
+- [[Subsystems/Typecheck]]
+- [[Subsystems/Runtime Host]]
+- [[Home]]

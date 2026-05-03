@@ -34,3 +34,11 @@ Expose end-user commands such as project init, build, formatting, and doc extrac
 
 CLI-local unit tests live in `crates/aura-cli/src/main.rs`.
 
+## Related
+
+- [[Subsystems/Frontend]]
+- [[Subsystems/Typecheck]]
+- [[Subsystems/Codegen]]
+- [[Language/Examples Index]]
+- [[Home]]
+

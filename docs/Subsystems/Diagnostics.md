@@ -32,3 +32,11 @@ Provide shared diagnostic types, severity/stage metadata, issue codes, and type 
 - `Stage`
 - `Span`
 
+## Related
+
+- [[Subsystems/Frontend]]
+- [[Subsystems/Typecheck]]
+- [[Subsystems/CLI]]
+- [[Architecture/Testing Strategy]]
+- [[Home]]
+

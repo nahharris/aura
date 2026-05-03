@@ -1,1 +1,0 @@
-def[T, E] Result = enum(ok: T, err: E);

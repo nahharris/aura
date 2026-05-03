@@ -38,6 +38,9 @@ Own the syntax-facing compiler surface: tokens, lexing, AST construction, parsin
 - Assignment-form `def` preserves static parameters for type aliases, so `def[T] Alias = ...` reaches typecheck with its alias scheme intact.
 - Member-call parsing accepts generic type receivers such as `RawAlloc[Int].new(4)` by representing `RawAlloc[Int]` as a type-application receiver before the `.new` call.
 - Macro application detection leaves uppercase generic receivers followed by `.` to the member-call parser instead of treating them as macro calls.
+- Known macro names accept parenthesized operands, so `return (field = value)` remains a macro application instead of being parsed as a call. Unknown lowercase `foo(...)` still parses as an ordinary call.
+- Postfix `!!` parses as `Expr::ForceUnwrap` for safe enum-shaped nullable values.
+- A trailing semicolon before `}` contributes an explicit unit expression, so `{ expr; }` has `Void` result unless control flow already diverged.
 
 ## Assignable Places
 
@@ -58,3 +61,11 @@ Own the syntax-facing compiler surface: tokens, lexing, AST construction, parsin
 ## Testing
 
 Primary parser contract tests live in `crates/aura-frontend/src/parser.rs`. Snapshot diagnostics live in `crates/aura-frontend/tests/diagnostics_snapshot.rs`.
+
+## Related
+
+- [[Language/Design Overview]]
+- [[Language/Syntax And Semantics]]
+- [[Contracts/Typecheck IR]]
+- [[Subsystems/Typecheck]]
+- [[Home]]

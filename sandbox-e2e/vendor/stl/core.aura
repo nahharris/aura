@@ -1,9 +1,0 @@
-def[T] identity(value: T) -> T { value }
-
-def[T] constant(value: T, ignored: Any) -> T { value }
-
-def[A, B, C] compose(f: Func[B, C], g: Func[A, B], value: A) -> C {
-    f(g(value))
-}
-
-def[A, B] apply(value: A, f: Func[A, B]) -> B { f(value) }

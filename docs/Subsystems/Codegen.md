@@ -15,7 +15,7 @@ related_contracts:
   - "Contracts/Typecheck IR"
 related_notes:
   - "Architecture/Build And Dev Workflow"
-last_reviewed: 2026-04-21
+last_reviewed: 2026-05-03
 ---
 
 # Codegen
@@ -40,6 +40,8 @@ Checked-IR control-flow nodes lower directly to LLVM block/branch structures:
 - `Loop` produces condition/body/break blocks and records loop targets for nested jumps.
 - `Catch` uses runtime panic-state guards (`aura_catch_begin`/`aura_catch_end`) and merge-block result selection.
 - `Return`, `Break`, and `Continue` emit direct control transfer using resolved checked-IR targets.
+- `ForceUnwrap` checks the enum tag against the payload variant and lowers the payload load on the success path; the null path is currently an LLVM unreachable trap path.
+- `Loop` result slots are allocated before the entry branch so generated LLVM blocks remain valid.
 
 For the first byte-buffer path, checked member calls are lowered to runtime symbols:
 
@@ -63,10 +65,18 @@ Managed memory operations lower from `CheckedExpr::MemoryOp` nodes rather than p
 
 The element size and alignment come from LLVM type layout classification in codegen; Aura source cannot call the raw helper symbols directly.
 
-Struct and tuple literals lower to aggregate storage pointers in LLVM. `FieldAccess` loads from a resolved field GEP, and `AssignField` stores through the same indexed field pointer before returning the assigned value.
+Struct and tuple literals lower to aggregate storage pointers in LLVM. Aggregate literal storage is now heap-backed (`malloc`) rather than function-local `alloca` storage so returned aggregates (for example `List[T].new()`) do not escape dangling stack pointers across call boundaries. `FieldAccess` loads from a resolved field GEP, and `AssignField` stores through the same indexed field pointer before returning the assigned value.
 
 `!!` force unwrap now follows the shared panic path on failure instead of lowering directly to an unconditional trap.
 
 ## Testing
 
 LLVM-specific validation runs through `cargo xtask llvm ...`.
+
+## Related
+
+- [[Subsystems/Typecheck]]
+- [[Subsystems/Runtime Host]]
+- [[Contracts/Typecheck IR]]
+- [[Architecture/Build And Dev Workflow]]
+- [[Home]]

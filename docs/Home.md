@@ -38,8 +38,14 @@ tags:
 - [[Generated/Examples Inventory]]
 - [[Generated/Test Inventory]]
 - [[Generated/Directory Inventory]]
-- ![[Bases/Subsystems.base#Subsystems]]
 
 ## Decisions
 
 - [[Decisions/README]]
+
+## Wiki Ops
+
+- [[index]]
+- [[hot]]
+- [[log]]
+- [[_meta/taxonomy]]

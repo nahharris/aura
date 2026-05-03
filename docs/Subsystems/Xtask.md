@@ -1,5 +1,6 @@
 ---
-title: "Xtask"
+
+## title: "Xtask"
 kind: subsystem
 status: active
 owner: repo
@@ -13,7 +14,6 @@ related_contracts:
 related_notes:
   - "Architecture/Build And Dev Workflow"
 last_reviewed: 2026-04-18
----
 
 # Xtask
 
@@ -27,3 +27,9 @@ Centralize automation for the workspace, including dev commands, LLVM toolchain 
 - `llvm`
 - `docs`
 
+## Related
+
+- [[Architecture/Build And Dev Workflow]]
+- [[Generated/Commands Inventory]]
+- [[Generated/Workspace Inventory]]
+- [[Home]]
