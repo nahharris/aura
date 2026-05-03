@@ -61,6 +61,8 @@ Resolve symbols, enforce type rules, and emit checked IR for downstream codegen.
 - Monomorphic aliases export as concrete `TypeRef`s. Generic aliases export their source-level alias scheme through `CheckContext` so consumers can instantiate imported aliases such as `Box[Int]`.
 - Interface types are represented as first-class type nodes in checker/type IR (`interface(...)` is not lowered as a nominal fallback name).
 - Empty interface `interface()` resolves equivalently to `Any`.
+- Interface bounds are enforced structurally via receiver method sets (`lookup_method` + receiver matching), including named interface aliases and anonymous `interface(...)` constraints.
+- Typecheck now emits dedicated diagnostics for structural failures: missing required interface methods and method signature mismatches.
 
 ## Checked IR Notes
 

@@ -48,6 +48,12 @@ pub enum Issue {
     InterfaceBoundUnsatisfied {
         detail: String,
     },
+    InterfaceMethodMissing {
+        detail: String,
+    },
+    InterfaceMethodMismatch {
+        detail: String,
+    },
     MacroUntyped,
     MainSignature,
     OpNonNumeric,
@@ -112,6 +118,8 @@ impl Issue {
             Self::IfArity => "E_IF_ARITY",
             Self::IfForm => "E_IF_FORM",
             Self::InterfaceBoundUnsatisfied { .. } => "E_INTERFACE_BOUND_UNSAT",
+            Self::InterfaceMethodMissing { .. } => "E_INTERFACE_METHOD_MISSING",
+            Self::InterfaceMethodMismatch { .. } => "E_INTERFACE_METHOD_MISMATCH",
             Self::MacroUntyped => "E_MACRO_UNTYPED",
             Self::MainSignature => "E_MAIN_SIGNATURE",
             Self::OpNonNumeric => "E_OP_NON_NUMERIC",
@@ -186,6 +194,8 @@ impl Issue {
             Self::IfArity => "if expects one runtime argument: condition".to_string(),
             Self::IfForm => "invalid if form".to_string(),
             Self::InterfaceBoundUnsatisfied { detail } => detail.clone(),
+            Self::InterfaceMethodMissing { detail } => detail.clone(),
+            Self::InterfaceMethodMismatch { detail } => detail.clone(),
             Self::MacroUntyped => "macro value used where typed value is required".to_string(),
             Self::MainSignature => "invalid main signature".to_string(),
             Self::OpNonNumeric => "numeric operator requires numeric operands".to_string(),

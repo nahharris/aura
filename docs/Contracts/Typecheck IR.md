@@ -51,6 +51,7 @@ Status: frozen v1.
 - `CheckedStaticValue`
 - `CheckedTypeExpr::Interface(Vec<(String, CheckedTypeExpr)>)` preserves source interface members as first-class metadata.
 - `interface()` and `Any` are equivalent at type resolution boundaries.
+- Interface constraint solving is structural and method-set based. Missing required methods and incompatible method signatures emit dedicated diagnostics.
 
 ## Invariants (Frozen v1)
 

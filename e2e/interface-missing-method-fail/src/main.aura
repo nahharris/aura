@@ -1,0 +1,8 @@
+def NeedsDouble = interface(double: Func[(), Int]);
+
+def[T: NeedsDouble] identity(x: T) -> T { x }
+
+def main() -> Void {
+    identity[Int](1);
+    ()
+}

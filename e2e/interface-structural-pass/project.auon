@@ -1,0 +1,4 @@
+name = "e2e/interface-structural-pass",
+version = "0.1.0",
+kind = .binary,
+dependencies = []

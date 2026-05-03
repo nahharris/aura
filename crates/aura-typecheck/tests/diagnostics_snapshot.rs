@@ -73,6 +73,38 @@ fn snapshot_interface_bound_unsatisfied_shape() {
 }
 
 #[test]
+fn snapshot_interface_missing_method_shape() {
+    let src = "def NeedsDouble = interface(double: Func[(), Int]); def[T: NeedsDouble] f(x: T) -> T { x }; def y = f[Int](1)";
+    let parsed = Parser::parse_source(src).expect("parse should succeed");
+    let checked = check_module(&parsed);
+    let diag = checked
+        .diagnostics
+        .iter()
+        .find(|d| d.code_str() == "E_INTERFACE_METHOD_MISSING")
+        .expect("expected interface method missing diagnostic");
+
+    let got = render(diag);
+    assert!(got.contains("error|typecheck|E_INTERFACE_METHOD_MISSING|"));
+    assert!(got.contains("missing interface method `double`"));
+}
+
+#[test]
+fn snapshot_interface_signature_mismatch_shape() {
+    let src = "def NeedsDouble = interface(double: Func[(), Int]); def Int.double() -> Float { 2.0 }; def[T: NeedsDouble] f(x: T) -> T { x }; def y = f[Int](1)";
+    let parsed = Parser::parse_source(src).expect("parse should succeed");
+    let checked = check_module(&parsed);
+    let diag = checked
+        .diagnostics
+        .iter()
+        .find(|d| d.code_str() == "E_INTERFACE_METHOD_MISMATCH")
+        .expect("expected interface method mismatch diagnostic");
+
+    let got = render(diag);
+    assert!(got.contains("error|typecheck|E_INTERFACE_METHOD_MISMATCH|"));
+    assert!(got.contains("incompatible signature"));
+}
+
+#[test]
 fn snapshot_type_mismatch_return_shape() {
     let src = "def f(x: Int) -> Int { \"bad\" }";
     let parsed = Parser::parse_source(src).expect("parse should succeed");
