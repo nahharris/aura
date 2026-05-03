@@ -10,7 +10,8 @@ use aura_frontend::ast::{Decl, Program, UseBinding};
 use aura_typecheck::checked_ir::{CheckedDecl, CheckedExpr};
 use aura_typecheck::types::{FuncParam, Ty, TyInterner};
 use aura_typecheck::{
-    CheckContext, CheckOptions, CheckedModule, ImportBinding, TypeImportBinding,
+    CheckContext, CheckOptions, CheckedModule, ImportBinding, MethodImportBinding,
+    TypeImportBinding,
     check_module_with_context,
 };
 
@@ -134,6 +135,7 @@ struct ModuleRecord {
     value_exports: Vec<ExportBinding>,
     type_exports: Vec<TypeExportBinding>,
     macro_exports: Vec<ExportBinding>,
+    method_exports: Vec<MethodImportBinding>,
 }
 
 type BuildContextResult = (
@@ -322,6 +324,16 @@ impl ProjectCompiler {
                 decl.link_name = stable_link_name(&manifest.name, &logical_name, &decl.name);
             }
         }
+        for method in &mut checked.methods {
+            if let Some(decl) = checked
+                .ir
+                .declarations
+                .iter()
+                .find(|decl| decl.name == method.source_name && !decl.is_extern)
+            {
+                method.link_name = decl.link_name.clone();
+            }
+        }
         for binding in namespace_bindings {
             if checked
                 .ir
@@ -368,10 +380,14 @@ impl ProjectCompiler {
                 value_exports.push(binding);
             }
         }
-        let explicit_value_reexports: Vec<ExportBinding> = explicit_value_reexports
-            .into_iter()
-            .filter(|export| !matches!(export.binding.ty, TypeRef::Func { .. }))
-            .collect();
+        for export in explicit_value_reexports {
+            if !value_exports.iter().any(|existing| {
+                existing.binding.source_name == export.binding.source_name
+                    && existing.binding.link_name == export.binding.link_name
+            }) {
+                value_exports.push(export);
+            }
+        }
         let mut type_exports = checked
             .type_aliases
             .iter()
@@ -398,6 +414,7 @@ impl ProjectCompiler {
         }));
         type_exports.extend(explicit_type_reexports);
 
+        let method_exports = checked.methods.clone();
         self.loading_modules.remove(&path);
         self.module_order.push(path.clone());
         self.modules.insert(
@@ -410,6 +427,7 @@ impl ProjectCompiler {
                 value_exports,
                 type_exports,
                 macro_exports,
+                method_exports,
             },
         );
         Ok(())
@@ -482,9 +500,10 @@ impl ProjectCompiler {
             let value_exports = self.module_value_exports(&import_path)?;
             let type_exports = self.module_type_exports(&import_path)?;
             let macro_exports = self.module_macro_exports(&import_path)?;
+            let method_exports = self.module_method_exports(&import_path)?;
             match &use_decl.binding {
                 UseBinding::Namespace(alias) => {
-                    let mut all_exports: Vec<ImportBinding> = value_exports
+                    let all_exports: Vec<ImportBinding> = value_exports
                         .iter()
                         .chain(macro_exports.iter())
                         .map(|binding| binding.binding.clone())
@@ -541,9 +560,10 @@ impl ProjectCompiler {
                                 }
                             }
                         }
-                        if let Some(export) = macro_exports
+                        if macro_exports
                             .iter()
                             .find(|binding| binding.binding.source_name == *field_name)
+                            .is_some()
                         {
                             if !imported_origins.contains_key(&field.local_name) {
                                 imported_origins.insert(
@@ -576,6 +596,7 @@ impl ProjectCompiler {
                             });
                             found = true;
                         }
+                        context.imported_methods.extend(method_exports.iter().cloned());
                         if !found {
                             return Err(ProjectCompileError::Resolve {
                                 path: Some(importer_path.to_path_buf()),
@@ -615,16 +636,7 @@ impl ProjectCompiler {
         lib_path: &Path,
         origin_label: &str,
     ) -> Result<(), ProjectCompileError> {
-        eprintln!(
-            "DEBUG import_library_exports: lib_path={}, origin_label={}",
-            lib_path.display(),
-            origin_label
-        );
         for export in self.module_value_exports(lib_path)? {
-            eprintln!(
-                "DEBUG:   importing value '{}' (type={:?})",
-                export.binding.source_name, export.binding.ty
-            );
             if matches!(export.binding.ty, TypeRef::Macro { .. }) {
                 continue;
             }
@@ -646,6 +658,9 @@ impl ProjectCompiler {
                 format!("{origin_label} ({})", lib_path.display()),
             )?;
         }
+        context
+            .imported_methods
+            .extend(self.module_method_exports(lib_path)?);
         Ok(())
     }
 
@@ -799,6 +814,19 @@ impl ProjectCompiler {
             })
     }
 
+    fn module_method_exports(
+        &self,
+        path: &Path,
+    ) -> Result<Vec<MethodImportBinding>, ProjectCompileError> {
+        self.modules
+            .get(path)
+            .map(|module| module.method_exports.clone())
+            .ok_or_else(|| ProjectCompileError::Resolve {
+                path: Some(path.to_path_buf()),
+                message: "module was not loaded before export lookup".to_string(),
+            })
+    }
+
     fn required_modules(&self, entry_path: &Path) -> HashSet<PathBuf> {
         let entry_path = entry_path.to_path_buf();
         let link_owners = self
@@ -902,13 +930,6 @@ fn sanitize_symbol_fragment(value: &str) -> String {
         }
     }
     out
-}
-
-fn type_ref_for_name(name: &str, exports: &[ExportBinding]) -> Option<TypeRef> {
-    exports
-        .iter()
-        .find(|binding| binding.binding.source_name == name)
-        .map(|binding| binding.binding.ty.clone())
 }
 
 fn ty_to_type_ref(types: &TyInterner, ty_id: aura_typecheck::TyId) -> TypeRef {
@@ -1178,6 +1199,9 @@ fn collect_expr_external_link_names(
         }
         CheckedExpr::FieldAccess { object, .. } => {
             collect_expr_external_link_names(object, extern_links, out);
+        }
+        CheckedExpr::ForceUnwrap { expr, .. } => {
+            collect_expr_external_link_names(expr, extern_links, out);
         }
         CheckedExpr::AssignField { object, value, .. } => {
             collect_expr_external_link_names(object, extern_links, out);

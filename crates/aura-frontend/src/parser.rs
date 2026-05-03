@@ -1245,6 +1245,14 @@ where
                 continue;
             }
 
+            if self.peek_is(&TokenKind::BangBang) {
+                self.bump();
+                expr = Expr::ForceUnwrap {
+                    expr: Box::new(expr),
+                };
+                continue;
+            }
+
             let increment_op = match self.peek() {
                 TokenKind::PlusPlus => Some(BinaryOp::Add),
                 TokenKind::MinusMinus => Some(BinaryOp::Sub),
@@ -1638,6 +1646,7 @@ where
             saw_semi = true;
             self.bump();
             if terminators.iter().any(|tok| self.peek_is(tok)) {
+                items.push(Expr::Tuple(Vec::new()));
                 break;
             }
             items.push(self.parse_expr()?);
@@ -1676,6 +1685,7 @@ where
                 | TokenKind::String(_)
                 | TokenKind::Char(_)
                 | TokenKind::Dot
+                | TokenKind::LParen
                 | TokenKind::LBracket
                 | TokenKind::LBrace
         )
@@ -1716,6 +1726,7 @@ where
                     | Some(TokenKind::String(_))
                     | Some(TokenKind::Char(_))
                     | Some(TokenKind::Dot)
+                    | Some(TokenKind::LParen)
                     | Some(TokenKind::LBracket)
                     | Some(TokenKind::LBrace)
             ) && !self.looks_like_static_call_head();
@@ -1746,6 +1757,7 @@ where
                 | Some(TokenKind::String(_))
                 | Some(TokenKind::Char(_))
                 | Some(TokenKind::Dot)
+                | Some(TokenKind::LParen)
                 | Some(TokenKind::LBrace)
                 | Some(TokenKind::LBracket)
         )
@@ -2723,7 +2735,9 @@ mod tests {
         let Decl::Function(function) = &parsed.declarations[0] else {
             panic!("expected function declaration")
         };
-        assert!(matches!(u(&function.body), Expr::Block(items) if items.len() == 2));
+        assert!(
+            matches!(u(&function.body), Expr::Block(items) if items.len() == 3 && matches!(u(&items[2]), Expr::Tuple(unit) if unit.is_empty()))
+        );
     }
 
     #[test]

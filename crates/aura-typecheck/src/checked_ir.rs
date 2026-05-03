@@ -75,6 +75,12 @@ pub enum CheckedExpr {
         field_index: usize,
         ty: TyId,
     },
+    ForceUnwrap {
+        expr: Box<CheckedExpr>,
+        enum_ty: TyId,
+        payload_ty: TyId,
+        payload_variant_index: usize,
+    },
     AssignField {
         object: Box<CheckedExpr>,
         object_ty: TyId,

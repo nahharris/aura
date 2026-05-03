@@ -158,6 +158,9 @@ pub enum Expr {
         object: Box<Expr>,
         field: String,
     },
+    ForceUnwrap {
+        expr: Box<Expr>,
+    },
     MacroApply {
         macro_name: String,
         static_args: Vec<StaticArg>,

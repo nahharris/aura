@@ -21,7 +21,10 @@ use crate::types::{FuncParam, Ty, TyId, TyInterner};
 use crate::unify::Unifier;
 
 use crate::generics::GenericConstraint;
-use crate::{CheckContext, CheckOptions, GenericTypeAlias, ImportBinding, TypeImportBinding};
+use crate::{
+    CheckContext, CheckOptions, GenericTypeAlias, ImportBinding, MethodImportBinding,
+    TypeImportBinding,
+};
 
 #[derive(Debug, Clone)]
 pub struct TypeChecker {
@@ -43,7 +46,7 @@ pub struct TypeChecker {
     ir: CheckedIr,
     imported_values: HashMap<String, ImportBinding>,
     imported_types: HashMap<String, TypeImportBinding>,
-    methods: HashMap<(TyId, String), MethodBinding>,
+    methods: Vec<MethodBinding>,
     namespaces: HashMap<String, HashMap<String, ImportBinding>>,
     current_match_subject: Option<MatchSubject>,
     resolved_enum_ctors: HashMap<String, ResolvedEnumCtor>,
@@ -68,7 +71,9 @@ struct ValueBinding {
 struct MethodBinding {
     name: String,
     link_name: String,
+    receiver_ty: TyId,
     ty: TyId,
+    static_params: Vec<StaticParam>,
 }
 
 #[derive(Debug, Clone)]
@@ -229,7 +234,7 @@ impl TypeChecker {
             ir: CheckedIr::empty(),
             imported_values,
             imported_types,
-            methods: HashMap::new(),
+            methods: Vec::new(),
             namespaces,
             current_match_subject: None,
             resolved_enum_ctors: HashMap::new(),
@@ -273,6 +278,26 @@ impl TypeChecker {
                 let ty = checker.type_ref_to_ty(&binding.ty);
                 checker.aliases.insert(binding.local_name, ty);
             }
+        }
+
+        for binding in context.imported_methods {
+            let receiver_ty = checker.type_ref_to_ty(&binding.receiver_ty);
+            let ty = checker.type_ref_to_ty(&binding.ty);
+            checker.methods.push(MethodBinding {
+                name: binding.local_name.clone(),
+                link_name: binding.link_name.clone(),
+                receiver_ty,
+                ty,
+                static_params: binding.static_params,
+            });
+            checker.ir.declarations.push(CheckedDecl {
+                name: binding.local_name,
+                link_name: binding.link_name,
+                params: Vec::new(),
+                ty,
+                is_extern: true,
+                value: CheckedExpr::Any,
+            });
         }
 
         checker
@@ -816,8 +841,80 @@ impl TypeChecker {
         self.resolved_method_calls.get(&Self::expr_cache_key(expr))
     }
 
-    fn lookup_method(&self, receiver_ty: TyId, name: &str) -> Option<&MethodBinding> {
-        self.methods.get(&(receiver_ty, name.to_string()))
+    fn lookup_method(&mut self, receiver_ty: TyId, name: &str) -> Option<MethodBinding> {
+        let receiver_ty = self.unifier.resolve(receiver_ty);
+        let methods = self.methods.clone();
+        for method in methods {
+            if method.name != name {
+                continue;
+            }
+            let mut subst = HashMap::new();
+            if self.match_receiver_ty(method.receiver_ty, receiver_ty, &mut subst) {
+                let ty = self.substitute_ty_id(method.ty, &subst);
+                return Some(MethodBinding { ty, ..method });
+            }
+        }
+        None
+    }
+
+    fn match_receiver_ty(
+        &self,
+        pattern: TyId,
+        actual: TyId,
+        subst: &mut HashMap<String, TyId>,
+    ) -> bool {
+        let pattern = self.unifier.resolve(pattern);
+        let actual = self.unifier.resolve(actual);
+        match (self.interner.get(pattern), self.interner.get(actual)) {
+            (Some(Ty::GenericParam(name)) | Some(Ty::Nominal(name)), _) => {
+                if Self::KNOWN_GENERIC_RECEIVERS.contains(&name.as_str()) {
+                    return pattern == actual;
+                }
+                match subst.get(name) {
+                    Some(existing) => self.unifier.resolve(*existing) == actual,
+                    None => {
+                        subst.insert(name.clone(), actual);
+                        true
+                    }
+                }
+            }
+            (Some(Ty::List(p)), Some(Ty::List(a)))
+            | (Some(Ty::Set(p)), Some(Ty::Set(a)))
+            | (Some(Ty::RawAlloc(p)), Some(Ty::RawAlloc(a)))
+            | (Some(Ty::Slice(p)), Some(Ty::Slice(a)))
+            | (Some(Ty::Ref(p)), Some(Ty::Ref(a))) => self.match_receiver_ty(*p, *a, subst),
+            (Some(Ty::Dict { key: pk, value: pv }), Some(Ty::Dict { key: ak, value: av })) => {
+                self.match_receiver_ty(*pk, *ak, subst)
+                    && self.match_receiver_ty(*pv, *av, subst)
+            }
+            (Some(Ty::Array { item: pi, size: ps }), Some(Ty::Array { item: ai, size: as_ })) => {
+                ps == as_ && self.match_receiver_ty(*pi, *ai, subst)
+            }
+            (Some(Ty::Tuple(p)), Some(Ty::Tuple(a))) => {
+                p.len() == a.len()
+                    && p.iter()
+                        .zip(a.iter())
+                        .all(|(p, a)| self.match_receiver_ty(*p, *a, subst))
+            }
+            (Some(Ty::Struct(p)), Some(Ty::Struct(a))) => {
+                p.len() == a.len()
+                    && p.iter().zip(a.iter()).all(|((pn, pt), (an, at))| {
+                        pn == an && self.match_receiver_ty(*pt, *at, subst)
+                    })
+            }
+            (Some(Ty::Enum(p)), Some(Ty::Enum(a))) => {
+                p.len() == a.len()
+                    && p.iter().zip(a.iter()).all(|((pn, pp), (an, ap))| {
+                        pn == an
+                            && match (pp, ap) {
+                                (Some(pp), Some(ap)) => self.match_receiver_ty(*pp, *ap, subst),
+                                (None, None) => true,
+                                _ => false,
+                            }
+                    })
+            }
+            _ => pattern == actual,
+        }
     }
 
     fn field_lookup(&self, object_ty: TyId, field: &str) -> Option<(usize, TyId)> {
@@ -833,6 +930,34 @@ impl TypeChecker {
                 .ok()
                 .and_then(|index| items.get(index).copied().map(|ty| (index, ty))),
             _ => None,
+        }
+    }
+
+    fn force_unwrap_shape(&self, ty: TyId) -> Option<(TyId, usize)> {
+        let ty = self.unifier.resolve(ty);
+        let Some(Ty::Enum(variants)) = self.interner.get(ty) else {
+            return None;
+        };
+        if variants.len() != 2 {
+            return None;
+        }
+        let has_null = variants
+            .iter()
+            .any(|(name, payload)| name == "null" && payload.is_none());
+        let payload_variant = variants
+            .iter()
+            .enumerate()
+            .find_map(|(index, (name, payload))| {
+                if name == "null" {
+                    None
+                } else {
+                    payload.map(|payload_ty| (payload_ty, index))
+                }
+            });
+        if has_null {
+            payload_variant
+        } else {
+            None
         }
     }
 
@@ -985,15 +1110,53 @@ impl TypeChecker {
         }
     }
 
-    fn register_method(&mut self, receiver_ty: TyId, name: String, link_name: String, ty: TyId) {
-        self.methods.insert(
-            (receiver_ty, name.clone()),
-            MethodBinding {
-                name,
-                link_name,
-                ty,
-            },
-        );
+    fn resolve_type_receiver_expr(&mut self, expr: &Expr) -> Option<TyId> {
+        match TypeChecker::base_expr(expr) {
+            Expr::Ident(name)
+                if name
+                    .chars()
+                    .next()
+                    .map(|ch| ch.is_ascii_uppercase())
+                    .unwrap_or(false)
+                    || self.aliases.get(name).is_some()
+                    || self.aliases.get_generic(name).is_some() =>
+            {
+                Some(self.resolve_type_expr(&TypeExpr::Named {
+                    name: name.clone(),
+                    args: Vec::new(),
+                }))
+            }
+            Expr::TypeApply {
+                callee,
+                static_args,
+            } => {
+                let Expr::Ident(name) = TypeChecker::base_expr(callee) else {
+                    return None;
+                };
+                Some(self.resolve_type_expr(&TypeExpr::Named {
+                    name: name.clone(),
+                    args: static_args.clone(),
+                }))
+            }
+            _ => None,
+        }
+    }
+
+    fn register_method(
+        &mut self,
+        receiver_ty: TyId,
+        name: String,
+        link_name: String,
+        ty: TyId,
+        static_params: Vec<StaticParam>,
+    ) {
+        self.methods.push(MethodBinding {
+            name,
+            link_name,
+            receiver_ty,
+            ty,
+            static_params,
+        });
     }
 
     fn classify_builtin_member_call(object: &Expr, field: &str) -> Option<BuiltinMemberCall> {
@@ -1527,14 +1690,16 @@ impl TypeChecker {
                 let ty = self.resolve_type_expr(&stub.ty);
                 self.pop_generic_scope();
 
-                self.ir.declarations.push(CheckedDecl {
-                    name: stub.name.clone(),
-                    link_name: stub.name.clone(),
-                    params: Vec::new(),
-                    ty,
-                    is_extern: true,
-                    value: CheckedExpr::Any,
-                });
+                if !matches!(self.interner.get(ty), Some(Ty::Macro { .. })) {
+                    self.ir.declarations.push(CheckedDecl {
+                        name: stub.name.clone(),
+                        link_name: stub.name.clone(),
+                        params: Vec::new(),
+                        ty,
+                        is_extern: true,
+                        value: CheckedExpr::Any,
+                    });
+                }
                 values.insert(stub.name.clone(), ty);
                 self.insert_value(stub.name.clone(), ty, false);
             }
@@ -1575,9 +1740,15 @@ impl TypeChecker {
                     self.insert_value_param(param.name.clone(), param_ty);
                 }
                 if let Expr::MultiArm(arms) = TypeChecker::base_expr(&function.body) {
-                    if let Some(receiver_ty) = receiver_ty {
-                        if matches!(self.interner.get(receiver_ty), Some(Ty::Enum(_))) {
-                            self.validate_enum_multi_arm_patterns(arms, receiver_ty);
+                    let subject_ty = receiver_ty.or_else(|| {
+                        function
+                            .params
+                            .first()
+                            .map(|param| self.resolve_type_expr(&param.ty))
+                    });
+                    if let Some(subject_ty) = subject_ty {
+                        if matches!(self.interner.get(subject_ty), Some(Ty::Enum(_))) {
+                            self.validate_enum_multi_arm_patterns(arms, subject_ty);
                         } else {
                             self.diagnostics.extend(
                                 self.pattern_checker.validate_multi_arm_exhaustiveness(arms),
@@ -1603,12 +1774,11 @@ impl TypeChecker {
                     return_ty: expected_ret,
                 });
                 let previous_match_subject = self.current_match_subject.clone();
-                if let (Some(receiver_ty), Some(first_param)) =
-                    (receiver_ty, function.params.first())
-                {
+                if let Some(first_param) = function.params.first() {
+                    let subject_ty = receiver_ty.unwrap_or_else(|| self.resolve_type_expr(&first_param.ty));
                     self.current_match_subject = Some(MatchSubject {
                         name: first_param.name.clone(),
-                        ty: receiver_ty,
+                        ty: subject_ty,
                     });
                 }
                 let actual_ret = self.infer_expr_with_expected(&function.body, expected_ret);
@@ -1649,6 +1819,7 @@ impl TypeChecker {
                         function.name.clone(),
                         function.name.clone(),
                         func_ty,
+                        function.static_params.clone(),
                     );
                 }
                 if !function.static_params.is_empty() {
@@ -1730,8 +1901,35 @@ impl TypeChecker {
         (values, type_aliases, generic_type_aliases)
     }
 
-    pub fn into_parts(self) -> (TyInterner, Vec<Diagnostic>, CheckedIr) {
-        (self.interner, self.diagnostics, self.ir)
+    pub fn into_parts(
+        self,
+    ) -> (
+        TyInterner,
+        Vec<Diagnostic>,
+        CheckedIr,
+        Vec<MethodImportBinding>,
+    ) {
+        let methods = self
+            .methods
+            .iter()
+            .map(|method| MethodImportBinding {
+                source_name: method.name.clone(),
+                local_name: method.name.clone(),
+                link_name: method.link_name.clone(),
+                receiver_ty: self
+                    .interner
+                    .get(method.receiver_ty)
+                    .map(|ty| ty_to_ref(ty, &self.interner))
+                    .unwrap_or(TypeRef::Unknown),
+                ty: self
+                    .interner
+                    .get(method.ty)
+                    .map(|ty| ty_to_ref(ty, &self.interner))
+                    .unwrap_or(TypeRef::Unknown),
+                static_params: method.static_params.clone(),
+            })
+            .collect();
+        (self.interner, self.diagnostics, self.ir, methods)
     }
 
     fn infer_expr(&mut self, expr: &Expr) -> TyId {
@@ -1817,10 +2015,25 @@ impl TypeChecker {
             Expr::Block(items) => {
                 self.push_scope();
                 let result = if let Some((last, rest)) = items.split_last() {
+                    let mut rest_diverges = false;
                     for item in rest {
-                        let _ = self.infer_expr(item);
+                        let item_ty = self.infer_expr(item);
+                        rest_diverges |= matches!(
+                            self.interner.get(self.unifier.resolve(item_ty)),
+                            Some(Ty::Never)
+                        );
                     }
-                    self.infer_expr(last)
+                    let last_ty = self.infer_expr(last);
+                    if rest_diverges
+                        && matches!(
+                            self.interner.get(self.unifier.resolve(last_ty)),
+                            Some(Ty::Void)
+                        )
+                    {
+                        self.interner.intern(Ty::Never)
+                    } else {
+                        last_ty
+                    }
                 } else {
                     self.interner.intern(Ty::Void)
                 };
@@ -1840,6 +2053,30 @@ impl TypeChecker {
             Expr::Assign { name, value } => self.infer_assign_local(name, value, None),
             Expr::AssignPlace { target, value } => {
                 self.infer_assign_place_expr(target, value, None)
+            }
+            Expr::ForceUnwrap { expr } => {
+                let source = self.infer_expr(expr);
+                if let Some((payload_ty, _)) = self.force_unwrap_shape(source) {
+                    payload_ty
+                } else {
+                    let actual = self
+                        .interner
+                        .get(self.unifier.resolve(source))
+                        .map(|ty| ty_to_ref(ty, &self.interner))
+                        .unwrap_or(TypeRef::Unknown);
+                    self.diagnostics.push(
+                        self.typecheck_error(
+                            Issue::TypeMismatch {
+                                context: TypingContext::Custom("force unwrap".to_string()),
+                                expected: TypeRef::Unknown,
+                                actual,
+                            },
+                            "force unwrap expects an enum with null and one payload variant",
+                        )
+                        .with_hint("define nullable values in Aura code as an enum alias such as Option[T]"),
+                    );
+                    self.unknown_ty()
+                }
             }
             Expr::List(items) => {
                 if let Some(first) = items.first() {
@@ -1918,9 +2155,24 @@ impl TypeChecker {
                     }
                 }
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
+                    if let Some(receiver_ty) = self.resolve_type_receiver_expr(object) {
+                        let receiver_ty = self.unifier.resolve(receiver_ty);
+                        if let Some(method) = self.lookup_method(receiver_ty, field) {
+                            self.record_method_call(expr, method.link_name.clone());
+                            self.record_method_call(callee.as_ref(), method.link_name.clone());
+                            return self.infer_call_expr(
+                                method.ty,
+                                Some(method.name.as_str()),
+                                static_args,
+                                args,
+                                trailing,
+                                None,
+                            );
+                        }
+                    }
                     let receiver_ty = self.infer_expr(object);
                     let receiver_ty = self.unifier.resolve(receiver_ty);
-                    if let Some(method) = self.lookup_method(receiver_ty, field).cloned() {
+                    if let Some(method) = self.lookup_method(receiver_ty, field) {
                         self.record_method_call(expr, method.link_name.clone());
                         self.record_method_call(callee.as_ref(), method.link_name.clone());
                         let mut method_args = vec![object.as_ref().clone()];
@@ -2288,10 +2540,19 @@ impl TypeChecker {
             (Expr::Block(items), _) => {
                 self.push_scope();
                 let result = if let Some((last, rest)) = items.split_last() {
+                    let mut rest_diverges = false;
                     for item in rest {
-                        let _ = self.infer_expr(item);
+                        let item_ty = self.infer_expr(item);
+                        rest_diverges |= matches!(
+                            self.interner.get(self.unifier.resolve(item_ty)),
+                            Some(Ty::Never)
+                        );
                     }
-                    self.infer_expr_with_expected(last, expected)
+                    if rest_diverges && matches!(Self::base_expr(last), Expr::Tuple(items) if items.is_empty()) {
+                        self.interner.intern(Ty::Never)
+                    } else {
+                        self.infer_expr_with_expected(last, expected)
+                    }
                 } else {
                     self.interner.intern(Ty::Void)
                 };
@@ -2303,6 +2564,15 @@ impl TypeChecker {
             }
             (Expr::AssignPlace { target, value }, _) => {
                 self.infer_assign_place_expr(target, value, Some(expected))
+            }
+            (Expr::ForceUnwrap { expr }, _) => {
+                let source = self.infer_expr(expr);
+                if let Some((payload_ty, _)) = self.force_unwrap_shape(source) {
+                    self.require_assignable(expected, payload_ty, "bidirectional expected type");
+                    payload_ty
+                } else {
+                    self.infer_expr(expr)
+                }
             }
             (
                 Expr::Call {
@@ -2374,9 +2644,26 @@ impl TypeChecker {
                     }
                 }
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
+                    if let Some(receiver_ty) = self.resolve_type_receiver_expr(object) {
+                        let receiver_ty = self.unifier.resolve(receiver_ty);
+                        if let Some(method) = self.lookup_method(receiver_ty, field) {
+                            self.record_method_call(expr, method.link_name.clone());
+                            self.record_method_call(callee.as_ref(), method.link_name.clone());
+                            let actual = self.infer_call_expr(
+                                method.ty,
+                                Some(method.name.as_str()),
+                                static_args,
+                                args,
+                                trailing,
+                                Some(expected),
+                            );
+                            self.require_assignable(expected, actual, "bidirectional expected type");
+                            return actual;
+                        }
+                    }
                     let receiver_ty = self.infer_expr(object);
                     let receiver_ty = self.unifier.resolve(receiver_ty);
-                    if let Some(method) = self.lookup_method(receiver_ty, field).cloned() {
+                    if let Some(method) = self.lookup_method(receiver_ty, field) {
                         self.record_method_call(expr, method.link_name.clone());
                         self.record_method_call(callee.as_ref(), method.link_name.clone());
                         let mut method_args = vec![object.as_ref().clone()];
@@ -2794,7 +3081,7 @@ impl TypeChecker {
             | ParsedBinaryOp::Div
             | ParsedBinaryOp::Mod => {
                 let lhs_ty = self.infer_expr(lhs);
-                let rhs_ty = self.infer_expr(rhs);
+                let rhs_ty = self.infer_expr_with_expected(rhs, lhs_ty);
                 self.require_assignable(lhs_ty, rhs_ty, "numeric operator");
                 let result = self.unifier.resolve(lhs_ty);
                 let Some(result_ty) = self.interner.get(result).cloned() else {
@@ -2820,7 +3107,7 @@ impl TypeChecker {
             }
             ParsedBinaryOp::Lt | ParsedBinaryOp::Le | ParsedBinaryOp::Gt | ParsedBinaryOp::Ge => {
                 let lhs_ty = self.infer_expr(lhs);
-                let rhs_ty = self.infer_expr(rhs);
+                let rhs_ty = self.infer_expr_with_expected(rhs, lhs_ty);
                 self.require_assignable(lhs_ty, rhs_ty, "comparison operator");
                 self.require_assignable(rhs_ty, lhs_ty, "comparison operator");
                 let result = self.unifier.resolve(lhs_ty);
@@ -3878,6 +4165,18 @@ impl TypeChecker {
                 let i = self.substitute_ty_id(item, subst);
                 self.interner.intern(Ty::List(i))
             }
+            Ty::RawAlloc(item) => {
+                let i = self.substitute_ty_id(item, subst);
+                self.interner.intern(Ty::RawAlloc(i))
+            }
+            Ty::Slice(item) => {
+                let i = self.substitute_ty_id(item, subst);
+                self.interner.intern(Ty::Slice(i))
+            }
+            Ty::Ref(item) => {
+                let i = self.substitute_ty_id(item, subst);
+                self.interner.intern(Ty::Ref(i))
+            }
             Ty::Dict { key, value } => {
                 let k = self.substitute_ty_id(key, subst);
                 let v = self.substitute_ty_id(value, subst);
@@ -3930,6 +4229,18 @@ impl TypeChecker {
                     .map(|(n, t)| (n.clone(), self.substitute_ty_id(*t, subst)))
                     .collect();
                 self.interner.intern(Ty::Struct(out))
+            }
+            Ty::Enum(variants) => {
+                let out = variants
+                    .iter()
+                    .map(|(n, payload)| {
+                        (
+                            n.clone(),
+                            payload.map(|payload| self.substitute_ty_id(payload, subst)),
+                        )
+                    })
+                    .collect();
+                self.interner.intern(Ty::Enum(out))
             }
             other => self.interner.intern(other),
         }
@@ -4855,6 +5166,19 @@ impl TypeChecker {
                 }
             }
             Expr::TypeApply { .. } => CheckedExpr::Any,
+            Expr::ForceUnwrap { expr } => {
+                let source = self.preview_expr_ty(expr);
+                if let Some((payload_ty, payload_variant_index)) = self.force_unwrap_shape(source) {
+                    CheckedExpr::ForceUnwrap {
+                        expr: Box::new(self.lower_expr(expr)),
+                        enum_ty: self.unifier.resolve(source),
+                        payload_ty,
+                        payload_variant_index,
+                    }
+                } else {
+                    CheckedExpr::Any
+                }
+            }
             Expr::Tuple(items) => {
                 CheckedExpr::Tuple(items.iter().map(|item| self.lower_expr(item)).collect())
             }
@@ -5002,7 +5326,12 @@ impl TypeChecker {
                             .map(|method| method.link_name.clone())
                     });
                     if let Some(method_link_name) = method_link_name {
-                        let mut lowered_args = vec![self.lower_expr(object)];
+                        let mut lowered_args = if self.resolve_type_receiver_expr(object).is_some()
+                        {
+                            Vec::new()
+                        } else {
+                            vec![self.lower_expr(object)]
+                        };
                         lowered_args.extend(args.iter().map(|a| self.lower_expr(a)));
                         return CheckedExpr::Call {
                             callee: Box::new(CheckedExpr::Ident(method_link_name)),
@@ -8503,7 +8832,7 @@ mod tests {
 
         let mut checker = TypeChecker::new(CheckContext::default(), CheckOptions::default());
         let _ = checker.check_program(&program);
-        let (_types, _diagnostics, ir) = checker.into_parts();
+        let (_types, _diagnostics, ir, _methods) = checker.into_parts();
         assert!(ir
             .declarations
             .iter()

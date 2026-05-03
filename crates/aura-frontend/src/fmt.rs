@@ -436,6 +436,10 @@ impl<'a> Formatter<'a> {
                 self.out.push('.');
                 self.out.push_str(field);
             }
+            Expr::ForceUnwrap { expr } => {
+                self.write_expr(expr, false);
+                self.out.push_str("!!");
+            }
             Expr::MacroApply {
                 macro_name,
                 static_args,
@@ -815,6 +819,7 @@ fn expr_to_inline(expr: &Expr) -> String {
             static_args: _,
         } => expr_to_inline(callee),
         Expr::Member { object, field } => format!("{}.{}", expr_to_inline(object), field),
+        Expr::ForceUnwrap { expr } => format!("{}!!", expr_to_inline(expr)),
         _ => "<expr>".to_string(),
     }
 }

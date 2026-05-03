@@ -46,6 +46,7 @@ pub fn classify_expr_kind(expr: &CheckedExpr) -> &'static str {
         CheckedExpr::LocalBind { .. } => "local_bind",
         CheckedExpr::AssignLocal { .. } => "assign_local",
         CheckedExpr::FieldAccess { .. } => "field_access",
+        CheckedExpr::ForceUnwrap { .. } => "force_unwrap",
         CheckedExpr::AssignField { .. } => "assign_field",
         CheckedExpr::Closure { .. } => "closure",
         CheckedExpr::Any => "any",
@@ -180,6 +181,12 @@ pub fn lower_expr<'ctx, 'm>(
                 .build_load(field_ty, field_ptr, "load_field")
                 .map_err(|_| CodegenError::UnsupportedExpression("field_access"))
         }
+        CheckedExpr::ForceUnwrap {
+            expr,
+            enum_ty,
+            payload_ty,
+            payload_variant_index,
+        } => lower_force_unwrap(cg, expr, *enum_ty, *payload_ty, *payload_variant_index),
         CheckedExpr::AssignField {
             object,
             object_ty,
@@ -346,7 +353,7 @@ fn lower_aggregate_values<'ctx, 'm>(
     let storage_ty = cg.context.struct_type(&field_types, false);
     let slot = cg
         .builder
-        .build_alloca(storage_ty, &format!("{label}_value"))
+        .build_malloc(storage_ty, &format!("{label}_value"))
         .map_err(|_| CodegenError::UnsupportedExpression(label))?;
     for (index, value) in values.iter().enumerate() {
         let field_ptr = cg
@@ -1022,6 +1029,53 @@ fn load_enum_payload<'ctx, 'm>(
 }
 
 #[cfg(feature = "llvm-backend")]
+fn lower_force_unwrap<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    expr: &CheckedExpr,
+    enum_ty: aura_typecheck::TyId,
+    payload_ty: aura_typecheck::TyId,
+    payload_variant_index: usize,
+) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    let current_block = cg
+        .builder
+        .get_insert_block()
+        .ok_or(CodegenError::UnsupportedExpression("force_unwrap"))?;
+    let function = current_block
+        .get_parent()
+        .ok_or(CodegenError::UnsupportedExpression("force_unwrap"))?;
+    let enum_basic_ty =
+        lower_basic_type(cg.context, &cg.checked.types, enum_ty)?.into_struct_type();
+    let value = lower_expr(cg, expr)?;
+    let slot = cg
+        .builder
+        .build_alloca(enum_basic_ty, "force_unwrap_value")
+        .map_err(|_| CodegenError::UnsupportedExpression("force_unwrap"))?;
+    cg.builder
+        .build_store(slot, value)
+        .map_err(|_| CodegenError::UnsupportedExpression("force_unwrap"))?;
+    let tag = load_enum_tag(cg, slot, enum_basic_ty)?;
+    let expected = cg
+        .context
+        .i32_type()
+        .const_int(payload_variant_index as u64, false);
+    let ok = cg
+        .builder
+        .build_int_compare(inkwell::IntPredicate::EQ, tag, expected, "force_unwrap_ok")
+        .map_err(|_| CodegenError::UnsupportedExpression("force_unwrap"))?;
+    let some_block = cg.context.append_basic_block(function, "force_unwrap_some");
+    let null_block = cg.context.append_basic_block(function, "force_unwrap_null");
+    cg.builder
+        .build_conditional_branch(ok, some_block, null_block)
+        .map_err(|_| CodegenError::UnsupportedExpression("force_unwrap"))?;
+    cg.builder.position_at_end(null_block);
+    cg.builder
+        .build_unreachable()
+        .map_err(|_| CodegenError::UnsupportedExpression("force_unwrap"))?;
+    cg.builder.position_at_end(some_block);
+    load_enum_payload(cg, slot, enum_basic_ty, payload_ty)
+}
+
+#[cfg(feature = "llvm-backend")]
 fn lower_if_expr<'ctx, 'm>(
     cg: &CodegenContext<'ctx, 'm>,
     result_ty: aura_typecheck::TyId,
@@ -1064,9 +1118,7 @@ fn lower_if_expr<'ctx, 'm>(
             .build_store(result_slot, stored)
             .map_err(|_| CodegenError::UnsupportedExpression("if"))?;
     }
-    cg.builder
-        .build_unconditional_branch(merge_block)
-        .map_err(|_| CodegenError::UnsupportedExpression("if"))?;
+    branch_to_if_open(cg, merge_block, "if")?;
 
     cg.builder.position_at_end(else_block);
     if let Some(else_branch) = else_branch {
@@ -1078,9 +1130,7 @@ fn lower_if_expr<'ctx, 'm>(
                 .map_err(|_| CodegenError::UnsupportedExpression("if"))?;
         }
     }
-    cg.builder
-        .build_unconditional_branch(merge_block)
-        .map_err(|_| CodegenError::UnsupportedExpression("if"))?;
+    branch_to_if_open(cg, merge_block, "if")?;
 
     cg.builder.position_at_end(merge_block);
     if let Some(result_slot) = result_slot {
@@ -1095,6 +1145,23 @@ fn lower_if_expr<'ctx, 'm>(
         .ptr_type(AddressSpace::default())
         .const_null()
         .as_basic_value_enum())
+}
+
+#[cfg(feature = "llvm-backend")]
+fn branch_to_if_open<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    target: inkwell::basic_block::BasicBlock<'ctx>,
+    context: &'static str,
+) -> Result<(), CodegenError> {
+    let Some(block) = cg.builder.get_insert_block() else {
+        return Err(CodegenError::UnsupportedExpression(context));
+    };
+    if block.get_terminator().is_none() {
+        cg.builder
+            .build_unconditional_branch(target)
+            .map_err(|_| CodegenError::UnsupportedExpression(context))?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "llvm-backend")]
@@ -1184,9 +1251,6 @@ fn lower_loop_expr<'ctx, 'm>(
     let cond_block = cg.context.append_basic_block(function, "loop_cond");
     let body_block = cg.context.append_basic_block(function, "loop_body");
     let break_block = cg.context.append_basic_block(function, "loop_break");
-    cg.builder
-        .build_unconditional_branch(cond_block)
-        .map_err(|_| CodegenError::UnsupportedExpression("loop"))?;
 
     let has_result = !matches!(cg.checked.types.get(result_ty), Some(Ty::Void | Ty::Never));
     let result_slot = if has_result {
@@ -1199,6 +1263,10 @@ fn lower_loop_expr<'ctx, 'm>(
     } else {
         None
     };
+
+    cg.builder
+        .build_unconditional_branch(cond_block)
+        .map_err(|_| CodegenError::UnsupportedExpression("loop"))?;
 
     cg.push_loop_target(
         target.to_string(),

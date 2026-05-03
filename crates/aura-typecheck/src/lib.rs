@@ -33,6 +33,7 @@ pub struct CheckedModule {
     pub value_types: HashMap<String, TyId>,
     pub type_aliases: HashMap<String, TyId>,
     pub generic_type_aliases: HashMap<String, GenericTypeAlias>,
+    pub methods: Vec<MethodImportBinding>,
     pub types: TyInterner,
     pub ir: checked_ir::CheckedIr,
 }
@@ -59,10 +60,21 @@ pub struct TypeImportBinding {
     pub generic: Option<GenericTypeAlias>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodImportBinding {
+    pub source_name: String,
+    pub local_name: String,
+    pub link_name: String,
+    pub receiver_ty: TypeRef,
+    pub ty: TypeRef,
+    pub static_params: Vec<StaticParam>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CheckContext {
     pub imported_values: Vec<ImportBinding>,
     pub imported_types: Vec<TypeImportBinding>,
+    pub imported_methods: Vec<MethodImportBinding>,
     pub namespaces: HashMap<String, Vec<ImportBinding>>,
 }
 
@@ -91,7 +103,7 @@ pub fn check_module_with_context(
 
     let mut checker = TypeChecker::new(context, options);
     let (value_types, type_aliases, generic_type_aliases) = checker.check_program(ast);
-    let (types, checker_diagnostics, ir) = checker.into_parts();
+    let (types, checker_diagnostics, ir, methods) = checker.into_parts();
     diagnostics.extend(checker_diagnostics);
 
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
@@ -106,6 +118,7 @@ pub fn check_module_with_context(
             value_types,
             type_aliases,
             generic_type_aliases,
+            methods,
             types,
             ir,
         }),

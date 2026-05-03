@@ -94,6 +94,10 @@ pub struct AuraRef {
     index: usize,
 }
 
+fn checked_allocation_size(count: usize, elem_size: usize) -> Option<usize> {
+    count.checked_mul(elem_size)
+}
+
 impl AuraBytes {
     fn new_zeroed(size: usize) -> Self {
         Self {
@@ -112,7 +116,7 @@ impl AuraBytes {
 
 impl AuraRawAlloc {
     fn new_zeroed(count: usize, elem_size: usize, elem_align: usize) -> Self {
-        let size = count.saturating_mul(elem_size);
+        let size = checked_allocation_size(count, elem_size).unwrap_or(0);
         Self {
             len: count,
             elem_size,
@@ -182,6 +186,9 @@ pub extern "C" fn raw_alloc_new(
     elem_size: usize,
     elem_align: usize,
 ) -> *mut AuraRawAlloc {
+    if checked_allocation_size(count, elem_size).is_none() {
+        return std::ptr::null_mut();
+    }
     Box::into_raw(Box::new(AuraRawAlloc::new_zeroed(
         count, elem_size, elem_align,
     )))
@@ -215,7 +222,9 @@ pub unsafe extern "C" fn slice_get(slice: *const AuraSlice, index: usize, out: *
     if index >= slice.len {
         return false;
     }
-    let absolute = slice.start + index;
+    let Some(absolute) = slice.start.checked_add(index) else {
+        return false;
+    };
     let alloc = unsafe { raw_alloc_ref(slice.alloc) };
     let Some(range) = alloc.slot_range(absolute) else {
         return false;
@@ -235,7 +244,9 @@ pub unsafe extern "C" fn slice_set(slice: *mut AuraSlice, index: usize, value: *
     if index >= slice.len {
         return false;
     }
-    let absolute = slice.start + index;
+    let Some(absolute) = slice.start.checked_add(index) else {
+        return false;
+    };
     let alloc = unsafe { raw_alloc_mut(slice.alloc) };
     let Some(range) = alloc.slot_range(absolute) else {
         return false;
@@ -258,9 +269,12 @@ pub unsafe extern "C" fn slice_ref_at(slice: *mut AuraSlice, index: usize) -> *m
     if index >= slice.len {
         return std::ptr::null_mut();
     }
+    let Some(absolute) = slice.start.checked_add(index) else {
+        return std::ptr::null_mut();
+    };
     Box::into_raw(Box::new(AuraRef {
         alloc: slice.alloc,
-        index: slice.start + index,
+        index: absolute,
     }))
 }
 
@@ -443,6 +457,27 @@ mod tests {
         assert!(!unsafe { slice_get(slice, 2, out.as_mut_ptr()) });
         assert!(!unsafe { slice_set(slice, 2, value.as_ptr()) });
         assert!(unsafe { slice_ref_at(slice, 2) }.is_null());
+    }
+
+    #[test]
+    fn slice_operations_reject_start_plus_index_overflow() {
+        let alloc = raw_alloc_new(1, 1, 1);
+        let slice = Box::into_raw(Box::new(super::AuraSlice {
+            alloc,
+            start: usize::MAX,
+            len: 2,
+        }));
+        let mut out = [0u8; 1];
+        let value = [7u8; 1];
+        assert!(!unsafe { slice_get(slice, 1, out.as_mut_ptr()) });
+        assert!(!unsafe { slice_set(slice, 1, value.as_ptr()) });
+        assert!(unsafe { slice_ref_at(slice, 1) }.is_null());
+    }
+
+    #[test]
+    fn raw_alloc_new_returns_null_on_size_overflow() {
+        let alloc = raw_alloc_new(usize::MAX, 2, 1);
+        assert!(alloc.is_null());
     }
 
     #[test]

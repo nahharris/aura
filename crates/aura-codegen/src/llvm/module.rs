@@ -420,6 +420,20 @@ mod tests {
 
     #[cfg(feature = "llvm-backend")]
     #[test]
+    fn llvm_ir_heap_allocates_aggregate_literals() {
+        let src = "def make_pair() -> (left: Int, right: Int) { (left = 1, right = 2) }";
+        let program = Parser::parse_source(src).expect("parse");
+        let checked = check_module(&program);
+        let module = checked.module.expect("checked module");
+
+        let ir = super::emit_module_stub("heap_aggregate", &module).expect("emit ir");
+
+        assert!(ir.contains("@malloc"));
+        assert!(!ir.contains("ret ptr %struct_value"));
+    }
+
+    #[cfg(feature = "llvm-backend")]
+    #[test]
     fn object_emission_supports_syscall_write_with_string_into() {
         let src = "defstub syscall_exit: Func[(code: Int), Never]; \
                    defstub syscall_write: Func[(fd: Int, bytes: Bytes), ISize]; \

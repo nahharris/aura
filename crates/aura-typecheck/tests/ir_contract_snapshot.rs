@@ -68,6 +68,7 @@ fn semantically_checked_ir_has_no_any_nodes_for_core_operator_path() {
             }
             CheckedExpr::AssignLocal { value, .. } => contains_any(value),
             CheckedExpr::FieldAccess { object, .. } => contains_any(object),
+            CheckedExpr::ForceUnwrap { expr, .. } => contains_any(expr),
             CheckedExpr::AssignField { object, value, .. } => {
                 contains_any(object) || contains_any(value)
             }
@@ -204,6 +205,7 @@ fn pipe_operator_consumes_placeholder_in_rhs_call_without_any_nodes() {
             }
             CheckedExpr::AssignLocal { value, .. } => contains_any(value),
             CheckedExpr::FieldAccess { object, .. } => contains_any(object),
+            CheckedExpr::ForceUnwrap { expr, .. } => contains_any(expr),
             CheckedExpr::AssignField { object, value, .. } => {
                 contains_any(object) || contains_any(value)
             }
@@ -309,6 +311,7 @@ fn enum_constructor_forms_typecheck_without_any_nodes() {
             }
             CheckedExpr::AssignLocal { value, .. } => contains_any(value),
             CheckedExpr::FieldAccess { object, .. } => contains_any(object),
+            CheckedExpr::ForceUnwrap { expr, .. } => contains_any(expr),
             CheckedExpr::AssignField { object, value, .. } => {
                 contains_any(object) || contains_any(value)
             }
@@ -453,6 +456,7 @@ fn struct_payload_enum_sugar_lowers_to_single_struct_payload() {
                 .any(|binding| contains_any_or_dot_ident(&binding.value)),
             CheckedExpr::AssignLocal { value, .. } => contains_any_or_dot_ident(value),
             CheckedExpr::FieldAccess { object, .. } => contains_any_or_dot_ident(object),
+            CheckedExpr::ForceUnwrap { expr, .. } => contains_any_or_dot_ident(expr),
             CheckedExpr::AssignField { object, value, .. } => {
                 contains_any_or_dot_ident(object) || contains_any_or_dot_ident(value)
             }
