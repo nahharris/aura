@@ -976,23 +976,61 @@ where
     fn parse_assign_expr(&mut self) -> Result<Expr, ParseError> {
         let mark = self.mark();
         let expr = self.parse_elvis_expr()?;
-        if !self.peek_is(&TokenKind::Eq) {
-            return Ok(self.with_span(mark, expr));
-        }
-
-        let Some(name) = self.ident_assign_target(&expr) else {
+        let op = match self.peek() {
+            TokenKind::Eq => Some(None),
+            TokenKind::PlusEq => Some(Some(BinaryOp::Add)),
+            TokenKind::MinusEq => Some(Some(BinaryOp::Sub)),
+            TokenKind::StarEq => Some(Some(BinaryOp::Mul)),
+            TokenKind::SlashEq => Some(Some(BinaryOp::Div)),
+            TokenKind::PercentEq => Some(Some(BinaryOp::Mod)),
+            _ => None,
+        };
+        let Some(op) = op else {
             return Ok(self.with_span(mark, expr));
         };
 
+        let assign_name = self.ident_assign_target(&expr);
+        let assign_place = assign_name.is_none() && self.is_place_assign_target(&expr);
+        if assign_name.is_none() && !assign_place {
+            return Ok(self.with_span(mark, expr));
+        }
+
         self.bump();
-        let value = self.parse_assign_expr()?;
-        Ok(self.with_span(
-            mark,
-            Expr::Assign {
-                name,
-                value: Box::new(value),
-            },
-        ))
+        let rhs = self.parse_assign_expr()?;
+        let value = if let Some(op) = op {
+            self.with_span(
+                mark,
+                Expr::Binary {
+                    op,
+                    lhs: Box::new(expr.clone()),
+                    rhs: Box::new(rhs),
+                },
+            )
+        } else {
+            rhs
+        };
+
+        if let Some(name) = assign_name {
+            return Ok(self.with_span(
+                mark,
+                Expr::Assign {
+                    name,
+                    value: Box::new(value),
+                },
+            ));
+        }
+
+        if assign_place {
+            return Ok(self.with_span(
+                mark,
+                Expr::AssignPlace {
+                    target: Box::new(expr),
+                    value: Box::new(value),
+                },
+            ));
+        }
+
+        Ok(self.with_span(mark, expr))
     }
 
     fn starts_type_expr(&self) -> bool {
@@ -1178,10 +1216,20 @@ where
         let mut expr = self.parse_atom_expr()?;
 
         loop {
-            if self.peek_is(&TokenKind::Dot) && matches!(self.peek_n(1), Some(TokenKind::Ident(_)))
+            if self.peek_is(&TokenKind::Dot)
+                && matches!(
+                    self.peek_n(1),
+                    Some(TokenKind::Ident(_) | TokenKind::Int(_))
+                )
             {
                 self.bump();
-                let field = self.expect_ident("expected member name after '.'")?;
+                let field = match self.peek().clone() {
+                    TokenKind::Ident(field) | TokenKind::Int(field) => {
+                        self.bump();
+                        field
+                    }
+                    _ => unreachable!("member suffix precondition checked token kind"),
+                };
                 expr = Expr::Member {
                     object: Box::new(expr),
                     field,
@@ -1194,6 +1242,42 @@ where
                 || self.starts_labeled_closure_arg()
             {
                 expr = self.parse_call_suffix(expr)?;
+                continue;
+            }
+
+            let increment_op = match self.peek() {
+                TokenKind::PlusPlus => Some(BinaryOp::Add),
+                TokenKind::MinusMinus => Some(BinaryOp::Sub),
+                _ => None,
+            };
+            if let Some(op) = increment_op {
+                self.bump();
+                let one = self.with_span(mark, Expr::Int("1".to_string()));
+                let value = self.with_span(
+                    mark,
+                    Expr::Binary {
+                        op,
+                        lhs: Box::new(expr.clone()),
+                        rhs: Box::new(one),
+                    },
+                );
+                expr = if let Some(name) = self.ident_assign_target(&expr) {
+                    Expr::Assign {
+                        name,
+                        value: Box::new(value),
+                    }
+                } else if self.is_place_assign_target(&expr) {
+                    Expr::AssignPlace {
+                        target: Box::new(expr),
+                        value: Box::new(value),
+                    }
+                } else {
+                    return Err(self.error_here(
+                        "expected assignable target before increment/decrement",
+                        vec!["identifier", "field"],
+                        None,
+                    ));
+                };
                 continue;
             }
 
@@ -1575,6 +1659,14 @@ where
         }
     }
 
+    fn is_place_assign_target(&self, expr: &Expr) -> bool {
+        match expr.unspanned() {
+            Expr::Ident(_) => true,
+            Expr::Member { object, .. } => self.is_place_assign_target(object),
+            _ => false,
+        }
+    }
+
     fn starts_operand(&self) -> bool {
         matches!(
             self.peek(),
@@ -1852,6 +1944,11 @@ fn token_debug_name(kind: &TokenKind) -> String {
         TokenKind::Star => "*".to_string(),
         TokenKind::Slash => "/".to_string(),
         TokenKind::Percent => "%".to_string(),
+        TokenKind::PlusEq => "+=".to_string(),
+        TokenKind::MinusEq => "-=".to_string(),
+        TokenKind::StarEq => "*=".to_string(),
+        TokenKind::SlashEq => "/=".to_string(),
+        TokenKind::PercentEq => "%=".to_string(),
         TokenKind::PlusPlus => "++".to_string(),
         TokenKind::MinusMinus => "--".to_string(),
         TokenKind::EqEq => "==".to_string(),
@@ -1897,6 +1994,11 @@ fn same_token_variant(left: &TokenKind, right: &TokenKind) -> bool {
             | (TokenKind::Star, TokenKind::Star)
             | (TokenKind::Slash, TokenKind::Slash)
             | (TokenKind::Percent, TokenKind::Percent)
+            | (TokenKind::PlusEq, TokenKind::PlusEq)
+            | (TokenKind::MinusEq, TokenKind::MinusEq)
+            | (TokenKind::StarEq, TokenKind::StarEq)
+            | (TokenKind::SlashEq, TokenKind::SlashEq)
+            | (TokenKind::PercentEq, TokenKind::PercentEq)
             | (TokenKind::PlusPlus, TokenKind::PlusPlus)
             | (TokenKind::MinusMinus, TokenKind::MinusMinus)
             | (TokenKind::EqEq, TokenKind::EqEq)
@@ -2689,6 +2791,65 @@ mod tests {
                                     Expr::Binary { op: BinaryOp::Add, .. }
                                 )
                     )
+        ));
+    }
+
+    #[test]
+    fn parse_assignment_to_named_field_place() {
+        let src = "def main() -> Void { self.slice = newSlice; }";
+        let parsed = Parser::parse_source(src).expect("should parse field assignment expression");
+        let Decl::Function(function) = &parsed.declarations[0] else {
+            panic!("expected function declaration")
+        };
+        let Expr::Block(items) = u(&function.body) else {
+            panic!("expected block body")
+        };
+
+        assert!(matches!(
+            u(&items[0]),
+            Expr::AssignPlace { target, value }
+                if matches!(
+                    u(target.as_ref()),
+                    Expr::Member { object, field }
+                        if field == "slice"
+                            && matches!(u(object.as_ref()), Expr::Ident(name) if name == "self")
+                )
+                && matches!(u(value.as_ref()), Expr::Ident(name) if name == "newSlice")
+        ));
+    }
+
+    #[test]
+    fn parse_compound_assignment_to_tuple_index_place() {
+        let src = "def main() -> Void { coord.0 += 2; }";
+        let parsed =
+            Parser::parse_source(src).expect("should parse tuple-index compound assignment");
+        let Decl::Function(function) = &parsed.declarations[0] else {
+            panic!("expected function declaration")
+        };
+        let Expr::Block(items) = u(&function.body) else {
+            panic!("expected block body")
+        };
+
+        assert!(matches!(
+            u(&items[0]),
+            Expr::AssignPlace { target, value }
+                if matches!(
+                    u(target.as_ref()),
+                    Expr::Member { object, field }
+                        if field == "0"
+                            && matches!(u(object.as_ref()), Expr::Ident(name) if name == "coord")
+                )
+                && matches!(
+                    u(value.as_ref()),
+                    Expr::Binary { op: BinaryOp::Add, lhs, rhs }
+                        if matches!(
+                            u(lhs.as_ref()),
+                            Expr::Member { object, field }
+                                if field == "0"
+                                    && matches!(u(object.as_ref()), Expr::Ident(name) if name == "coord")
+                        )
+                        && matches!(u(rhs.as_ref()), Expr::Int(v) if v == "2")
+                )
         ));
     }
 

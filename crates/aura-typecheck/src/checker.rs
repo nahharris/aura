@@ -61,6 +61,7 @@ pub struct TypeChecker {
 struct ValueBinding {
     ty: TyId,
     mutable: bool,
+    place_mutable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +75,11 @@ struct MethodBinding {
 struct MatchSubject {
     name: String,
     ty: TyId,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FieldPlace {
+    field_ty: TyId,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -814,6 +820,171 @@ impl TypeChecker {
         self.methods.get(&(receiver_ty, name.to_string()))
     }
 
+    fn field_lookup(&self, object_ty: TyId, field: &str) -> Option<(usize, TyId)> {
+        let object_ty = self.unifier.resolve(object_ty);
+        match self.interner.get(object_ty) {
+            Some(Ty::Struct(fields)) => fields
+                .iter()
+                .enumerate()
+                .find(|(_, (name, _))| name == field)
+                .map(|(index, (_, ty))| (index, *ty)),
+            Some(Ty::Tuple(items)) => field
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| items.get(index).copied().map(|ty| (index, ty))),
+            _ => None,
+        }
+    }
+
+    fn emit_missing_field(&mut self, object_ty: TyId, field: &str) {
+        let object_ty_ref = self
+            .interner
+            .get(self.unifier.resolve(object_ty))
+            .map(|ty| ty_to_ref(ty, &self.interner))
+            .unwrap_or(TypeRef::Unknown);
+        self.diagnostics.push(
+            self.typecheck_error(
+                Issue::TypeMismatch {
+                    context: TypingContext::Custom("field access".to_string()),
+                    expected: object_ty_ref,
+                    actual: TypeRef::Unknown,
+                },
+                format!("type has no field '{field}'"),
+            )
+            .with_hint("use a field declared by the tuple or struct type"),
+        );
+    }
+
+    fn infer_field_place(&mut self, target: &Expr) -> Option<FieldPlace> {
+        let Expr::Member { object, field } = TypeChecker::base_expr(target) else {
+            return None;
+        };
+        self.ensure_place_root_mutable(object);
+        let object_ty = self.infer_expr(object);
+        if let Some((_, field_ty)) = self.field_lookup(object_ty, field) {
+            Some(FieldPlace { field_ty })
+        } else {
+            self.emit_missing_field(object_ty, field);
+            None
+        }
+    }
+
+    fn infer_assign_place_expr(
+        &mut self,
+        target: &Expr,
+        value: &Expr,
+        expected: Option<TyId>,
+    ) -> TyId {
+        if let Some(name) = Self::ident_name(target) {
+            return self.infer_assign_local(name, value, expected);
+        }
+        let Some(place) = self.infer_field_place(target) else {
+            self.diagnostics.push(
+                self.typecheck_error(
+                    Issue::TypeMismatch {
+                        context: TypingContext::Assignment,
+                        expected: TypeRef::Unknown,
+                        actual: TypeRef::Unknown,
+                    },
+                    "assignment target is not assignable",
+                )
+                .with_hint("assign to a local, struct field, or tuple field"),
+            );
+            return self.unknown_ty();
+        };
+        let actual = self.infer_expr_with_expected(value, place.field_ty);
+        self.require_assignable(place.field_ty, actual, "field assignment");
+        if let Some(expected) = expected {
+            self.require_assignable(expected, place.field_ty, "bidirectional expected type");
+        }
+        place.field_ty
+    }
+
+    fn infer_assign_local(&mut self, name: &str, value: &Expr, expected: Option<TyId>) -> TyId {
+        let Some(binding) = self.lookup_value_binding(name) else {
+            self.diagnostics.push(
+                self.typecheck_error(
+                    Issue::UnresolvedIdent {
+                        name: name.to_string(),
+                    },
+                    format!("cannot assign to undeclared local '{name}'"),
+                )
+                .with_hint("declare the local with `let` or `def` before assigning"),
+            );
+            return self.unknown_ty();
+        };
+        if !binding.mutable {
+            let binding_ty = self
+                .interner
+                .get(binding.ty)
+                .cloned()
+                .unwrap_or_else(|| self.missing_ty_fallback());
+            self.diagnostics.push(
+                self.typecheck_error(
+                    Issue::TypeMismatch {
+                        context: TypingContext::Assignment,
+                        expected: ty_to_ref(&binding_ty, &self.interner),
+                        actual: ty_to_ref(&binding_ty, &self.interner),
+                    },
+                    format!("cannot assign to immutable local '{name}'"),
+                )
+                .with_hint("use `let` for mutable locals or stop reassigning this name"),
+            );
+            return binding.ty;
+        }
+        let actual = self.infer_expr_with_expected(value, binding.ty);
+        self.require_assignable(binding.ty, actual, "assignment");
+        if let Some(expected) = expected {
+            self.require_assignable(expected, binding.ty, "bidirectional expected type");
+        }
+        binding.ty
+    }
+
+    fn ensure_place_root_mutable(&mut self, expr: &Expr) {
+        match TypeChecker::base_expr(expr) {
+            Expr::Ident(name) => {
+                let Some(binding) = self.lookup_value_binding(name) else {
+                    self.diagnostics.push(
+                        self.typecheck_error(
+                            Issue::UnresolvedIdent { name: name.clone() },
+                            format!("cannot assign through undeclared local '{name}'"),
+                        )
+                        .with_hint("declare the local with `let` before assigning through it"),
+                    );
+                    return;
+                };
+                if !binding.place_mutable {
+                    self.diagnostics.push(
+                        self.typecheck_error(
+                            Issue::TypeMismatch {
+                                context: TypingContext::Assignment,
+                                expected: ty_to_ref(
+                                    self.interner.get(binding.ty).unwrap_or(&Ty::Any),
+                                    &self.interner,
+                                ),
+                                actual: ty_to_ref(
+                                    self.interner.get(binding.ty).unwrap_or(&Ty::Any),
+                                    &self.interner,
+                                ),
+                            },
+                            format!("cannot assign through immutable local '{name}'"),
+                        )
+                        .with_hint("bind the value with `let` or mutate through a parameter"),
+                    );
+                }
+            }
+            Expr::Member { object, .. } => self.ensure_place_root_mutable(object),
+            _ => {}
+        }
+    }
+
+    fn ident_name(expr: &Expr) -> Option<&str> {
+        match TypeChecker::base_expr(expr) {
+            Expr::Ident(name) => Some(name.as_str()),
+            _ => None,
+        }
+    }
+
     fn register_method(&mut self, receiver_ty: TyId, name: String, link_name: String, ty: TyId) {
         self.methods.insert(
             (receiver_ty, name.clone()),
@@ -1356,16 +1527,14 @@ impl TypeChecker {
                 let ty = self.resolve_type_expr(&stub.ty);
                 self.pop_generic_scope();
 
-                if !matches!(self.interner.get(ty), Some(Ty::Macro { .. })) {
-                    self.ir.declarations.push(CheckedDecl {
-                        name: stub.name.clone(),
-                        link_name: stub.name.clone(),
-                        params: Vec::new(),
-                        ty,
-                        is_extern: true,
-                        value: CheckedExpr::Any,
-                    });
-                }
+                self.ir.declarations.push(CheckedDecl {
+                    name: stub.name.clone(),
+                    link_name: stub.name.clone(),
+                    params: Vec::new(),
+                    ty,
+                    is_extern: true,
+                    value: CheckedExpr::Any,
+                });
                 values.insert(stub.name.clone(), ty);
                 self.insert_value(stub.name.clone(), ty, false);
             }
@@ -1403,7 +1572,7 @@ impl TypeChecker {
                 self.push_scope();
                 for param in &function.params {
                     let param_ty = self.resolve_type_expr(&param.ty);
-                    self.insert_value(param.name.clone(), param_ty, false);
+                    self.insert_value_param(param.name.clone(), param_ty);
                 }
                 if let Expr::MultiArm(arms) = TypeChecker::base_expr(&function.body) {
                     if let Some(receiver_ty) = receiver_ty {
@@ -1520,7 +1689,7 @@ impl TypeChecker {
                 self.push_scope();
                 for param in &macro_decl.params {
                     let param_ty = self.resolve_type_expr(&param.ty);
-                    self.insert_value(param.name.clone(), param_ty, false);
+                    self.insert_value_param(param.name.clone(), param_ty);
                 }
                 if let Expr::MultiArm(arms) = TypeChecker::base_expr(&macro_decl.body) {
                     self.diagnostics
@@ -1668,39 +1837,9 @@ impl TypeChecker {
                 );
                 self.unknown_ty()
             }
-            Expr::Assign { name, value } => {
-                let Some(binding) = self.lookup_value_binding(name) else {
-                    self.diagnostics.push(
-                        self.typecheck_error(
-                            Issue::UnresolvedIdent { name: name.clone() },
-                            format!("cannot assign to undeclared local '{name}'"),
-                        )
-                        .with_hint("declare the local with `let` or `def` before assigning"),
-                    );
-                    return self.unknown_ty();
-                };
-                if !binding.mutable {
-                    let binding_ty = self
-                        .interner
-                        .get(binding.ty)
-                        .cloned()
-                        .unwrap_or_else(|| self.missing_ty_fallback());
-                    self.diagnostics.push(
-                        self.typecheck_error(
-                            Issue::TypeMismatch {
-                                context: TypingContext::Assignment,
-                                expected: ty_to_ref(&binding_ty, &self.interner),
-                                actual: ty_to_ref(&binding_ty, &self.interner),
-                            },
-                            format!("cannot assign to immutable local '{name}'"),
-                        )
-                        .with_hint("use `let` for mutable locals or stop reassigning this name"),
-                    );
-                    return binding.ty;
-                }
-                let rhs_ty = self.infer_expr_with_expected(value, binding.ty);
-                self.require_assignable(binding.ty, rhs_ty, "assignment");
-                binding.ty
+            Expr::Assign { name, value } => self.infer_assign_local(name, value, None),
+            Expr::AssignPlace { target, value } => {
+                self.infer_assign_place_expr(target, value, None)
             }
             Expr::List(items) => {
                 if let Some(first) = items.first() {
@@ -1898,15 +2037,26 @@ impl TypeChecker {
                     }
                 }
                 Expr::Ident(namespace) => {
-                    let _ = self.infer_expr(object);
-                    self.namespace_binding(namespace, field)
-                        .cloned()
-                        .map(|binding| self.type_ref_to_ty(&binding.ty))
-                        .unwrap_or_else(|| self.unknown_ty())
+                    if let Some(binding) = self.namespace_binding(namespace, field).cloned() {
+                        self.type_ref_to_ty(&binding.ty)
+                    } else {
+                        let object_ty = self.infer_expr(object);
+                        if let Some((_, field_ty)) = self.field_lookup(object_ty, field) {
+                            field_ty
+                        } else {
+                            self.emit_missing_field(object_ty, field);
+                            self.unknown_ty()
+                        }
+                    }
                 }
                 _ => {
-                    let _ = self.infer_expr(object);
-                    self.unknown_ty()
+                    let object_ty = self.infer_expr(object);
+                    if let Some((_, field_ty)) = self.field_lookup(object_ty, field) {
+                        field_ty
+                    } else {
+                        self.emit_missing_field(object_ty, field);
+                        self.unknown_ty()
+                    }
                 }
             },
             Expr::TypeExpr(_) => self.unknown_ty(),
@@ -2149,39 +2299,10 @@ impl TypeChecker {
                 result
             }
             (Expr::Assign { name, value }, _) => {
-                let Some(binding) = self.lookup_value_binding(name) else {
-                    self.diagnostics.push(
-                        self.typecheck_error(
-                            Issue::UnresolvedIdent { name: name.clone() },
-                            format!("cannot assign to undeclared local '{name}'"),
-                        )
-                        .with_hint("declare the local with `let` or `def` before assigning"),
-                    );
-                    return self.unknown_ty();
-                };
-                if !binding.mutable {
-                    let binding_ty = self
-                        .interner
-                        .get(binding.ty)
-                        .cloned()
-                        .unwrap_or_else(|| self.missing_ty_fallback());
-                    self.diagnostics.push(
-                        self.typecheck_error(
-                            Issue::TypeMismatch {
-                                context: TypingContext::Assignment,
-                                expected: ty_to_ref(&binding_ty, &self.interner),
-                                actual: ty_to_ref(&binding_ty, &self.interner),
-                            },
-                            format!("cannot assign to immutable local '{name}'"),
-                        )
-                        .with_hint("use `let` for mutable locals or stop reassigning this name"),
-                    );
-                    return binding.ty;
-                }
-                let actual = self.infer_expr_with_expected(value, binding.ty);
-                self.require_assignable(binding.ty, actual, "assignment");
-                self.require_assignable(expected, binding.ty, "bidirectional expected type");
-                binding.ty
+                self.infer_assign_local(name, value, Some(expected))
+            }
+            (Expr::AssignPlace { target, value }, _) => {
+                self.infer_assign_place_expr(target, value, Some(expected))
             }
             (
                 Expr::Call {
@@ -4455,7 +4576,27 @@ impl TypeChecker {
 
     fn insert_value(&mut self, name: String, ty: TyId, mutable: bool) {
         if let Some(scope) = self.value_env_scopes.last_mut() {
-            scope.insert(name, ValueBinding { ty, mutable });
+            scope.insert(
+                name,
+                ValueBinding {
+                    ty,
+                    mutable,
+                    place_mutable: mutable,
+                },
+            );
+        }
+    }
+
+    fn insert_value_param(&mut self, name: String, ty: TyId) {
+        if let Some(scope) = self.value_env_scopes.last_mut() {
+            scope.insert(
+                name,
+                ValueBinding {
+                    ty,
+                    mutable: false,
+                    place_mutable: true,
+                },
+            );
         }
     }
 
@@ -4754,6 +4895,7 @@ impl TypeChecker {
                 value: Box::new(self.lower_expr(value)),
                 ty: self.preview_expr_ty(expr),
             },
+            Expr::AssignPlace { target, value } => self.lower_assign_place(target, value),
             Expr::List(items) => {
                 CheckedExpr::List(items.iter().map(|item| self.lower_expr(item)).collect())
             }
@@ -5141,17 +5283,42 @@ impl TypeChecker {
                         payload: Some(Box::new(self.lower_expr(object))),
                     }
                 }
-                Expr::Ident(namespace) => self
-                    .namespace_binding(namespace, field)
-                    .map(|binding| CheckedExpr::Ident(binding.link_name.clone()))
-                    .unwrap_or_else(|| CheckedExpr::DotIdent {
-                        name: field.clone(),
-                        payload: Some(Box::new(self.lower_expr(object))),
-                    }),
-                _ => CheckedExpr::DotIdent {
-                    name: field.clone(),
-                    payload: Some(Box::new(self.lower_expr(object))),
-                },
+                Expr::Ident(namespace) => {
+                    if let Some(binding) = self.namespace_binding(namespace, field) {
+                        CheckedExpr::Ident(binding.link_name.clone())
+                    } else {
+                        let object_ty = self.preview_expr_ty(object);
+                        if let Some((field_index, field_ty)) = self.field_lookup(object_ty, field) {
+                            CheckedExpr::FieldAccess {
+                                object: Box::new(self.lower_expr(object)),
+                                object_ty,
+                                field_index,
+                                ty: field_ty,
+                            }
+                        } else {
+                            CheckedExpr::DotIdent {
+                                name: field.clone(),
+                                payload: Some(Box::new(self.lower_expr(object))),
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    let object_ty = self.preview_expr_ty(object);
+                    if let Some((field_index, field_ty)) = self.field_lookup(object_ty, field) {
+                        CheckedExpr::FieldAccess {
+                            object: Box::new(self.lower_expr(object)),
+                            object_ty,
+                            field_index,
+                            ty: field_ty,
+                        }
+                    } else {
+                        CheckedExpr::DotIdent {
+                            name: field.clone(),
+                            payload: Some(Box::new(self.lower_expr(object))),
+                        }
+                    }
+                }
             },
             Expr::Binary { op, lhs, rhs } => {
                 if matches!(op, ParsedBinaryOp::Pipe) {
@@ -5203,6 +5370,31 @@ impl TypeChecker {
         }
     }
 
+    fn lower_assign_place(&mut self, target: &Expr, value: &Expr) -> CheckedExpr {
+        if let Some(name) = Self::ident_name(target) {
+            return CheckedExpr::AssignLocal {
+                name: name.to_string(),
+                value: Box::new(self.lower_expr(value)),
+                ty: self.preview_expr_ty(target),
+            };
+        }
+
+        if let Expr::Member { object, field } = TypeChecker::base_expr(target) {
+            let object_ty = self.preview_expr_ty(object);
+            if let Some((field_index, field_ty)) = self.field_lookup(object_ty, field) {
+                return CheckedExpr::AssignField {
+                    object: Box::new(self.lower_expr(object)),
+                    object_ty,
+                    field_index,
+                    value: Box::new(self.lower_expr(value)),
+                    ty: field_ty,
+                };
+            }
+        }
+
+        CheckedExpr::Any
+    }
+
     fn preview_expr_ty(&mut self, expr: &Expr) -> TyId {
         match expr {
             Expr::Spanned { expr, .. } => self.preview_expr_ty(expr),
@@ -5248,6 +5440,7 @@ impl TypeChecker {
             Expr::Assign { name, .. } => {
                 self.lookup_value(name).unwrap_or_else(|| self.unknown_ty())
             }
+            Expr::AssignPlace { target, .. } => self.preview_expr_ty(target),
             Expr::Closure {
                 params,
                 return_type,
@@ -5280,7 +5473,12 @@ impl TypeChecker {
                     ConversionDecision::Incompatible => self.unknown_ty(),
                 }
             }
-            Expr::Member { object, .. } => self.preview_expr_ty(object),
+            Expr::Member { object, field } => {
+                let object_ty = self.preview_expr_ty(object);
+                self.field_lookup(object_ty, field)
+                    .map(|(_, field_ty)| field_ty)
+                    .unwrap_or_else(|| self.unknown_ty())
+            }
             Expr::Binary { op, lhs, rhs } => self.infer_binary_expr(*op, lhs, rhs),
             Expr::MacroApply { macro_name, .. } if macro_name == "let" || macro_name == "def" => {
                 self.interner.intern(Ty::Void)
@@ -5784,6 +5982,68 @@ mod tests {
             CheckedExpr::LocalBind { mutable: true, .. }
         ));
         assert!(matches!(items[1], CheckedExpr::AssignLocal { .. }));
+    }
+
+    #[test]
+    fn checked_ir_emits_field_access_and_assignment_nodes() {
+        let program = Parser::parse_source(
+            "def Pair = (left: Int, right: Int); \
+             def main() -> Int { let p = (left = 1, right = 2); p.right = 3; p.right }",
+        )
+        .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(
+            checked.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            checked.diagnostics
+        );
+        let module = checked.module.expect("checked module should exist");
+        let main_decl = module
+            .ir
+            .declarations
+            .iter()
+            .find(|decl| decl.name == "main")
+            .expect("main declaration should exist");
+
+        let CheckedExpr::Block(items) = &main_decl.value else {
+            panic!("expected block body in checked ir")
+        };
+        assert!(matches!(
+            items[1],
+            CheckedExpr::AssignField { field_index: 1, .. }
+        ));
+        let final_expr = match &items[2] {
+            CheckedExpr::Coerce { expr, .. } | CheckedExpr::Cast { expr, .. } => expr.as_ref(),
+            expr => expr,
+        };
+        assert!(matches!(
+            final_expr,
+            CheckedExpr::FieldAccess { field_index: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn immutable_root_rejects_field_assignment() {
+        let program = Parser::parse_source(
+            "def main() -> Int { def p = (left = 1, right = 2); p.right = 3; p.right }",
+        )
+        .expect("source should parse");
+
+        let checked = check_module(&program);
+        assert!(
+            checked.module.is_none(),
+            "expected failure, got diagnostics: {:?}",
+            checked.diagnostics
+        );
+        assert!(
+            checked.diagnostics.iter().any(|d| d
+                .hint
+                .as_deref()
+                .is_some_and(|hint| hint.contains("bind the value with `let`"))),
+            "diagnostics: {:?}",
+            checked.diagnostics
+        );
     }
 
     #[test]

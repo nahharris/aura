@@ -167,6 +167,10 @@ pub enum Expr {
         name: String,
         value: Box<Expr>,
     },
+    AssignPlace {
+        target: Box<Expr>,
+        value: Box<Expr>,
+    },
     Binary {
         op: BinaryOp,
         lhs: Box<Expr>,

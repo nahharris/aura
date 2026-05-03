@@ -68,6 +68,8 @@ Resolve symbols, enforce type rules, and emit checked IR for downstream codegen.
 - Shorthand constructor forms (`.variant`, `.variant(payload)`) remain expected-type-driven and work for both local and imported enum aliases.
 - Struct-payload enum sugar is typechecked as one struct payload. Field sugar is accepted only when the resolved variant payload is a struct; explicit payload values remain valid.
 - Enum-match lowering records struct payload field bindings so backend lowering can bind `.variant(field = name)` arms without changing the single-payload enum representation.
+- Struct and tuple field reads lower to `CheckedExpr::FieldAccess`; field/index assignments lower to `CheckedExpr::AssignField` after resolving the object type, field index, and field type.
+- Field assignment requires an assignable root place. `let` locals are assignable, immutable locals are rejected, and function parameters can be mutated through fields while remaining non-reassignable as bindings.
 - `If`, `Cases`, and `Loop` are dedicated checked-IR control-flow nodes.
 - `Return`, `Break`, and `Continue` carry resolved target names so LLVM lowering can emit direct control transfer.
 - Managed-memory calls lower to `CheckedExpr::MemoryOp` nodes so backend codegen receives the operation kind, element type, result type, and already-lowered arguments without exposing raw pointers to Aura source.

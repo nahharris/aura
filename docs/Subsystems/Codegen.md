@@ -61,6 +61,8 @@ Managed memory operations lower from `CheckedExpr::MemoryOp` nodes rather than p
 
 The element size and alignment come from LLVM type layout classification in codegen; Aura source cannot call the raw helper symbols directly.
 
+Struct and tuple literals lower to aggregate storage pointers in LLVM. `FieldAccess` loads from a resolved field GEP, and `AssignField` stores through the same indexed field pointer before returning the assigned value.
+
 ## Testing
 
 LLVM-specific validation runs through `cargo xtask llvm ...`.

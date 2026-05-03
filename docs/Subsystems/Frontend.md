@@ -39,6 +39,12 @@ Own the syntax-facing compiler surface: tokens, lexing, AST construction, parsin
 - Member-call parsing accepts generic type receivers such as `RawAlloc[Int].new(4)` by representing `RawAlloc[Int]` as a type-application receiver before the `.new` call.
 - Macro application detection leaves uppercase generic receivers followed by `.` to the member-call parser instead of treating them as macro calls.
 
+## Assignable Places
+
+- Local assignment remains `Expr::Assign`; non-local places such as `obj.field = value` and `coord.0 = value` parse as `Expr::AssignPlace`.
+- Compound assignments and postfix `++`/`--` desugar during parsing to normal assignment with a binary RHS, preserving right-associative assignment precedence.
+- Numeric member syntax after a postfix-capable expression, such as `coord.0`, is tokenized as member access rather than as a malformed float literal.
+
 ## Entry Points
 
 - `Parser` is re-exported from `crates/aura-frontend/src/lib.rs`

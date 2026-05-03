@@ -2,7 +2,7 @@
 title: Directory Inventory
 kind: generated
 generated_by: cargo xtask docs sync
-generated_at: 2026-04-24T08:47:20.4119107Z
+generated_at: 2026-04-25T16:05:21.3016038Z
 ---
 
 # Directory Inventory
@@ -10,6 +10,8 @@ generated_at: 2026-04-24T08:47:20.4119107Z
 | Directory | Purpose |
 | --- | --- |
 | `.cargo` | Cargo aliases and workspace command configuration. |
+| `.cursor` | Editor or assistant-specific local metadata. |
+| `.vscode` | VS Code workspace settings. |
 | `aura-stl` | Aura standard library package. |
 | `crates` | Rust workspace crates. |
 | `docs` | Obsidian vault and engineering documentation. |

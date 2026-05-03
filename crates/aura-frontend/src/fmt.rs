@@ -451,6 +451,11 @@ impl<'a> Formatter<'a> {
                 self.out.push_str(" = ");
                 self.write_expr(value, false);
             }
+            Expr::AssignPlace { target, value } => {
+                self.write_expr(target, false);
+                self.out.push_str(" = ");
+                self.write_expr(value, false);
+            }
             Expr::Binary { op, lhs, rhs } => self.write_binary(*op, lhs, rhs),
             Expr::TypeExpr(ty) => self.write_type_expr(ty),
             Expr::Label { label, expr } => {

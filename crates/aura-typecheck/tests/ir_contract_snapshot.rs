@@ -67,6 +67,10 @@ fn semantically_checked_ir_has_no_any_nodes_for_core_operator_path() {
                 bindings.iter().any(|binding| contains_any(&binding.value))
             }
             CheckedExpr::AssignLocal { value, .. } => contains_any(value),
+            CheckedExpr::FieldAccess { object, .. } => contains_any(object),
+            CheckedExpr::AssignField { object, value, .. } => {
+                contains_any(object) || contains_any(value)
+            }
             CheckedExpr::List(items) => items.iter().any(contains_any),
             CheckedExpr::Dict(entries) => entries
                 .iter()
@@ -199,6 +203,10 @@ fn pipe_operator_consumes_placeholder_in_rhs_call_without_any_nodes() {
                 bindings.iter().any(|binding| contains_any(&binding.value))
             }
             CheckedExpr::AssignLocal { value, .. } => contains_any(value),
+            CheckedExpr::FieldAccess { object, .. } => contains_any(object),
+            CheckedExpr::AssignField { object, value, .. } => {
+                contains_any(object) || contains_any(value)
+            }
             CheckedExpr::List(items) => items.iter().any(contains_any),
             CheckedExpr::Dict(entries) => entries
                 .iter()
@@ -300,6 +308,10 @@ fn enum_constructor_forms_typecheck_without_any_nodes() {
                 bindings.iter().any(|binding| contains_any(&binding.value))
             }
             CheckedExpr::AssignLocal { value, .. } => contains_any(value),
+            CheckedExpr::FieldAccess { object, .. } => contains_any(object),
+            CheckedExpr::AssignField { object, value, .. } => {
+                contains_any(object) || contains_any(value)
+            }
             CheckedExpr::List(items) => items.iter().any(contains_any),
             CheckedExpr::Dict(entries) => entries
                 .iter()
@@ -440,6 +452,10 @@ fn struct_payload_enum_sugar_lowers_to_single_struct_payload() {
                 .iter()
                 .any(|binding| contains_any_or_dot_ident(&binding.value)),
             CheckedExpr::AssignLocal { value, .. } => contains_any_or_dot_ident(value),
+            CheckedExpr::FieldAccess { object, .. } => contains_any_or_dot_ident(object),
+            CheckedExpr::AssignField { object, value, .. } => {
+                contains_any_or_dot_ident(object) || contains_any_or_dot_ident(value)
+            }
             CheckedExpr::Dict(entries) => entries.iter().any(|(key, value)| {
                 contains_any_or_dot_ident(key) || contains_any_or_dot_ident(value)
             }),

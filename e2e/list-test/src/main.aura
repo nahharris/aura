@@ -1,0 +1,12 @@
+def to_string(o: Option[String]) -> String {
+    .null -> "null",
+    .some(value) -> value,
+}
+
+def main() -> Void {
+    let l = List[String].new();
+    l.push("a");
+    l.push("b");
+    l.push("c");
+    println(to_string(l.get(0)));
+}

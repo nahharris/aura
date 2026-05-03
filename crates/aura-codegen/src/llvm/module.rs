@@ -403,6 +403,23 @@ mod tests {
 
     #[cfg(feature = "llvm-backend")]
     #[test]
+    fn llvm_ir_supports_struct_field_assignment() {
+        let src = "def main() -> Int { let p = (left = 1, right = 2); p.right = 3; p.right }";
+        let program = Parser::parse_source(src).expect("parse");
+        let checked = check_module(&program);
+        let module = checked
+            .module
+            .unwrap_or_else(|| panic!("checked module: {:?}", checked.diagnostics));
+
+        let ir = super::emit_module_stub("field_assign", &module).expect("emit ir");
+
+        assert!(ir.contains("getelementptr"));
+        assert!(ir.contains("store i32 3"));
+        assert!(ir.contains("load i32"));
+    }
+
+    #[cfg(feature = "llvm-backend")]
+    #[test]
     fn object_emission_supports_syscall_write_with_string_into() {
         let src = "defstub syscall_exit: Func[(code: Int), Never]; \
                    defstub syscall_write: Func[(fd: Int, bytes: Bytes), ISize]; \

@@ -133,6 +133,7 @@ struct ModuleRecord {
     checked: CheckedModule,
     value_exports: Vec<ExportBinding>,
     type_exports: Vec<TypeExportBinding>,
+    macro_exports: Vec<ExportBinding>,
 }
 
 type BuildContextResult = (
@@ -346,22 +347,31 @@ impl ProjectCompiler {
             });
         }
 
-        let mut value_exports = checked
-            .ir
-            .declarations
-            .iter()
-            .filter(|decl| !decl.is_extern)
-            .map(|decl| ExportBinding {
+        let mut value_exports: Vec<ExportBinding> = Vec::new();
+        let mut macro_exports: Vec<ExportBinding> = Vec::new();
+        for decl in &checked.ir.declarations {
+            let ty = ty_to_type_ref(&checked.types, decl.ty);
+            let binding = ExportBinding {
                 owner_path: path.clone(),
                 binding: ImportBinding {
                     source_name: decl.name.clone(),
                     local_name: decl.name.clone(),
                     link_name: decl.link_name.clone(),
-                    ty: ty_to_type_ref(&checked.types, decl.ty),
+                    ty: ty.clone(),
                 },
-            })
-            .collect::<Vec<_>>();
-        value_exports.extend(explicit_value_reexports);
+            };
+            if matches!(ty, TypeRef::Macro { .. }) {
+                macro_exports.push(binding);
+            } else if matches!(ty, TypeRef::Func { .. }) && decl.is_extern {
+                macro_exports.push(binding);
+            } else {
+                value_exports.push(binding);
+            }
+        }
+        let explicit_value_reexports: Vec<ExportBinding> = explicit_value_reexports
+            .into_iter()
+            .filter(|export| !matches!(export.binding.ty, TypeRef::Func { .. }))
+            .collect();
         let mut type_exports = checked
             .type_aliases
             .iter()
@@ -399,6 +409,7 @@ impl ProjectCompiler {
                 checked,
                 value_exports,
                 type_exports,
+                macro_exports,
             },
         );
         Ok(())
@@ -470,51 +481,81 @@ impl ProjectCompiler {
             self.ensure_module(&import_path, entry_path, options)?;
             let value_exports = self.module_value_exports(&import_path)?;
             let type_exports = self.module_type_exports(&import_path)?;
+            let macro_exports = self.module_macro_exports(&import_path)?;
             match &use_decl.binding {
                 UseBinding::Namespace(alias) => {
+                    let mut all_exports: Vec<ImportBinding> = value_exports
+                        .iter()
+                        .chain(macro_exports.iter())
+                        .map(|binding| binding.binding.clone())
+                        .collect();
                     self.insert_namespace(
                         &mut context,
                         &mut imported_origins,
                         &mut namespace_origins,
                         importer_path,
                         alias,
-                        value_exports
-                            .iter()
-                            .map(|binding| binding.binding.clone())
-                            .collect::<Vec<_>>(),
+                        all_exports,
                         format!("namespace import from {}", use_decl.source),
                     )?;
                 }
                 UseBinding::Fields(fields) => {
                     for field in fields {
                         let mut found = false;
+                        let field_name = &field.source_name;
                         if let Some(export) = value_exports
                             .iter()
-                            .find(|binding| binding.binding.source_name == field.source_name)
+                            .find(|binding| binding.binding.source_name == *field_name)
                         {
-                            let binding = ImportBinding {
-                                source_name: field.source_name.clone(),
-                                local_name: field.local_name.clone(),
-                                link_name: export.binding.link_name.clone(),
-                                ty: export.binding.ty.clone(),
-                            };
-                            self.insert_imported_value(
-                                &mut context,
-                                &mut imported_origins,
-                                &namespace_origins,
-                                importer_path,
-                                binding.clone(),
-                                format!("field import from {}", use_decl.source),
-                            )?;
-                            explicit_value_reexports.push(ExportBinding {
-                                owner_path: export.owner_path.clone(),
-                                binding,
-                            });
+                            if matches!(export.binding.ty, TypeRef::Macro { .. }) {
+                                if !imported_origins.contains_key(&field.local_name) {
+                                    imported_origins.insert(
+                                        field.local_name.clone(),
+                                        format!("macro stub from {}", use_decl.source),
+                                    );
+                                }
+                                found = true;
+                            } else {
+                                if imported_origins.contains_key(&field.local_name) {
+                                    found = true;
+                                } else {
+                                    let binding = ImportBinding {
+                                        source_name: field.source_name.clone(),
+                                        local_name: field.local_name.clone(),
+                                        link_name: export.binding.link_name.clone(),
+                                        ty: export.binding.ty.clone(),
+                                    };
+                                    self.insert_imported_value(
+                                        &mut context,
+                                        &mut imported_origins,
+                                        &namespace_origins,
+                                        importer_path,
+                                        binding.clone(),
+                                        format!("field import from {}", use_decl.source),
+                                    )?;
+                                    explicit_value_reexports.push(ExportBinding {
+                                        owner_path: export.owner_path.clone(),
+                                        binding,
+                                    });
+                                    found = true;
+                                }
+                            }
+                        }
+                        if let Some(export) = macro_exports
+                            .iter()
+                            .find(|binding| binding.binding.source_name == *field_name)
+                        {
+                            if !imported_origins.contains_key(&field.local_name) {
+                                imported_origins.insert(
+                                    field.local_name.clone(),
+                                    format!("macro stub from {}", use_decl.source),
+                                );
+                            }
                             found = true;
                         }
                         if let Some(export) = type_exports
                             .iter()
-                            .find(|binding| binding.binding.source_name == field.source_name)
+                            .find(|binding| binding.binding.source_name == *field_name)
                         {
                             let binding = TypeImportBinding {
                                 source_name: field.source_name.clone(),
@@ -540,7 +581,7 @@ impl ProjectCompiler {
                                 path: Some(importer_path.to_path_buf()),
                                 message: format!(
                                     "module '{}' does not export '{}'",
-                                    use_decl.source, field.source_name
+                                    use_decl.source, field_name
                                 ),
                             });
                         }
@@ -574,7 +615,19 @@ impl ProjectCompiler {
         lib_path: &Path,
         origin_label: &str,
     ) -> Result<(), ProjectCompileError> {
+        eprintln!(
+            "DEBUG import_library_exports: lib_path={}, origin_label={}",
+            lib_path.display(),
+            origin_label
+        );
         for export in self.module_value_exports(lib_path)? {
+            eprintln!(
+                "DEBUG:   importing value '{}' (type={:?})",
+                export.binding.source_name, export.binding.ty
+            );
+            if matches!(export.binding.ty, TypeRef::Macro { .. }) {
+                continue;
+            }
             self.insert_imported_value(
                 context,
                 imported_origins,
@@ -736,6 +789,16 @@ impl ProjectCompiler {
             })
     }
 
+    fn module_macro_exports(&self, path: &Path) -> Result<Vec<ExportBinding>, ProjectCompileError> {
+        self.modules
+            .get(path)
+            .map(|module| module.macro_exports.clone())
+            .ok_or_else(|| ProjectCompileError::Resolve {
+                path: Some(path.to_path_buf()),
+                message: "module was not loaded before export lookup".to_string(),
+            })
+    }
+
     fn required_modules(&self, entry_path: &Path) -> HashSet<PathBuf> {
         let entry_path = entry_path.to_path_buf();
         let link_owners = self
@@ -839,6 +902,13 @@ fn sanitize_symbol_fragment(value: &str) -> String {
         }
     }
     out
+}
+
+fn type_ref_for_name(name: &str, exports: &[ExportBinding]) -> Option<TypeRef> {
+    exports
+        .iter()
+        .find(|binding| binding.binding.source_name == name)
+        .map(|binding| binding.binding.ty.clone())
 }
 
 fn ty_to_type_ref(types: &TyInterner, ty_id: aura_typecheck::TyId) -> TypeRef {
@@ -1104,6 +1174,13 @@ fn collect_expr_external_link_names(
             }
         }
         CheckedExpr::AssignLocal { value, .. } => {
+            collect_expr_external_link_names(value, extern_links, out);
+        }
+        CheckedExpr::FieldAccess { object, .. } => {
+            collect_expr_external_link_names(object, extern_links, out);
+        }
+        CheckedExpr::AssignField { object, value, .. } => {
+            collect_expr_external_link_names(object, extern_links, out);
             collect_expr_external_link_names(value, extern_links, out);
         }
         CheckedExpr::Call { callee, args } => {

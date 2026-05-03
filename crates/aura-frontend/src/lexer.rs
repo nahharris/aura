@@ -71,7 +71,11 @@ impl<'a> Lexer<'a> {
                     if self.peek_n(1) == Some('.') {
                         self.push_pair(TokenKind::Range);
                     } else if self.peek_n(1).map(|c| c.is_ascii_digit()).unwrap_or(false) {
-                        return Err(self.error_here(Issue::LexFloatNoIntPart));
+                        if self.previous_token_allows_numeric_member() {
+                            self.push_simple(TokenKind::Dot);
+                        } else {
+                            return Err(self.error_here(Issue::LexFloatNoIntPart));
+                        }
                     } else {
                         self.push_simple(TokenKind::Dot);
                     }
@@ -134,6 +138,8 @@ impl<'a> Lexer<'a> {
                 '+' => {
                     if self.peek_n(1) == Some('+') {
                         self.push_pair(TokenKind::PlusPlus);
+                    } else if self.peek_n(1) == Some('=') {
+                        self.push_pair(TokenKind::PlusEq);
                     } else {
                         self.push_simple(TokenKind::Plus);
                     }
@@ -143,13 +149,33 @@ impl<'a> Lexer<'a> {
                         self.push_pair(TokenKind::Arrow);
                     } else if self.peek_n(1) == Some('-') {
                         self.push_pair(TokenKind::MinusMinus);
+                    } else if self.peek_n(1) == Some('=') {
+                        self.push_pair(TokenKind::MinusEq);
                     } else {
                         self.push_simple(TokenKind::Minus);
                     }
                 }
-                '*' => self.push_simple(TokenKind::Star),
-                '%' => self.push_simple(TokenKind::Percent),
-                '/' => self.push_simple(TokenKind::Slash),
+                '*' => {
+                    if self.peek_n(1) == Some('=') {
+                        self.push_pair(TokenKind::StarEq);
+                    } else {
+                        self.push_simple(TokenKind::Star);
+                    }
+                }
+                '%' => {
+                    if self.peek_n(1) == Some('=') {
+                        self.push_pair(TokenKind::PercentEq);
+                    } else {
+                        self.push_simple(TokenKind::Percent);
+                    }
+                }
+                '/' => {
+                    if self.peek_n(1) == Some('=') {
+                        self.push_pair(TokenKind::SlashEq);
+                    } else {
+                        self.push_simple(TokenKind::Slash);
+                    }
+                }
                 '"' => self.lex_string()?,
                 '\'' => self.lex_char()?,
                 c if c.is_ascii_digit() => self.lex_number()?,
@@ -168,6 +194,13 @@ impl<'a> Lexer<'a> {
         };
         self.tokens.push(Token::new(TokenKind::Eof, eof_span));
         Ok(std::mem::take(&mut self.tokens))
+    }
+
+    fn previous_token_allows_numeric_member(&self) -> bool {
+        matches!(
+            self.tokens.last().map(|token| &token.kind),
+            Some(TokenKind::Ident(_) | TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace)
+        )
     }
 
     fn lex_ident_or_keyword(&mut self) {

@@ -69,6 +69,19 @@ pub enum CheckedExpr {
         value: Box<CheckedExpr>,
         ty: TyId,
     },
+    FieldAccess {
+        object: Box<CheckedExpr>,
+        object_ty: TyId,
+        field_index: usize,
+        ty: TyId,
+    },
+    AssignField {
+        object: Box<CheckedExpr>,
+        object_ty: TyId,
+        field_index: usize,
+        value: Box<CheckedExpr>,
+        ty: TyId,
+    },
     Closure {
         params: Vec<String>,
         return_ty: Option<TyId>,

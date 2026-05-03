@@ -33,6 +33,7 @@ Status: frozen v1.
 
 - Literals and atoms: `Ident`, `Int`, `Float`, `Char`, `String`, `DotIdent`, `Any`
 - Collections: `List`, `Dict`
+- Product places: `FieldAccess` and `AssignField` for typed struct/tuple field reads and writes
 - Invocation and macro surfaces: `Call`, `BinaryOp`, `MacroApply`
 - Managed memory: `MemoryOp` with operation kind, element type, result type, and arguments
 - Enum constructors: `EnumCtor` with one optional payload expression
@@ -56,6 +57,7 @@ Status: frozen v1.
 6. Struct-payload enum constructor sugar lowers to `EnumCtor` with one `Struct` payload, not multiple payloads.
 7. `EnumMatch` arms may carry struct field binding metadata for backend locals, but payload storage remains the single enum payload.
 8. Safe managed-memory calls lower to `MemoryOp`; raw host pointers are not represented in Aura source-level checked calls.
+9. Field reads and field assignments carry the resolved object type, field index, and field type so backends do not re-resolve source member syntax.
 
 ## Stub Declarations
 

@@ -90,7 +90,7 @@ mod llvm_lowering {
     use inkwell::{
         AddressSpace,
         context::Context,
-        types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType},
+        types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType},
     };
 
     use super::{
@@ -170,6 +170,33 @@ mod llvm_lowering {
         ty_id: TyId,
     ) -> Result<BasicTypeEnum<'ctx>, CodegenError> {
         classify_type(types, ty_id)?.to_basic_type(context, types)
+    }
+
+    pub fn aggregate_storage_type<'ctx>(
+        context: &'ctx Context,
+        types: &TyInterner,
+        ty_id: TyId,
+    ) -> Result<StructType<'ctx>, CodegenError> {
+        match types.get(ty_id) {
+            Some(Ty::Struct(fields)) => {
+                let field_types = fields
+                    .iter()
+                    .map(|(_, field_ty)| lower_basic_type(context, types, *field_ty))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(context.struct_type(&field_types, false))
+            }
+            Some(Ty::Tuple(items)) => {
+                let field_types = items
+                    .iter()
+                    .map(|field_ty| lower_basic_type(context, types, *field_ty))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(context.struct_type(&field_types, false))
+            }
+            Some(other) => Err(CodegenError::UnsupportedType(format!(
+                "expected aggregate storage type, got {other:?}"
+            ))),
+            None => Err(CodegenError::InvalidTypeId(ty_id.0)),
+        }
     }
 
     pub fn lower_function_type<'ctx>(
@@ -304,7 +331,9 @@ mod llvm_lowering {
 }
 
 #[cfg(feature = "llvm-backend")]
-pub use llvm_lowering::{enum_basic_type, lower_basic_type, lower_function_type, type_layout};
+pub use llvm_lowering::{
+    aggregate_storage_type, enum_basic_type, lower_basic_type, lower_function_type, type_layout,
+};
 
 #[cfg(test)]
 mod tests {

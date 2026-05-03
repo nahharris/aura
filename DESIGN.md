@@ -508,11 +508,13 @@ Multi-line strings use standard string literals; literal newlines inside `"..."`
 
 ### Local Assignment
 
-`=` assigns a value to an *already declared* variable inside a local scope.
+`=` assigns a value to an *already declared* variable or assignable place inside a local scope. Assignable places include local names, named struct fields, tuple indexes, and nested combinations of those forms.
 
 ```aura
 x = 1;
 x = x + 1;
+person.name = "John Doe";
+coord.0 = coord.0 + 2;
 ```
 
 Attempting to assign to an undeclared name is a compile error.

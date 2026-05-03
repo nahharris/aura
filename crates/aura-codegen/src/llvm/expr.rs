@@ -16,13 +16,17 @@ use inkwell::{
     AddressSpace,
     module::Linkage,
     types::BasicTypeEnum,
-    values::{BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, IntValue},
+    values::{
+        BasicMetadataValueEnum, BasicValue, BasicValueEnum, FunctionValue, IntValue, PointerValue,
+    },
 };
 
 #[cfg(feature = "llvm-backend")]
 use super::context::{CodegenContext, LoopTarget};
 #[cfg(feature = "llvm-backend")]
-use super::types::{AuraFunctionType, AuraValueType, lower_basic_type, type_layout};
+use super::types::{
+    AuraFunctionType, AuraValueType, aggregate_storage_type, lower_basic_type, type_layout,
+};
 
 pub fn classify_expr_kind(expr: &CheckedExpr) -> &'static str {
     match expr {
@@ -41,6 +45,8 @@ pub fn classify_expr_kind(expr: &CheckedExpr) -> &'static str {
         CheckedExpr::Block(_) => "block",
         CheckedExpr::LocalBind { .. } => "local_bind",
         CheckedExpr::AssignLocal { .. } => "assign_local",
+        CheckedExpr::FieldAccess { .. } => "field_access",
+        CheckedExpr::AssignField { .. } => "assign_field",
         CheckedExpr::Closure { .. } => "closure",
         CheckedExpr::Any => "any",
         CheckedExpr::List(_) => "list",
@@ -114,6 +120,8 @@ pub fn lower_expr<'ctx, 'm>(
             .ptr_type(AddressSpace::default())
             .const_null()
             .as_basic_value_enum()),
+        CheckedExpr::Tuple(items) => lower_tuple_value(cg, items),
+        CheckedExpr::Struct(fields) => lower_struct_value(cg, fields),
         CheckedExpr::Block(items) => {
             cg.push_local_scope();
             let mut last = cg
@@ -159,6 +167,36 @@ pub fn lower_expr<'ctx, 'm>(
                 .build_store(slot.ptr, stored)
                 .map_err(|_| CodegenError::UnsupportedExpression("assign_local"))?;
             load_local_slot(cg, slot, name)
+        }
+        CheckedExpr::FieldAccess {
+            object,
+            object_ty,
+            field_index,
+            ty,
+        } => {
+            let field_ptr = field_ptr(cg, object, *object_ty, *field_index, "field_access")?;
+            let field_ty = lower_basic_type(cg.context, &cg.checked.types, *ty)?;
+            cg.builder
+                .build_load(field_ty, field_ptr, "load_field")
+                .map_err(|_| CodegenError::UnsupportedExpression("field_access"))
+        }
+        CheckedExpr::AssignField {
+            object,
+            object_ty,
+            field_index,
+            value,
+            ty,
+        } => {
+            let field_ptr = field_ptr(cg, object, *object_ty, *field_index, "assign_field")?;
+            let lowered = lower_expr(cg, value)?;
+            let stored = coerce_basic_value_for_slot(cg, lowered, *ty)?;
+            cg.builder
+                .build_store(field_ptr, stored)
+                .map_err(|_| CodegenError::UnsupportedExpression("assign_field"))?;
+            let field_ty = lower_basic_type(cg.context, &cg.checked.types, *ty)?;
+            cg.builder
+                .build_load(field_ty, field_ptr, "load_assigned_field")
+                .map_err(|_| CodegenError::UnsupportedExpression("assign_field"))
         }
         CheckedExpr::Ident(name) => {
             if let Some(slot) = cg.lookup_local(name) {
@@ -269,6 +307,85 @@ fn load_local_slot<'ctx, 'm>(
     cg.builder
         .build_load(basic_ty, slot.ptr, &format!("load_{name}"))
         .map_err(|_| CodegenError::UnsupportedExpression("ident"))
+}
+
+#[cfg(feature = "llvm-backend")]
+fn lower_tuple_value<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    items: &[CheckedExpr],
+) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    let values = items
+        .iter()
+        .map(|item| lower_expr(cg, item))
+        .collect::<Result<Vec<_>, _>>()?;
+    lower_aggregate_values(cg, &values, "tuple")
+}
+
+#[cfg(feature = "llvm-backend")]
+fn lower_struct_value<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    fields: &[(String, CheckedExpr)],
+) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    let values = fields
+        .iter()
+        .map(|(_, value)| lower_expr(cg, value))
+        .collect::<Result<Vec<_>, _>>()?;
+    lower_aggregate_values(cg, &values, "struct")
+}
+
+#[cfg(feature = "llvm-backend")]
+fn lower_aggregate_values<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    values: &[BasicValueEnum<'ctx>],
+    label: &'static str,
+) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    let field_types = values
+        .iter()
+        .map(BasicValueEnum::get_type)
+        .collect::<Vec<_>>();
+    let storage_ty = cg.context.struct_type(&field_types, false);
+    let slot = cg
+        .builder
+        .build_alloca(storage_ty, &format!("{label}_value"))
+        .map_err(|_| CodegenError::UnsupportedExpression(label))?;
+    for (index, value) in values.iter().enumerate() {
+        let field_ptr = cg
+            .builder
+            .build_struct_gep(
+                storage_ty,
+                slot,
+                index as u32,
+                &format!("{label}_field_{index}"),
+            )
+            .map_err(|_| CodegenError::UnsupportedExpression(label))?;
+        cg.builder
+            .build_store(field_ptr, *value)
+            .map_err(|_| CodegenError::UnsupportedExpression(label))?;
+    }
+    Ok(slot.as_basic_value_enum())
+}
+
+#[cfg(feature = "llvm-backend")]
+fn field_ptr<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    object: &CheckedExpr,
+    object_ty: aura_typecheck::TyId,
+    field_index: usize,
+    label: &'static str,
+) -> Result<PointerValue<'ctx>, CodegenError> {
+    let object_value = lower_expr(cg, object)?;
+    let BasicValueEnum::PointerValue(object_ptr) = object_value else {
+        return Err(CodegenError::UnsupportedExpression(label));
+    };
+    let storage_ty = aggregate_storage_type(cg.context, &cg.checked.types, object_ty)?;
+    cg.builder
+        .build_struct_gep(
+            storage_ty,
+            object_ptr,
+            field_index as u32,
+            &format!("{label}_ptr"),
+        )
+        .map_err(|_| CodegenError::UnsupportedExpression(label))
 }
 
 #[cfg(feature = "llvm-backend")]
