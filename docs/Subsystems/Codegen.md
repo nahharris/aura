@@ -70,6 +70,12 @@ Struct and tuple literals lower to aggregate storage pointers in LLVM. Aggregate
 
 `!!` force unwrap now follows the shared panic path on failure instead of lowering directly to an unconditional trap.
 
+Interface runtime lowering uses a two-pointer object ABI in LLVM codegen:
+- data pointer (points to stored concrete receiver value)
+- vtable/witness pointer (method function-pointer slots)
+
+`CheckedExpr::MakeInterfaceObj` allocates and initializes that object shape, and `CheckedExpr::InterfaceCall` performs indirect-call lowering through the vtable slot for the selected interface method.
+
 ## Testing
 
 LLVM-specific validation runs through `cargo xtask llvm ...`.

@@ -68,6 +68,8 @@ pub enum Ty {
     Tuple(Vec<TyId>),
     Struct(Vec<(String, TyId)>),
     Union(Vec<TyId>),
+    Interface(Vec<(String, TyId)>),
+    InterfaceObject(Vec<(String, TyId)>),
     Enum(Vec<(String, Option<TyId>)>),
 }
 

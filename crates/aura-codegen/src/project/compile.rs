@@ -1005,6 +1005,12 @@ fn ty_to_type_ref(types: &TyInterner, ty_id: aura_typecheck::TyId) -> TypeRef {
         Some(Ty::Union(items)) => {
             TypeRef::Union(items.iter().map(|ty| ty_to_type_ref(types, *ty)).collect())
         }
+        Some(Ty::Interface(members)) | Some(Ty::InterfaceObject(members)) => TypeRef::Interface(
+            members
+                .iter()
+                .map(|(name, ty)| (name.clone(), ty_to_type_ref(types, *ty)))
+                .collect(),
+        ),
         Some(Ty::Enum(variants)) => TypeRef::Enum(
             variants
                 .iter()
@@ -1122,6 +1128,13 @@ fn ty_ref_to_ty_id(types: &mut TyInterner, ty: &TypeRef) -> aura_typecheck::TyId
                 .collect::<Vec<_>>();
             types.intern(Ty::Union(items))
         }
+        TypeRef::Interface(members) => {
+            let members = members
+                .iter()
+                .map(|(name, ty)| (name.clone(), ty_ref_to_ty_id(types, ty)))
+                .collect::<Vec<_>>();
+            types.intern(Ty::Interface(members))
+        }
         TypeRef::Enum(variants) => {
             let variants = variants
                 .iter()
@@ -1216,6 +1229,22 @@ fn collect_expr_external_link_names(
         }
         CheckedExpr::Call { callee, args } => {
             collect_expr_external_link_names(callee, extern_links, out);
+            for arg in args {
+                collect_expr_external_link_names(arg, extern_links, out);
+            }
+        }
+        CheckedExpr::MakeInterfaceObj {
+            expr, method_links, ..
+        } => {
+            collect_expr_external_link_names(expr, extern_links, out);
+            for link in method_links {
+                if extern_links.contains(link) {
+                    out.insert(link.clone());
+                }
+            }
+        }
+        CheckedExpr::InterfaceCall { receiver, args, .. } => {
+            collect_expr_external_link_names(receiver, extern_links, out);
             for arg in args {
                 collect_expr_external_link_names(arg, extern_links, out);
             }

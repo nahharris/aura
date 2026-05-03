@@ -59,6 +59,12 @@ Resolve symbols, enforce type rules, and emit checked IR for downstream codegen.
 - Assignment-form type aliases preserve static parameters: `def[T] Box = (value: T)` records an alias scheme.
 - Alias schemes instantiate during type resolution, so `Box[Int]` resolves under a temporary generic scope where `T = Int`.
 - Monomorphic aliases export as concrete `TypeRef`s. Generic aliases export their source-level alias scheme through `CheckContext` so consumers can instantiate imported aliases such as `Box[Int]`.
+- Interface types are represented as first-class type nodes in checker/type IR (`interface(...)` is not lowered as a nominal fallback name).
+- Empty interface `interface()` resolves equivalently to `Any`.
+- Interface bounds are enforced structurally via receiver method sets (`lookup_method` + receiver matching), including named interface aliases and anonymous `interface(...)` constraints.
+- Typecheck now emits dedicated diagnostics for structural failures: missing required interface methods and method signature mismatches.
+- Interface-typed value conversions now lower through `CheckedExpr::MakeInterfaceObj` when a concrete value is assigned/coerced into an interface type.
+- Interface member calls on interface-typed receivers lower through `CheckedExpr::InterfaceCall` rather than the direct static `CheckedExpr::Call` path.
 
 ## Checked IR Notes
 

@@ -1,0 +1,12 @@
+def ToDouble = interface(double: Func[(), ISize]);
+def Int.double() -> ISize { 2 }
+
+def call(x: ToDouble) -> ISize { x.double() }
+
+def make_value() -> ToDouble { 1 }
+
+def main() -> Void {
+    let value = make_value();
+    call(value);
+    ()
+}

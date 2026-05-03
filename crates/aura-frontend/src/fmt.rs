@@ -654,6 +654,18 @@ impl<'a> Formatter<'a> {
                 self.out.push_str(name);
                 self.write_static_args(args);
             }
+            TypeExpr::Interface(fields) => {
+                self.out.push_str("interface(");
+                for (i, (name, ty)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        self.out.push_str(", ");
+                    }
+                    self.out.push_str(name);
+                    self.out.push_str(": ");
+                    self.write_type_expr(ty);
+                }
+                self.out.push(')');
+            }
             TypeExpr::Tuple(items) => {
                 self.out.push('(');
                 for (i, item) in items.iter().enumerate() {

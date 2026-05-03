@@ -9,6 +9,7 @@ impl InterfaceRegistry {
     pub fn with_prelude() -> Self {
         let mut known = HashSet::new();
         for name in [
+            "interface",
             "Eq",
             "Hash",
             "Show",

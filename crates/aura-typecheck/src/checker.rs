@@ -131,7 +131,7 @@ enum TypeConstraint {
     },
     InterfaceBound {
         ty: TyId,
-        interface: String,
+        interface: TypeExpr,
         context: String,
         obligations: Vec<String>,
         span: Option<aura_diagnostics::Span>,
@@ -152,6 +152,20 @@ enum TypeConstraint {
     },
 }
 
+#[derive(Debug, Clone)]
+enum InterfaceCheckFailure {
+    MissingMethod {
+        interface: String,
+        method: String,
+    },
+    SignatureMismatch {
+        interface: String,
+        method: String,
+        expected: TyId,
+        actual: TyId,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConversionMode {
     ImplicitOnly,
@@ -162,6 +176,7 @@ enum ConversionMode {
 enum ConversionDecision {
     Identity,
     Coerce,
+    MakeInterfaceObj,
     Cast,
     Incompatible,
 }
@@ -443,6 +458,13 @@ impl TypeChecker {
                     .map(|item| self.type_ref_to_ty(item))
                     .collect::<Vec<_>>();
                 self.interner.intern(Ty::Union(item_tys))
+            }
+            TypeRef::Interface(members) => {
+                let member_tys = members
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), self.type_ref_to_ty(ty)))
+                    .collect::<Vec<_>>();
+                self.interner.intern(Ty::Interface(member_tys))
             }
             TypeRef::Enum(variants) => {
                 let lowered = variants
@@ -855,6 +877,95 @@ impl TypeChecker {
             }
         }
         None
+    }
+
+    fn interface_method_sig(
+        &self,
+        interface_ty: TyId,
+        field: &str,
+    ) -> Option<(usize, Vec<FuncParam>, TyId)> {
+        let interface_ty = self.unifier.resolve(interface_ty);
+        let Some(Ty::Interface(members) | Ty::InterfaceObject(members)) = self.interner.get(interface_ty)
+        else {
+            return None;
+        };
+        let (method_index, (_, method_ty)) = members
+            .iter()
+            .enumerate()
+            .find(|(_, (name, _))| name == field)?;
+        let resolved_method_ty = self.unifier.resolve(*method_ty);
+        let Some(Ty::Func { params, ret }) = self.interner.get(resolved_method_ty).cloned() else {
+            return None;
+        };
+        Some((method_index, params, ret))
+    }
+
+    fn infer_interface_member_call(
+        &mut self,
+        receiver_ty: TyId,
+        field: &str,
+        args: &[Expr],
+        trailing: &[LabeledClosureArg],
+        expected: Option<TyId>,
+    ) -> Option<TyId> {
+        let Some((_, params, ret)) = self.interface_method_sig(receiver_ty, field) else {
+            return None;
+        };
+        if !trailing.is_empty() {
+            self.diagnostics.push(
+                self.typecheck_error(
+                    Issue::TypeMismatch {
+                        context: TypingContext::Custom("call".to_string()),
+                        expected: TypeRef::Unknown,
+                        actual: TypeRef::Unknown,
+                    },
+                    "interface dispatch does not support trailing closure arguments",
+                )
+                .with_hint("pass all interface call arguments positionally"),
+            );
+            return Some(self.unknown_ty());
+        }
+        if args.len() != params.len() {
+            self.diagnostics.push(
+                self.typecheck_error(
+                    Issue::TypeMismatch {
+                        context: TypingContext::Custom("call".to_string()),
+                        expected: TypeRef::Unknown,
+                        actual: TypeRef::Unknown,
+                    },
+                    format!(
+                        "interface method expects {} argument(s), found {}",
+                        params.len(),
+                        args.len()
+                    ),
+                )
+                .with_hint("match the interface method signature arity"),
+            );
+            return Some(self.unknown_ty());
+        }
+        for (arg, param) in args.iter().zip(params.iter()) {
+            let actual = self.infer_expr_with_expected(arg, param.ty);
+            self.require_assignable(param.ty, actual, "interface method argument");
+        }
+        if let Some(expected) = expected {
+            self.require_assignable(expected, ret, "bidirectional expected type");
+        }
+        Some(ret)
+    }
+
+    fn interface_method_links(&mut self, concrete_ty: TyId, interface_ty: TyId) -> Vec<String> {
+        let interface_ty = self.unifier.resolve(interface_ty);
+        let Some(Ty::Interface(members)) = self.interner.get(interface_ty).cloned() else {
+            return Vec::new();
+        };
+        members
+            .iter()
+            .map(|(method, _)| {
+                self.lookup_method(concrete_ty, method)
+                    .map(|binding| binding.link_name)
+                    .unwrap_or_else(|| method.clone())
+            })
+            .collect()
     }
 
     fn match_receiver_ty(
@@ -2183,6 +2294,11 @@ impl TypeChecker {
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
                     if let Some(receiver_ty) = self.resolve_type_receiver_expr(object) {
                         let receiver_ty = self.unifier.resolve(receiver_ty);
+                        if let Some(ret) =
+                            self.infer_interface_member_call(receiver_ty, field, args, trailing, None)
+                        {
+                            return ret;
+                        }
                         if let Some(method) = self.lookup_method(receiver_ty, field) {
                             self.record_method_call(expr, method.link_name.clone());
                             self.record_method_call(callee.as_ref(), method.link_name.clone());
@@ -2198,6 +2314,11 @@ impl TypeChecker {
                     }
                     let receiver_ty = self.infer_expr(object);
                     let receiver_ty = self.unifier.resolve(receiver_ty);
+                    if let Some(ret) =
+                        self.infer_interface_member_call(receiver_ty, field, args, trailing, None)
+                    {
+                        return ret;
+                    }
                     if let Some(method) = self.lookup_method(receiver_ty, field) {
                         self.record_method_call(expr, method.link_name.clone());
                         self.record_method_call(callee.as_ref(), method.link_name.clone());
@@ -2264,6 +2385,7 @@ impl TypeChecker {
                 ) {
                     ConversionDecision::Identity
                     | ConversionDecision::Coerce
+                    | ConversionDecision::MakeInterfaceObj
                     | ConversionDecision::Cast => target,
                     ConversionDecision::Incompatible => {
                         self.diagnostics.push(
@@ -2438,6 +2560,7 @@ impl TypeChecker {
                 ) {
                     ConversionDecision::Identity
                     | ConversionDecision::Coerce
+                    | ConversionDecision::MakeInterfaceObj
                     | ConversionDecision::Cast => return target,
                     ConversionDecision::Incompatible => {}
                 }
@@ -2682,6 +2805,16 @@ impl TypeChecker {
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
                     if let Some(receiver_ty) = self.resolve_type_receiver_expr(object) {
                         let receiver_ty = self.unifier.resolve(receiver_ty);
+                        if let Some(actual) = self.infer_interface_member_call(
+                            receiver_ty,
+                            field,
+                            args,
+                            trailing,
+                            Some(expected),
+                        ) {
+                            self.require_assignable(expected, actual, "bidirectional expected type");
+                            return actual;
+                        }
                         if let Some(method) = self.lookup_method(receiver_ty, field) {
                             self.record_method_call(expr, method.link_name.clone());
                             self.record_method_call(callee.as_ref(), method.link_name.clone());
@@ -2699,6 +2832,16 @@ impl TypeChecker {
                     }
                     let receiver_ty = self.infer_expr(object);
                     let receiver_ty = self.unifier.resolve(receiver_ty);
+                    if let Some(actual) = self.infer_interface_member_call(
+                        receiver_ty,
+                        field,
+                        args,
+                        trailing,
+                        Some(expected),
+                    ) {
+                        self.require_assignable(expected, actual, "bidirectional expected type");
+                        return actual;
+                    }
                     if let Some(method) = self.lookup_method(receiver_ty, field) {
                         self.record_method_call(expr, method.link_name.clone());
                         self.record_method_call(callee.as_ref(), method.link_name.clone());
@@ -2800,6 +2943,7 @@ impl TypeChecker {
                 ) {
                     ConversionDecision::Identity
                     | ConversionDecision::Coerce
+                    | ConversionDecision::MakeInterfaceObj
                     | ConversionDecision::Cast => target,
                     ConversionDecision::Incompatible => {
                         self.emit_type_mismatch(
@@ -2935,7 +3079,9 @@ impl TypeChecker {
                                 ConversionMode::ImplicitOnly,
                                 "union payload"
                             ),
-                            ConversionDecision::Identity | ConversionDecision::Coerce
+                            ConversionDecision::Identity
+                                | ConversionDecision::Coerce
+                                | ConversionDecision::MakeInterfaceObj
                         ) {
                             return expected;
                         }
@@ -3219,6 +3365,7 @@ impl TypeChecker {
                 ) {
                     ConversionDecision::Identity
                     | ConversionDecision::Coerce
+                    | ConversionDecision::MakeInterfaceObj
                     | ConversionDecision::Cast => target,
                     ConversionDecision::Incompatible => {
                         self.diagnostics.push(
@@ -3282,6 +3429,12 @@ impl TypeChecker {
                 name: name.clone(),
                 args: args.iter().map(|a| self.lower_static_arg(a)).collect(),
             },
+            TypeExpr::Interface(fields) => CheckedTypeExpr::Interface(
+                fields
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), self.lower_type_expr(ty)))
+                    .collect(),
+            ),
             TypeExpr::Tuple(items) if items.is_empty() => CheckedTypeExpr::Named {
                 name: "Void".to_string(),
                 args: Vec::new(),
@@ -3386,13 +3539,17 @@ impl TypeChecker {
 
         if matches!(
             self.conversion_decision(lhs, rhs, ConversionMode::ImplicitOnly, context),
-            ConversionDecision::Identity | ConversionDecision::Coerce
+            ConversionDecision::Identity
+                | ConversionDecision::Coerce
+                | ConversionDecision::MakeInterfaceObj
         ) {
             return lhs;
         }
         if matches!(
             self.conversion_decision(rhs, lhs, ConversionMode::ImplicitOnly, context),
-            ConversionDecision::Identity | ConversionDecision::Coerce
+            ConversionDecision::Identity
+                | ConversionDecision::Coerce
+                | ConversionDecision::MakeInterfaceObj
         ) {
             return rhs;
         }
@@ -3423,6 +3580,12 @@ impl TypeChecker {
             Some(Ty::Struct(fields)) => fields
                 .iter()
                 .any(|(_, field_ty)| self.type_contains_infer_var(*field_ty)),
+            Some(Ty::Interface(members)) => members
+                .iter()
+                .any(|(_, member_ty)| self.type_contains_infer_var(*member_ty)),
+            Some(Ty::InterfaceObject(members)) => members
+                .iter()
+                .any(|(_, member_ty)| self.type_contains_infer_var(*member_ty)),
             Some(Ty::Enum(variants)) => variants
                 .iter()
                 .any(|(_, payload)| payload.is_some_and(|ty| self.type_contains_infer_var(ty))),
@@ -3454,6 +3617,16 @@ impl TypeChecker {
                     .map(|(name, ty)| (name.clone(), self.resolve_type_expr(ty)))
                     .collect::<Vec<_>>();
                 self.interner.intern(Ty::Struct(lowered))
+            }
+            TypeExpr::Interface(members) => {
+                if members.is_empty() {
+                    return self.interner.intern(Ty::Any);
+                }
+                let lowered = members
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), self.resolve_type_expr(ty)))
+                    .collect::<Vec<_>>();
+                self.interner.intern(Ty::Interface(lowered))
             }
             TypeExpr::Named { name, args } => {
                 if let Some(alias) = self.aliases.get(name) {
@@ -3506,6 +3679,21 @@ impl TypeChecker {
                         return self.unknown_ty();
                     }
                     return self.interner.intern(Ty::Enum(variants));
+                }
+
+                if name == "interface" {
+                    let mut members = Vec::new();
+                    for arg in args {
+                        if let StaticArg::Type(TypeExpr::Struct(items)) = arg {
+                            for (field, ty) in items {
+                                members.push((field.clone(), self.resolve_type_expr(ty)));
+                            }
+                        }
+                    }
+                    if members.is_empty() {
+                        return self.interner.intern(Ty::Any);
+                    }
+                    return self.interner.intern(Ty::Interface(members));
                 }
 
                 if name == "Result" {
@@ -4147,13 +4335,17 @@ impl TypeChecker {
             for c in &param.constraints {
                 match c {
                     GenericConstraint::Interface(interface) => {
-                        self.pending_constraints
-                            .push(TypeConstraint::InterfaceExists {
-                                interface: interface.clone(),
+                        if let TypeExpr::Named {
+                            name: iface_name, ..
+                        } = interface
+                        {
+                            self.pending_constraints.push(TypeConstraint::InterfaceExists {
+                                interface: iface_name.clone(),
                                 context: format!("generic call `{name}` for `{}`", param.name),
                                 obligations: self.obligation_stack.clone(),
                                 span: self.current_expr_span,
                             });
+                        }
                         self.pending_constraints
                             .push(TypeConstraint::InterfaceBound {
                                 ty: mapped,
@@ -4266,6 +4458,20 @@ impl TypeChecker {
                     .collect();
                 self.interner.intern(Ty::Struct(out))
             }
+            Ty::Interface(members) => {
+                let out = members
+                    .iter()
+                    .map(|(n, t)| (n.clone(), self.substitute_ty_id(*t, subst)))
+                    .collect();
+                self.interner.intern(Ty::Interface(out))
+            }
+            Ty::InterfaceObject(members) => {
+                let out = members
+                    .iter()
+                    .map(|(n, t)| (n.clone(), self.substitute_ty_id(*t, subst)))
+                    .collect();
+                self.interner.intern(Ty::InterfaceObject(out))
+            }
             Ty::Enum(variants) => {
                 let out = variants
                     .iter()
@@ -4320,7 +4526,9 @@ impl TypeChecker {
         });
         if matches!(
             self.conversion_decision(expected, actual, ConversionMode::ImplicitOnly, context),
-            ConversionDecision::Identity | ConversionDecision::Coerce
+            ConversionDecision::Identity
+                | ConversionDecision::Coerce
+                | ConversionDecision::MakeInterfaceObj
         ) {
             return;
         }
@@ -4373,7 +4581,9 @@ impl TypeChecker {
                             ConversionMode::ImplicitOnly,
                             &context,
                         ),
-                        ConversionDecision::Identity | ConversionDecision::Coerce
+                        ConversionDecision::Identity
+                            | ConversionDecision::Coerce
+                            | ConversionDecision::MakeInterfaceObj
                     ) {
                         self.obligation_stack = prev_obligations;
                         self.current_expr_span = prev_span;
@@ -4395,7 +4605,7 @@ impl TypeChecker {
                     obligations,
                     span,
                 } => {
-                    if !self.interfaces.contains(&interface) {
+                    if !self.interface_name_exists(&interface) {
                         let prev_obligations = self.obligation_stack.clone();
                         let prev_span = self.current_expr_span;
                         self.obligation_stack = obligations;
@@ -4432,7 +4642,9 @@ impl TypeChecker {
                             ConversionMode::ImplicitOnly,
                             &context,
                         ),
-                        ConversionDecision::Identity | ConversionDecision::Coerce
+                        ConversionDecision::Identity
+                            | ConversionDecision::Coerce
+                            | ConversionDecision::MakeInterfaceObj
                     ) {
                         self.obligation_stack = prev_obligations;
                         self.current_expr_span = prev_span;
@@ -4477,18 +4689,71 @@ impl TypeChecker {
                         continue;
                     }
 
-                    if !self.satisfies_interface(&resolved, &interface) {
+                    if let Some(failure) = self.interface_failure_for_type(ty, &interface) {
+                        match failure {
+                            InterfaceCheckFailure::MissingMethod { interface, method } => {
+                                let detail = format!(
+                                    "type `{:?}` is missing interface method `{}` required by `{}` in {}",
+                                    resolved, method, interface, context
+                                );
+                                self.diagnostics.push(
+                                    self.typecheck_error(
+                                        Issue::InterfaceMethodMissing {
+                                            detail: detail.clone(),
+                                        },
+                                        detail,
+                                    )
+                                    .with_hint(
+                                        "define the missing method on the receiver type or choose a different type",
+                                    ),
+                                );
+                            }
+                            InterfaceCheckFailure::SignatureMismatch {
+                                interface,
+                                method,
+                                expected,
+                                actual,
+                            } => {
+                                let expected_ref = self
+                                    .interner
+                                    .get(expected)
+                                    .map(|ty| ty_to_ref(ty, &self.interner))
+                                    .unwrap_or(TypeRef::Unknown);
+                                let actual_ref = self
+                                    .interner
+                                    .get(actual)
+                                    .map(|ty| ty_to_ref(ty, &self.interner))
+                                    .unwrap_or(TypeRef::Unknown);
+                                let detail = format!(
+                                    "type `{:?}` has method `{}` with incompatible signature for `{}` in {}: expected `{}`, got `{}`",
+                                    resolved, method, interface, context, expected_ref, actual_ref
+                                );
+                                self.diagnostics.push(
+                                    self.typecheck_error(
+                                        Issue::InterfaceMethodMismatch {
+                                            detail: detail.clone(),
+                                        },
+                                        detail,
+                                    )
+                                    .with_hint(
+                                        "align the method signature with the interface contract",
+                                    ),
+                                );
+                            }
+                        }
+
+                        let interface_label = self.interface_label(&interface);
                         self.diagnostics.push(
                             self.typecheck_error(
                                 Issue::InterfaceBoundUnsatisfied {
                                     detail: format!(
                                         "type `{:?}` does not satisfy interface bound `{}` in {}",
-                                        resolved, interface, context
+                                        resolved, interface_label, context
                                     ),
                                 },
                                 format!(
                                     "type {:?} does not satisfy interface bound '{}' in {}",
-                                    resolved, interface, context
+                                    resolved, interface_label, context
                                 ),
                             )
                             .with_hint(
@@ -4562,11 +4827,19 @@ impl TypeChecker {
             StaticParamKind::Constraint(TypeExpr::Static(inner)) => {
                 vec![GenericConstraint::Static((**inner).clone())]
             }
-            StaticParamKind::Constraint(TypeExpr::Named { name, args: _ }) => {
-                vec![GenericConstraint::Interface(name.clone())]
+            StaticParamKind::Constraint(TypeExpr::Named { name, args }) => {
+                vec![GenericConstraint::Interface(TypeExpr::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                })]
+            }
+            StaticParamKind::Constraint(TypeExpr::Interface(members)) => {
+                vec![GenericConstraint::Interface(TypeExpr::Interface(
+                    members.clone(),
+                ))]
             }
             StaticParamKind::Constraint(other) => {
-                vec![GenericConstraint::Interface(format!("{:?}", other))]
+                vec![GenericConstraint::Interface(other.clone())]
             }
         };
         FunctionGenericInfo {
@@ -4575,8 +4848,123 @@ impl TypeChecker {
         }
     }
 
-    fn satisfies_interface(&self, ty: &Ty, interface: &str) -> bool {
+    fn interface_name_exists(&mut self, interface: &str) -> bool {
+        if self.interfaces.contains(interface) {
+            return true;
+        }
+        if let Some(alias) = self.aliases.get(interface) {
+            return matches!(self.interner.get(alias), Some(Ty::Interface(_) | Ty::Any));
+        }
+        if let Some((static_params, body)) = self.aliases.get_generic(interface) {
+            if static_params.is_empty() {
+                let ty = self.resolve_type_expr(&body);
+                return matches!(self.interner.get(ty), Some(Ty::Interface(_) | Ty::Any));
+            }
+        }
+        false
+    }
+
+    fn interface_label(&self, interface: &TypeExpr) -> String {
         match interface {
+            TypeExpr::Named { name, .. } => name.clone(),
+            TypeExpr::Interface(_) => "interface(...)".to_string(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    fn interface_failure_for_type(
+        &mut self,
+        subject_ty: TyId,
+        interface_expr: &TypeExpr,
+    ) -> Option<InterfaceCheckFailure> {
+        let subject_ty = self.unifier.resolve(subject_ty);
+        let Some(subject) = self.interner.get(subject_ty).cloned() else {
+            return None;
+        };
+
+        if let TypeExpr::Named { name, .. } = interface_expr {
+            if self.interface_name_exists(name) {
+                let is_prelude = self.interfaces.contains(name)
+                    && self.aliases.get(name).is_none()
+                    && self.aliases.get_generic(name).is_none();
+                if is_prelude && !self.satisfies_prelude_interface(&subject, name) {
+                    return Some(InterfaceCheckFailure::MissingMethod {
+                        interface: name.clone(),
+                        method: "<prelude-contract>".to_string(),
+                    });
+                }
+            }
+        }
+
+        let interface_ty = self.resolve_type_expr(interface_expr);
+        let interface_ty = self.unifier.resolve(interface_ty);
+        let Some(interface) = self.interner.get(interface_ty).cloned() else {
+            return None;
+        };
+        let Ty::Interface(required_methods) = interface else {
+            if matches!(interface, Ty::Any) {
+                return None;
+            }
+            return Some(InterfaceCheckFailure::MissingMethod {
+                interface: self.interface_label(interface_expr),
+                method: "<not-an-interface>".to_string(),
+            });
+        };
+
+        for (method_name, expected_ty) in required_methods {
+            let Some(method) = self.lookup_method(subject_ty, &method_name) else {
+                return Some(InterfaceCheckFailure::MissingMethod {
+                    interface: self.interface_label(interface_expr),
+                    method: method_name,
+                });
+            };
+            if !self.structurally_equivalent(expected_ty, method.ty) {
+                return Some(InterfaceCheckFailure::SignatureMismatch {
+                    interface: self.interface_label(interface_expr),
+                    method: method_name,
+                    expected: expected_ty,
+                    actual: method.ty,
+                });
+            }
+        }
+        None
+    }
+
+    fn interface_failure_for_interface_ty(
+        &mut self,
+        subject_ty: TyId,
+        interface_ty: TyId,
+    ) -> Option<InterfaceCheckFailure> {
+        let subject_ty = self.unifier.resolve(subject_ty);
+        let interface_ty = self.unifier.resolve(interface_ty);
+        let Some(interface) = self.interner.get(interface_ty).cloned() else {
+            return None;
+        };
+        let Ty::Interface(required_methods) = interface else {
+            return None;
+        };
+        for (method_name, expected_ty) in required_methods {
+            let Some(method) = self.lookup_method(subject_ty, &method_name) else {
+                return Some(InterfaceCheckFailure::MissingMethod {
+                    interface: "interface(...)".to_string(),
+                    method: method_name,
+                });
+            };
+            if !self.structurally_equivalent(expected_ty, method.ty) {
+                return Some(InterfaceCheckFailure::SignatureMismatch {
+                    interface: "interface(...)".to_string(),
+                    method: method_name,
+                    expected: expected_ty,
+                    actual: method.ty,
+                });
+            }
+        }
+        None
+    }
+
+    fn satisfies_prelude_interface(&self, ty: &Ty, interface: &str) -> bool {
+        match interface {
+            "interface" => matches!(ty, Ty::Any | Ty::Interface(_)),
             "Eq" => matches!(
                 ty,
                 Ty::Bool
@@ -4631,6 +5019,12 @@ impl TypeChecker {
                 to: expected,
                 expr: Box::new(expr),
             },
+            ConversionDecision::MakeInterfaceObj => CheckedExpr::MakeInterfaceObj {
+                expr: Box::new(expr),
+                interface_ty: expected,
+                concrete_ty: actual,
+                method_links: self.interface_method_links(actual, expected),
+            },
             ConversionDecision::Cast => CheckedExpr::Cast {
                 from: actual,
                 to: expected,
@@ -4679,6 +5073,19 @@ impl TypeChecker {
 
         if matches!(actual_ty, Ty::Never) {
             return ConversionDecision::Identity;
+        }
+
+        if matches!(expected_ty, Ty::Interface(_)) {
+            if self
+                .interface_failure_for_interface_ty(actual, expected)
+                .is_none()
+            {
+                if matches!(actual_ty, Ty::Interface(_) | Ty::InterfaceObject(_)) {
+                    return ConversionDecision::Identity;
+                }
+                return ConversionDecision::MakeInterfaceObj;
+            }
+            return ConversionDecision::Incompatible;
         }
 
         if matches!(mode, ConversionMode::ImplicitOnly)
@@ -5363,6 +5770,20 @@ impl TypeChecker {
                     .cloned()
                     .or_else(|| self.resolved_method_call(callee.as_ref()).cloned());
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
+                    let receiver_preview = self.preview_expr_ty(object);
+                    let receiver_ty = self.unifier.resolve(receiver_preview);
+                    if let Some((method_index, _, ret_ty)) =
+                        self.interface_method_sig(receiver_ty, field)
+                    {
+                        return CheckedExpr::InterfaceCall {
+                            receiver: Box::new(self.lower_expr(object)),
+                            interface_ty: receiver_ty,
+                            method: field.clone(),
+                            method_index,
+                            args: args.iter().map(|a| self.lower_expr(a)).collect(),
+                            ret_ty,
+                        };
+                    }
                     let method_link_name = resolved_method.or_else(|| {
                         let receiver_ty = self.preview_expr_ty(object);
                         let receiver_ty = self.unifier.resolve(receiver_ty);
@@ -5449,6 +5870,12 @@ impl TypeChecker {
                         from: source_ty,
                         to: target_ty,
                         expr: Box::new(self.lower_expr(expr)),
+                    },
+                    ConversionDecision::MakeInterfaceObj => CheckedExpr::MakeInterfaceObj {
+                        expr: Box::new(self.lower_expr(expr)),
+                        interface_ty: target_ty,
+                        concrete_ty: source_ty,
+                        method_links: self.interface_method_links(source_ty, target_ty),
                     },
                     ConversionDecision::Cast | ConversionDecision::Incompatible => {
                         CheckedExpr::Cast {
@@ -5852,6 +6279,7 @@ impl TypeChecker {
                 ) {
                     ConversionDecision::Identity
                     | ConversionDecision::Coerce
+                    | ConversionDecision::MakeInterfaceObj
                     | ConversionDecision::Cast => target,
                     ConversionDecision::Incompatible => self.unknown_ty(),
                 }
@@ -6112,6 +6540,19 @@ fn ty_to_ref(ty: &Ty, interner: &TyInterner) -> TypeRef {
                 })
                 .collect::<Vec<_>>();
             TypeRef::Union(refs)
+        }
+        Ty::Interface(members) | Ty::InterfaceObject(members) => {
+            let refs = members
+                .iter()
+                .map(|(name, id)| {
+                    let ty_ref = interner
+                        .get(*id)
+                        .map(|t| ty_to_ref(t, interner))
+                        .unwrap_or(TypeRef::Unknown);
+                    (name.clone(), ty_ref)
+                })
+                .collect::<Vec<_>>();
+            TypeRef::Interface(refs)
         }
         Ty::Enum(variants) => {
             let refs = variants
@@ -8825,6 +9266,115 @@ mod tests {
             .diagnostics
             .iter()
             .any(|d| !d.obligations.is_empty()));
+    }
+
+    #[test]
+    fn named_interface_alias_bound_succeeds_with_structural_method_set() {
+        let src = r#"
+            def ToDouble = interface(double: Func[(), Int]);
+            def Int.double() -> Int { 2 }
+            def[T: ToDouble] id(x: T) -> T { x }
+            def y = id[Int](1)
+        "#;
+        let parsed = Parser::parse_source(src).expect("parse should succeed");
+        let checked = check_module(&parsed);
+        assert!(
+            checked.module.is_some(),
+            "expected module, diagnostics: {:?}",
+            checked.diagnostics
+        );
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .all(|d| d.severity != aura_diagnostics::Severity::Error)
+        );
+    }
+
+    #[test]
+    fn anonymous_interface_assignment_checks_method_presence_structurally() {
+        let src = r#"
+            def Int.double() -> Int { 2 }
+            def x: interface(double: Func[(), Int]) = 1
+        "#;
+        let parsed = Parser::parse_source(src).expect("parse should succeed");
+        let checked = check_module(&parsed);
+        assert!(
+            checked.module.is_some(),
+            "expected module, diagnostics: {:?}",
+            checked.diagnostics
+        );
+    }
+
+    #[test]
+    fn missing_interface_method_emits_specific_diagnostic() {
+        let src = r#"
+            def NeedsDouble = interface(double: Func[(), Int]);
+            def[T: NeedsDouble] id(x: T) -> T { x }
+            def y = id[Int](1)
+        "#;
+        let parsed = Parser::parse_source(src).expect("parse should succeed");
+        let checked = check_module(&parsed);
+        assert!(checked.module.is_none());
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_INTERFACE_METHOD_MISSING"));
+    }
+
+    #[test]
+    fn interface_method_signature_mismatch_emits_specific_diagnostic() {
+        let src = r#"
+            def NeedsDouble = interface(double: Func[(), Int]);
+            def Int.double() -> Float { 2.0 }
+            def[T: NeedsDouble] id(x: T) -> T { x }
+            def y = id[Int](1)
+        "#;
+        let parsed = Parser::parse_source(src).expect("parse should succeed");
+        let checked = check_module(&parsed);
+        assert!(checked.module.is_none());
+        assert!(checked
+            .diagnostics
+            .iter()
+            .any(|d| d.code_str() == "E_INTERFACE_METHOD_MISMATCH"));
+    }
+
+    #[test]
+    fn empty_interface_annotation_resolves_as_any_type() {
+        let src = r#"
+            def x: interface() = 1
+        "#;
+        let parsed = Parser::parse_source(src).expect("parse should succeed");
+        let checked = check_module(&parsed);
+        let module = checked.module.expect("module should exist");
+        let x_ty = module.value_types.get("x").copied().expect("x should be typed");
+        assert!(matches!(module.types.get(x_ty), Some(Ty::Any)));
+    }
+
+    #[test]
+    fn named_interface_alias_lowers_member_signature_to_interface_ty() {
+        let src = r#"
+            def ToDouble = interface(double: Func[(), Int]);
+            def Int.double() -> Int { 2 }
+            def x: ToDouble = 1
+        "#;
+        let parsed = Parser::parse_source(src).expect("parse should succeed");
+        let checked = check_module(&parsed);
+        let module = checked.module.expect("module should exist");
+        let alias_ty = module
+            .type_aliases
+            .get("ToDouble")
+            .copied()
+            .expect("ToDouble alias should exist");
+        let Some(Ty::Interface(members)) = module.types.get(alias_ty) else {
+            panic!("ToDouble should lower to Ty::Interface");
+        };
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].0, "double");
+        let Some(Ty::Func { params, .. }) = module.types.get(members[0].1) else {
+            panic!("double member should lower to function type");
+        };
+        assert!(params.is_empty(), "double signature should have no args");
     }
 
     #[test]

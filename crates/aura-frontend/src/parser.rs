@@ -716,6 +716,11 @@ where
             return Ok(TypeExpr::Static(Box::new(inner)));
         }
 
+        if self.peek_ident_is("interface") {
+            self.bump();
+            return self.parse_interface_type_expr();
+        }
+
         if self.peek_is(&TokenKind::Underscore) {
             self.bump();
             return Ok(TypeExpr::InferHole);
@@ -731,6 +736,47 @@ where
         };
 
         Ok(TypeExpr::Named { name, args })
+    }
+
+    fn parse_interface_type_expr(&mut self) -> Result<TypeExpr, ParseError> {
+        self.expect_simple(
+            &TokenKind::LParen,
+            "expected '(' after interface",
+            vec!["("],
+        )?;
+        if self.peek_is(&TokenKind::RParen) {
+            self.bump();
+            return Ok(TypeExpr::Interface(Vec::new()));
+        }
+
+        let mut fields = Vec::new();
+        loop {
+            let field = self.expect_ident("expected interface method name")?;
+            self.expect_simple(
+                &TokenKind::Colon,
+                "expected ':' after interface method name",
+                vec![":"],
+            )?;
+            let ty = self.parse_type_expr()?;
+            fields.push((field, ty));
+
+            if self.peek_is(&TokenKind::Comma) {
+                self.bump();
+                if self.peek_is(&TokenKind::RParen) {
+                    self.bump();
+                    break;
+                }
+                continue;
+            }
+            self.expect_simple(
+                &TokenKind::RParen,
+                "expected ')' after interface members",
+                vec![")"],
+            )?;
+            break;
+        }
+
+        Ok(TypeExpr::Interface(fields))
     }
 
     fn parse_paren_type_expr(&mut self) -> Result<TypeExpr, ParseError> {
@@ -3270,6 +3316,57 @@ mod tests {
         assert!(
             matches!(u(result), Expr::TypeExpr(TypeExpr::Named { name, .. }) if name == "enum")
         );
+    }
+
+    #[test]
+    fn parse_interface_type_alias_and_annotation() {
+        let src = "def Reader = interface(read: Func[(), String]); def x: interface(read: Func[(), String]) = y";
+        let parsed = Parser::parse_source(src).expect("should parse interface type forms");
+        assert_eq!(parsed.declarations.len(), 2);
+
+        let alias = match &parsed.declarations[0] {
+            Decl::Assign { value, .. } => value,
+            _ => panic!("expected assignment"),
+        };
+        assert!(matches!(
+            u(alias),
+            Expr::TypeExpr(TypeExpr::Interface(fields))
+                if fields.len() == 1 && fields[0].0 == "read"
+        ));
+
+        let annotated = match &parsed.declarations[1] {
+            Decl::Assign { value, .. } => value,
+            _ => panic!("expected assignment"),
+        };
+        assert!(matches!(
+            u(annotated),
+            Expr::Binary {
+                op: crate::ast::BinaryOp::Colon,
+                rhs,
+                ..
+            } if matches!(u(rhs.as_ref()), Expr::TypeExpr(TypeExpr::Interface(fields)) if fields.len() == 1)
+        ));
+    }
+
+    #[test]
+    fn parse_empty_interface_type() {
+        let src = "def AnyLike = interface()";
+        let parsed = Parser::parse_source(src).expect("should parse empty interface type");
+        let value = match &parsed.declarations[0] {
+            Decl::Assign { value, .. } => value,
+            _ => panic!("expected assignment"),
+        };
+        assert!(matches!(
+            u(value),
+            Expr::TypeExpr(TypeExpr::Interface(fields)) if fields.is_empty()
+        ));
+    }
+
+    #[test]
+    fn reject_malformed_interface_member_syntax() {
+        let src = "def Broken = interface(read Func[(), String])";
+        let err = Parser::parse_source(src).expect_err("interface member syntax should require ':'");
+        assert!(err.message.contains("expected"));
     }
 
     #[test]

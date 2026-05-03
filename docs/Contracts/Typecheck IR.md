@@ -49,6 +49,12 @@ Status: frozen v1.
 - `CheckedStaticArg`
 - `CheckedTypeExpr`
 - `CheckedStaticValue`
+- `CheckedTypeExpr::Interface(Vec<(String, CheckedTypeExpr)>)` preserves source interface members as first-class metadata.
+- `interface()` and `Any` are equivalent at type resolution boundaries.
+- Runtime interface dispatch is represented explicitly in checked IR:
+  - `CheckedExpr::MakeInterfaceObj` marks interface object construction/coercion sites.
+  - `CheckedExpr::InterfaceCall` marks dynamic dispatch calls against interface-typed receivers.
+- Interface constraint solving is structural and method-set based. Missing required methods and incompatible method signatures emit dedicated diagnostics.
 
 ## Invariants (Frozen v1)
 
