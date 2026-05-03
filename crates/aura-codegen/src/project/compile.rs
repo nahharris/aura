@@ -954,7 +954,6 @@ fn ty_to_type_ref(types: &TyInterner, ty_id: aura_typecheck::TyId) -> TypeRef {
         Some(Ty::Char) => TypeRef::Primitive(PrimitiveType::Char),
         Some(Ty::Void) => TypeRef::Primitive(PrimitiveType::Void),
         Some(Ty::Never) => TypeRef::Primitive(PrimitiveType::Never),
-        Some(Ty::Any) => TypeRef::Primitive(PrimitiveType::Any),
         Some(Ty::Nominal(name)) => TypeRef::Nominal(name.clone()),
         Some(Ty::RawAlloc(item)) => TypeRef::RawAlloc(Box::new(ty_to_type_ref(types, *item))),
         Some(Ty::Slice(item)) => TypeRef::Slice(Box::new(ty_to_type_ref(types, *item))),
@@ -1047,8 +1046,14 @@ fn ty_ref_to_ty_id(types: &mut TyInterner, ty: &TypeRef) -> aura_typecheck::TyId
             PrimitiveType::Char => types.intern(Ty::Char),
             PrimitiveType::Void => types.intern(Ty::Void),
             PrimitiveType::Never => types.intern(Ty::Never),
-            PrimitiveType::Any => types.intern(Ty::Any),
         },
+        TypeRef::Interface(members) => {
+            let fields = members
+                .iter()
+                .map(|(name, ty)| (name.clone(), ty_ref_to_ty_id(types, ty)))
+                .collect::<Vec<_>>();
+            types.intern(Ty::Interface(fields))
+        }
         TypeRef::InferVar(v) => types.intern(Ty::InferVar(*v)),
         TypeRef::GenericParam(name) => types.intern(Ty::GenericParam(name.clone())),
         TypeRef::Nominal(name) => types.intern(Ty::Nominal(name.clone())),
@@ -1128,13 +1133,6 @@ fn ty_ref_to_ty_id(types: &mut TyInterner, ty: &TypeRef) -> aura_typecheck::TyId
                 .collect::<Vec<_>>();
             types.intern(Ty::Union(items))
         }
-        TypeRef::Interface(members) => {
-            let members = members
-                .iter()
-                .map(|(name, ty)| (name.clone(), ty_ref_to_ty_id(types, ty)))
-                .collect::<Vec<_>>();
-            types.intern(Ty::Interface(members))
-        }
         TypeRef::Enum(variants) => {
             let variants = variants
                 .iter()
@@ -1147,7 +1145,7 @@ fn ty_ref_to_ty_id(types: &mut TyInterner, ty: &TypeRef) -> aura_typecheck::TyId
                 .collect::<Vec<_>>();
             types.intern(Ty::Enum(variants))
         }
-        TypeRef::Unknown => types.intern(Ty::Any),
+        TypeRef::Unknown => types.intern(Ty::Interface(Vec::new())),
     }
 }
 

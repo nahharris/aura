@@ -54,7 +54,8 @@ pub enum Ty {
     Char,
     Void,
     Never,
-    Any,
+    /// Structural interface type: empty `interface()` is the universal top type (stdlib `Any`).
+    Interface(Vec<(String, TyId)>),
     Nominal(String),
     RawAlloc(TyId),
     Slice(TyId),
@@ -68,7 +69,6 @@ pub enum Ty {
     Tuple(Vec<TyId>),
     Struct(Vec<(String, TyId)>),
     Union(Vec<TyId>),
-    Interface(Vec<(String, TyId)>),
     InterfaceObject(Vec<(String, TyId)>),
     Enum(Vec<(String, Option<TyId>)>),
 }
@@ -85,6 +85,13 @@ impl TyInterner {
     }
 
     pub fn intern(&mut self, ty: Ty) -> TyId {
+        let ty = match ty {
+            Ty::Interface(mut members) => {
+                members.sort_by(|a, b| a.0.cmp(&b.0));
+                Ty::Interface(members)
+            }
+            other => other,
+        };
         if let Some(id) = self.index.get(&ty) {
             return *id;
         }
@@ -118,7 +125,6 @@ impl TyInterner {
             char_: self.intern(Ty::Char),
             void: self.intern(Ty::Void),
             never: self.intern(Ty::Never),
-            any: self.intern(Ty::Any),
         }
     }
 
@@ -149,7 +155,6 @@ pub struct PreludeTypeIds {
     pub char_: TyId,
     pub void: TyId,
     pub never: TyId,
-    pub any: TyId,
 }
 
 #[cfg(test)]

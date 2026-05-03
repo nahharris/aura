@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::types::{FuncParam, Ty, TyId, TyInterner};
 use aura_diagnostics::{Diagnostic, Issue};
@@ -40,8 +40,41 @@ impl Unifier {
         let rhs_ty = interner.get(rhs).cloned();
 
         match (lhs_ty, rhs_ty) {
-            (Some(Ty::Any), Some(_)) => Ok(rhs),
-            (Some(_), Some(Ty::Any)) => Ok(lhs),
+            (Some(Ty::Interface(m)), Some(_)) if m.is_empty() => Ok(rhs),
+            (Some(_), Some(Ty::Interface(m))) if m.is_empty() => Ok(lhs),
+            (Some(Ty::Interface(a)), Some(Ty::Interface(b))) if !a.is_empty() && !b.is_empty() => {
+                if a.len() != b.len() {
+                    return Err(Box::new(
+                        Diagnostic::error(Issue::UnifyMismatch)
+                            .with_related("interface member count differs", None)
+                            .with_hint("use interfaces with the same method set for this constraint"),
+                    ));
+                }
+                let names_a: HashSet<_> = a.iter().map(|(n, _)| n).collect();
+                let names_b: HashSet<_> = b.iter().map(|(n, _)| n).collect();
+                if names_a != names_b {
+                    return Err(Box::new(
+                        Diagnostic::error(Issue::UnifyMismatch)
+                            .with_related("interface member name sets differ", None)
+                            .with_hint("interfaces unify by member name, not declaration order"),
+                    ));
+                }
+                let map_b: HashMap<_, _> = b.iter().map(|(n, t)| (n.clone(), *t)).collect();
+                let mut members = Vec::with_capacity(a.len());
+                for (name, ty_a) in a {
+                    let Some(ty_b) = map_b.get(&name).copied() else {
+                        return Err(Box::new(
+                            Diagnostic::error(Issue::UnifyMismatch)
+                                .with_related("interface member name missing on right-hand side", None)
+                                .with_hint("interfaces unify by member name, not declaration order"),
+                        ));
+                    };
+                    let ty = self.unify(interner, ty_a, ty_b, _context)?;
+                    members.push((name.clone(), ty));
+                }
+                members.sort_by(|x, y| x.0.cmp(&y.0));
+                Ok(interner.intern(Ty::Interface(members)))
+            }
             (Some(Ty::GenericParam(a)), Some(Ty::GenericParam(b))) if a == b => Ok(lhs),
             (Some(Ty::InferVar(_)), Some(_)) => {
                 if self.occurs(interner, lhs, rhs) {
@@ -325,6 +358,9 @@ impl Unifier {
             Some(Ty::Enum(variants)) => variants
                 .iter()
                 .any(|(_, payload)| payload.is_some_and(|t| self.occurs(interner, var, t))),
+            Some(Ty::Interface(members)) => members
+                .iter()
+                .any(|(_, ty)| self.occurs(interner, var, *ty)),
             _ => false,
         }
     }
@@ -436,5 +472,26 @@ mod tests {
             .unify(&mut interner, a4, a8, "array mismatch")
             .expect_err("array size mismatch should fail");
         assert_eq!(err.code_str(), "E_UNIFY_MISMATCH");
+    }
+
+    #[test]
+    fn interface_intern_canonicalizes_member_order() {
+        let mut interner = TyInterner::new();
+        let mut unifier = Unifier::new();
+        let int = interner.intern(Ty::Int32);
+        let float = interner.intern(Ty::Float32);
+        let a = interner.intern(Ty::Interface(vec![
+            ("b".to_string(), float),
+            ("a".to_string(), int),
+        ]));
+        let b = interner.intern(Ty::Interface(vec![
+            ("a".to_string(), int),
+            ("b".to_string(), float),
+        ]));
+        assert_eq!(a, b);
+        let unified = unifier
+            .unify(&mut interner, a, b, "iface")
+            .expect("interface types with same members unify");
+        assert_eq!(unified, a);
     }
 }

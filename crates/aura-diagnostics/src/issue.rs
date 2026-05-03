@@ -54,6 +54,9 @@ pub enum Issue {
     InterfaceMethodMismatch {
         detail: String,
     },
+    InterfaceDuplicateMember {
+        name: String,
+    },
     MacroUntyped,
     MainSignature,
     OpNonNumeric,
@@ -120,6 +123,7 @@ impl Issue {
             Self::InterfaceBoundUnsatisfied { .. } => "E_INTERFACE_BOUND_UNSAT",
             Self::InterfaceMethodMissing { .. } => "E_INTERFACE_METHOD_MISSING",
             Self::InterfaceMethodMismatch { .. } => "E_INTERFACE_METHOD_MISMATCH",
+            Self::InterfaceDuplicateMember { .. } => "E_INTERFACE_DUP_MEMBER",
             Self::MacroUntyped => "E_MACRO_UNTYPED",
             Self::MainSignature => "E_MAIN_SIGNATURE",
             Self::OpNonNumeric => "E_OP_NON_NUMERIC",
@@ -196,6 +200,9 @@ impl Issue {
             Self::InterfaceBoundUnsatisfied { detail } => detail.clone(),
             Self::InterfaceMethodMissing { detail } => detail.clone(),
             Self::InterfaceMethodMismatch { detail } => detail.clone(),
+            Self::InterfaceDuplicateMember { name } => {
+                format!("duplicate interface member `{name}`")
+            }
             Self::MacroUntyped => "macro value used where typed value is required".to_string(),
             Self::MainSignature => "invalid main signature".to_string(),
             Self::OpNonNumeric => "numeric operator requires numeric operands".to_string(),
