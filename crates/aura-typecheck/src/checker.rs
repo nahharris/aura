@@ -444,6 +444,13 @@ impl TypeChecker {
                     .collect::<Vec<_>>();
                 self.interner.intern(Ty::Union(item_tys))
             }
+            TypeRef::Interface(members) => {
+                let member_tys = members
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), self.type_ref_to_ty(ty)))
+                    .collect::<Vec<_>>();
+                self.interner.intern(Ty::Interface(member_tys))
+            }
             TypeRef::Enum(variants) => {
                 let lowered = variants
                     .iter()
@@ -3282,6 +3289,12 @@ impl TypeChecker {
                 name: name.clone(),
                 args: args.iter().map(|a| self.lower_static_arg(a)).collect(),
             },
+            TypeExpr::Interface(fields) => CheckedTypeExpr::Interface(
+                fields
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), self.lower_type_expr(ty)))
+                    .collect(),
+            ),
             TypeExpr::Tuple(items) if items.is_empty() => CheckedTypeExpr::Named {
                 name: "Void".to_string(),
                 args: Vec::new(),
@@ -3423,6 +3436,9 @@ impl TypeChecker {
             Some(Ty::Struct(fields)) => fields
                 .iter()
                 .any(|(_, field_ty)| self.type_contains_infer_var(*field_ty)),
+            Some(Ty::Interface(members)) => members
+                .iter()
+                .any(|(_, member_ty)| self.type_contains_infer_var(*member_ty)),
             Some(Ty::Enum(variants)) => variants
                 .iter()
                 .any(|(_, payload)| payload.is_some_and(|ty| self.type_contains_infer_var(ty))),
@@ -3454,6 +3470,16 @@ impl TypeChecker {
                     .map(|(name, ty)| (name.clone(), self.resolve_type_expr(ty)))
                     .collect::<Vec<_>>();
                 self.interner.intern(Ty::Struct(lowered))
+            }
+            TypeExpr::Interface(members) => {
+                if members.is_empty() {
+                    return self.interner.intern(Ty::Any);
+                }
+                let lowered = members
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), self.resolve_type_expr(ty)))
+                    .collect::<Vec<_>>();
+                self.interner.intern(Ty::Interface(lowered))
             }
             TypeExpr::Named { name, args } => {
                 if let Some(alias) = self.aliases.get(name) {
@@ -3506,6 +3532,21 @@ impl TypeChecker {
                         return self.unknown_ty();
                     }
                     return self.interner.intern(Ty::Enum(variants));
+                }
+
+                if name == "interface" {
+                    let mut members = Vec::new();
+                    for arg in args {
+                        if let StaticArg::Type(TypeExpr::Struct(items)) = arg {
+                            for (field, ty) in items {
+                                members.push((field.clone(), self.resolve_type_expr(ty)));
+                            }
+                        }
+                    }
+                    if members.is_empty() {
+                        return self.interner.intern(Ty::Any);
+                    }
+                    return self.interner.intern(Ty::Interface(members));
                 }
 
                 if name == "Result" {
@@ -4147,9 +4188,14 @@ impl TypeChecker {
             for c in &param.constraints {
                 match c {
                     GenericConstraint::Interface(interface) => {
+                        let interface_name = match interface {
+                            TypeExpr::Named { name, .. } => name.clone(),
+                            TypeExpr::Interface(_) => "interface".to_string(),
+                            other => format!("{other:?}"),
+                        };
                         self.pending_constraints
                             .push(TypeConstraint::InterfaceExists {
-                                interface: interface.clone(),
+                                interface: interface_name.clone(),
                                 context: format!("generic call `{name}` for `{}`", param.name),
                                 obligations: self.obligation_stack.clone(),
                                 span: self.current_expr_span,
@@ -4157,7 +4203,7 @@ impl TypeChecker {
                         self.pending_constraints
                             .push(TypeConstraint::InterfaceBound {
                                 ty: mapped,
-                                interface: interface.clone(),
+                                interface: interface_name,
                                 context: format!("generic call `{name}` for `{}`", param.name),
                                 obligations: self.obligation_stack.clone(),
                                 span: self.current_expr_span,
@@ -4562,11 +4608,19 @@ impl TypeChecker {
             StaticParamKind::Constraint(TypeExpr::Static(inner)) => {
                 vec![GenericConstraint::Static((**inner).clone())]
             }
-            StaticParamKind::Constraint(TypeExpr::Named { name, args: _ }) => {
-                vec![GenericConstraint::Interface(name.clone())]
+            StaticParamKind::Constraint(TypeExpr::Named { name, args }) => {
+                vec![GenericConstraint::Interface(TypeExpr::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                })]
+            }
+            StaticParamKind::Constraint(TypeExpr::Interface(members)) => {
+                vec![GenericConstraint::Interface(TypeExpr::Interface(
+                    members.clone(),
+                ))]
             }
             StaticParamKind::Constraint(other) => {
-                vec![GenericConstraint::Interface(format!("{:?}", other))]
+                vec![GenericConstraint::Interface(other.clone())]
             }
         };
         FunctionGenericInfo {
@@ -4577,6 +4631,7 @@ impl TypeChecker {
 
     fn satisfies_interface(&self, ty: &Ty, interface: &str) -> bool {
         match interface {
+            "interface" => matches!(ty, Ty::Any | Ty::Interface(_)),
             "Eq" => matches!(
                 ty,
                 Ty::Bool
@@ -6112,6 +6167,19 @@ fn ty_to_ref(ty: &Ty, interner: &TyInterner) -> TypeRef {
                 })
                 .collect::<Vec<_>>();
             TypeRef::Union(refs)
+        }
+        Ty::Interface(members) => {
+            let refs = members
+                .iter()
+                .map(|(name, id)| {
+                    let ty_ref = interner
+                        .get(*id)
+                        .map(|t| ty_to_ref(t, interner))
+                        .unwrap_or(TypeRef::Unknown);
+                    (name.clone(), ty_ref)
+                })
+                .collect::<Vec<_>>();
+            TypeRef::Interface(refs)
         }
         Ty::Enum(variants) => {
             let refs = variants

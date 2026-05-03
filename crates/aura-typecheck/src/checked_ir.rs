@@ -27,6 +27,7 @@ pub enum CheckedTypeExpr {
         name: String,
         args: Vec<CheckedStaticArg>,
     },
+    Interface(Vec<(String, CheckedTypeExpr)>),
     Static(Box<CheckedTypeExpr>),
     InferHole,
 }

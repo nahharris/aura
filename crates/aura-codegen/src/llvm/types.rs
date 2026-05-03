@@ -54,6 +54,7 @@ pub fn classify_type(types: &TyInterner, ty_id: TyId) -> Result<AuraValueType, C
         | Ty::Tuple(_)
         | Ty::Struct(_)
         | Ty::Union(_)
+        | Ty::Interface(_)
         | Ty::GenericParam(_)
         | Ty::InferVar(_) => Ok(AuraValueType::Pointer),
     }

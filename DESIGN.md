@@ -366,7 +366,7 @@ def any_print(msg: interface(to_string: Func[(), String])) -> Void { ... }
 def ToStr = interface(to_string: Func[(), String])
 ```
 
-The empty interface `interface()` is equivalent to the builtin `Any` type and accepts any value. On the other hand, the `Never` type would be equivalent to an interface with all the imaginable methods, making it impossible to satisfy, yet castable to any other type.
+The compiler models `interface(...)` as a first-class type node through frontend AST and typecheck IR (not as a nominal fallback), preserving each declared member signature. The empty interface `interface()` is equivalent to the builtin `Any` type and accepts any value. On the other hand, the `Never` type would be equivalent to an interface with all the imaginable methods, making it impossible to satisfy, yet castable to any other type.
 
 Union types automatically implement the *intersection* of their member types' interfaces:
 

@@ -95,6 +95,7 @@ pub struct Param {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeExpr {
     Named { name: String, args: Vec<StaticArg> },
+    Interface(Vec<(String, TypeExpr)>),
     Tuple(Vec<TypeExpr>),
     Struct(Vec<(String, TypeExpr)>),
     Static(Box<TypeExpr>),

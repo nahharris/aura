@@ -5,7 +5,7 @@ use crate::interfaces::InterfaceRegistry;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GenericConstraint {
-    Interface(String),
+    Interface(TypeExpr),
     Static(TypeExpr),
 }
 
@@ -29,7 +29,12 @@ impl GenericChecker {
         let mut diagnostics = Vec::new();
         for param in params {
             for constraint in &param.constraints {
-                if let GenericConstraint::Interface(name) = constraint {
+                if let GenericConstraint::Interface(interface) = constraint {
+                    let name = match interface {
+                        TypeExpr::Named { name, .. } => name.as_str(),
+                        TypeExpr::Interface(_) => "interface",
+                        _ => continue,
+                    };
                     if !self.interfaces.contains(name) {
                         diagnostics.push(
                             Diagnostic::error(Issue::UnknownInterface)
@@ -105,7 +110,10 @@ mod tests {
         let checker = GenericChecker::new();
         let params = vec![GenericParam {
             name: "T".to_string(),
-            constraints: vec![GenericConstraint::Interface("Mystery".to_string())],
+            constraints: vec![GenericConstraint::Interface(TypeExpr::Named {
+                name: "Mystery".to_string(),
+                args: Vec::new(),
+            })],
         }];
 
         let diagnostics = checker.validate_constraints(&params);

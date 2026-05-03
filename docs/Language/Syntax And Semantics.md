@@ -28,6 +28,7 @@ This note is a reader's map into `DESIGN.md`, not a replacement for it.
 - `true`, `false`, and `null` are not reserved keywords; Aura treats them as runtime aliases, matching `.true`, `.false`, and `.null`
 - AUON phase 1 reuses those alias spellings as source-level conveniences and normalizes them to dot-variant values
 - Generic type aliases preserve static parameters: `def[T] Box = (value: T)` can be used as `Box[Int]`, including when imported from a dependency entrypoint.
+- `interface(...)` is a dedicated type form in the compiler pipeline, and `interface()` remains equivalent to `Any`.
 
 ## Managed Memory Surface
 

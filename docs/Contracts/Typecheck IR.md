@@ -49,6 +49,8 @@ Status: frozen v1.
 - `CheckedStaticArg`
 - `CheckedTypeExpr`
 - `CheckedStaticValue`
+- `CheckedTypeExpr::Interface(Vec<(String, CheckedTypeExpr)>)` preserves source interface members as first-class metadata.
+- `interface()` and `Any` are equivalent at type resolution boundaries.
 
 ## Invariants (Frozen v1)
 
