@@ -1174,12 +1174,6 @@ fn lower_catch_expr<'ctx, 'm>(
         .map_err(|_| CodegenError::UnsupportedExpression("catch"))?;
 
     let try_value = lower_expr(cg, expr)?;
-    if let Some(result_slot) = result_slot {
-        let stored = coerce_basic_value_for_slot(cg, try_value, result_ty)?;
-        cg.builder
-            .build_store(result_slot, stored)
-            .map_err(|_| CodegenError::UnsupportedExpression("catch"))?;
-    }
 
     let end_fn = if let Some(function) = cg.module.get_function("aura_catch_end") {
         function
@@ -1198,11 +1192,26 @@ fn lower_catch_expr<'ctx, 'm>(
         .left()
         .ok_or(CodegenError::UnsupportedExpression("catch"))?
         .into_int_value();
+    let panicked_cond = cg
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::NE,
+            panicked,
+            panicked.get_type().const_zero(),
+            "catch_panicked_cond",
+        )
+        .map_err(|_| CodegenError::UnsupportedExpression("catch"))?;
     cg.builder
-        .build_conditional_branch(panicked, else_block, then_block)
+        .build_conditional_branch(panicked_cond, else_block, then_block)
         .map_err(|_| CodegenError::UnsupportedExpression("catch"))?;
 
     cg.builder.position_at_end(then_block);
+    if let Some(result_slot) = result_slot {
+        let stored = coerce_basic_value_for_slot(cg, try_value, result_ty)?;
+        cg.builder
+            .build_store(result_slot, stored)
+            .map_err(|_| CodegenError::UnsupportedExpression("catch"))?;
+    }
     branch_to_if_open(cg, merge_block, "catch")?;
 
     cg.builder.position_at_end(else_block);

@@ -5200,9 +5200,12 @@ impl TypeChecker {
                     CheckedExpr::Any
                 }
             }
-            Expr::Catch { expr, fallback } => CheckedExpr::Catch {
-                result_ty: self.preview_expr_ty(fallback),
-                expr: Box::new(self.lower_expr(expr)),
+            Expr::Catch {
+                expr: guarded_expr,
+                fallback,
+            } => CheckedExpr::Catch {
+                result_ty: self.preview_expr_ty(expr),
+                expr: Box::new(self.lower_expr(guarded_expr)),
                 fallback: Box::new(self.lower_expr(fallback)),
             },
             Expr::Tuple(items) => {

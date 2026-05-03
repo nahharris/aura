@@ -354,7 +354,8 @@ unsafe fn raw_alloc_ref_alloc(reference: *const AuraRef) -> *mut AuraRawAlloc {
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `bytes` must point to a valid `AuraBytes`, and `index` must be in bounds.
+/// `bytes` must point to a valid `AuraBytes`.
+/// Out-of-bounds `index` values raise `aura_panic` and return `0`.
 pub unsafe extern "C" fn bytes_get(bytes: *const AuraBytes, index: usize) -> u8 {
     let bytes = unsafe { bytes_ref(bytes) };
     if index >= bytes.len {
@@ -366,7 +367,8 @@ pub unsafe extern "C" fn bytes_get(bytes: *const AuraBytes, index: usize) -> u8 
 
 #[unsafe(no_mangle)]
 /// # Safety
-/// `bytes` must point to a valid `AuraBytes`, and `index` must be in bounds.
+/// `bytes` must point to a valid `AuraBytes`.
+/// Out-of-bounds `index` values raise `aura_panic` and leave storage unchanged.
 pub unsafe extern "C" fn bytes_set(bytes: *mut AuraBytes, index: usize, value: u8) {
     let bytes = unsafe { bytes_mut(bytes) };
     if index >= bytes.len {
