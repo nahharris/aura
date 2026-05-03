@@ -2,7 +2,7 @@
 title: Directory Inventory
 kind: generated
 generated_by: cargo xtask docs sync
-generated_at: 2026-05-03T17:54:59.9434748Z
+generated_at: 2026-05-03T18:26:54.8221881Z
 ---
 
 # Directory Inventory
@@ -12,8 +12,6 @@ generated_at: 2026-05-03T17:54:59.9434748Z
 | `.agents` | Repository directory. |
 | `.cargo` | Cargo aliases and workspace command configuration. |
 | `.claude` | Repository directory. |
-| `.opencode` | Repository directory. |
-| `.worktrees` | Repository directory. |
 | `aura-stl` | Aura standard library package. |
 | `crates` | Rust workspace crates. |
 | `docs` | Obsidian vault and engineering documentation. |

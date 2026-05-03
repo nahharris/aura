@@ -61,6 +61,7 @@ Status: frozen v1.
 7. `EnumMatch` arms may carry struct field binding metadata for backend locals, but payload storage remains the single enum payload.
 8. Safe managed-memory calls lower to `MemoryOp`; raw host pointers are not represented in Aura source-level checked calls.
 9. Field reads and field assignments carry the resolved object type, field index, and field type so backends do not re-resolve source member syntax.
+10. GC-prep operations are represented as `MemoryOp` kinds (`GcRegisterRoot`, `GcUnregisterRoot`, `GcSafepoint`) so backend lowering can inject runtime contracts without introducing new public Aura syntax.
 
 ## Stub Declarations
 

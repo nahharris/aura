@@ -229,6 +229,9 @@ pub enum MemoryOpKind {
     SliceRefAt,
     RefGet,
     RefSet,
+    GcRegisterRoot,
+    GcUnregisterRoot,
+    GcSafepoint,
 }
 
 impl CheckedIr {
@@ -241,7 +244,7 @@ impl CheckedIr {
 
 #[cfg(test)]
 mod tests {
-    use crate::checked_ir::{BinaryOpKind, CheckedDecl, CheckedExpr, CheckedIr};
+    use crate::checked_ir::{BinaryOpKind, CheckedDecl, CheckedExpr, CheckedIr, MemoryOpKind};
     use crate::types::TyId;
 
     #[test]
@@ -296,6 +299,23 @@ mod tests {
             ir.declarations[0].value,
             CheckedExpr::BinaryOp {
                 op: BinaryOpKind::Add,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn checked_ir_supports_gc_prep_memory_op_variants() {
+        let expr = CheckedExpr::MemoryOp {
+            op: MemoryOpKind::GcSafepoint,
+            item_ty: TyId(1),
+            result_ty: TyId(2),
+            args: Vec::new(),
+        };
+        assert!(matches!(
+            expr,
+            CheckedExpr::MemoryOp {
+                op: MemoryOpKind::GcSafepoint,
                 ..
             }
         ));

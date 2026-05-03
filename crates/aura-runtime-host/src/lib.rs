@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::io::Write;
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeTypeRef {
@@ -114,6 +115,8 @@ pub struct AuraRawAlloc {
     len: usize,
     elem_size: usize,
     elem_align: usize,
+    layout_id: usize,
+    trace_kind: usize,
     storage: Vec<u8>,
 }
 
@@ -149,12 +152,20 @@ impl AuraBytes {
 }
 
 impl AuraRawAlloc {
-    fn new_zeroed(count: usize, elem_size: usize, elem_align: usize) -> Self {
+    fn new_zeroed(
+        count: usize,
+        elem_size: usize,
+        elem_align: usize,
+        layout_id: usize,
+        trace_kind: usize,
+    ) -> Self {
         let size = checked_allocation_size(count, elem_size).unwrap_or(0);
         Self {
             len: count,
             elem_size,
             elem_align: elem_align.max(1),
+            layout_id,
+            trace_kind,
             storage: vec![0; size],
         }
     }
@@ -168,6 +179,17 @@ impl AuraRawAlloc {
         let end = start.checked_add(self.elem_size)?;
         (end <= self.storage.len()).then_some(start..end)
     }
+}
+
+fn gc_roots() -> &'static Mutex<std::collections::HashMap<usize, usize>> {
+    static ROOTS: OnceLock<Mutex<std::collections::HashMap<usize, usize>>> = OnceLock::new();
+    ROOTS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+fn lock_gc_roots() -> std::sync::MutexGuard<'static, std::collections::HashMap<usize, usize>> {
+    gc_roots()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 unsafe fn bytes_ref<'a>(bytes: *const AuraBytes) -> &'a AuraBytes {
@@ -219,14 +241,37 @@ pub extern "C" fn raw_alloc_new(
     count: usize,
     elem_size: usize,
     elem_align: usize,
+    layout_id: usize,
+    trace_kind: usize,
 ) -> *mut AuraRawAlloc {
     if checked_allocation_size(count, elem_size).is_none() {
         return std::ptr::null_mut();
     }
     Box::into_raw(Box::new(AuraRawAlloc::new_zeroed(
-        count, elem_size, elem_align,
+        count, elem_size, elem_align, layout_id, trace_kind,
     )))
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn gc_register_root(slot_ptr: *mut u8, layout_id: usize) {
+    if slot_ptr.is_null() {
+        return;
+    }
+    let mut roots = lock_gc_roots();
+    roots.insert(slot_ptr as usize, layout_id);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn gc_unregister_root(slot_ptr: *mut u8) {
+    if slot_ptr.is_null() {
+        return;
+    }
+    let mut roots = lock_gc_roots();
+    roots.remove(&(slot_ptr as usize));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn gc_safepoint() {}
 
 #[unsafe(no_mangle)]
 /// # Safety
@@ -472,8 +517,8 @@ pub extern "C" fn syscall_exit(code: i32) -> ! {
 #[cfg(test)]
 mod tests {
     use super::{
-        aura_catch_begin, aura_catch_end, bytes_get, bytes_new, bytes_set, raw_alloc_len,
-        raw_alloc_new, raw_alloc_ref,
+        aura_catch_begin, aura_catch_end, bytes_get, bytes_new, bytes_set, gc_register_root,
+        gc_safepoint, gc_unregister_root, lock_gc_roots, raw_alloc_len, raw_alloc_new, raw_alloc_ref,
         raw_alloc_ref_alloc, raw_alloc_slice, ref_get, ref_set, slice_get, slice_ref_at, slice_set,
         string_into, syscall_write, AuraBytes,
     };
@@ -542,9 +587,11 @@ mod tests {
 
     #[test]
     fn raw_alloc_new_allocates_zeroed_stable_storage() {
-        let alloc = raw_alloc_new(3, 4, 4);
+        let alloc = raw_alloc_new(3, 4, 4, 10, 1);
         assert_eq!(unsafe { raw_alloc_len(alloc) }, 3);
         assert_eq!(unsafe { raw_alloc_ref(alloc).elem_align }, 4);
+        assert_eq!(unsafe { raw_alloc_ref(alloc).layout_id }, 10);
+        assert_eq!(unsafe { raw_alloc_ref(alloc).trace_kind }, 1);
 
         let slice = unsafe { raw_alloc_slice(alloc) };
         let mut value = [255u8; 4];
@@ -557,7 +604,7 @@ mod tests {
 
     #[test]
     fn slice_set_get_and_ref_at_are_bounds_checked() {
-        let alloc = raw_alloc_new(2, 4, 4);
+        let alloc = raw_alloc_new(2, 4, 4, 0, 0);
         let slice = unsafe { raw_alloc_slice(alloc) };
         let value = 42u32.to_le_bytes();
         assert!(unsafe { slice_set(slice, 1, value.as_ptr()) });
@@ -573,7 +620,7 @@ mod tests {
 
     #[test]
     fn slice_operations_reject_start_plus_index_overflow() {
-        let alloc = raw_alloc_new(1, 1, 1);
+        let alloc = raw_alloc_new(1, 1, 1, 0, 0);
         let slice = Box::into_raw(Box::new(super::AuraSlice {
             alloc,
             start: usize::MAX,
@@ -588,13 +635,13 @@ mod tests {
 
     #[test]
     fn raw_alloc_new_returns_null_on_size_overflow() {
-        let alloc = raw_alloc_new(usize::MAX, 2, 1);
+        let alloc = raw_alloc_new(usize::MAX, 2, 1, 0, 0);
         assert!(alloc.is_null());
     }
 
     #[test]
     fn refs_read_and_write_stable_alloc_slots() {
-        let alloc = raw_alloc_new(1, 4, 4);
+        let alloc = raw_alloc_new(1, 4, 4, 0, 0);
         let slice = unsafe { raw_alloc_slice(alloc) };
         let reference = unsafe { slice_ref_at(slice, 0) };
         let value = 7u32.to_le_bytes();
@@ -604,5 +651,31 @@ mod tests {
         unsafe { ref_get(reference, out.as_mut_ptr()) };
         assert_eq!(u32::from_le_bytes(out), 7);
         assert_eq!(alloc, unsafe { raw_alloc_ref_alloc(reference) });
+    }
+
+    #[test]
+    fn gc_root_registration_lifecycle_is_observable() {
+        let root = Box::into_raw(Box::new(7u8));
+        let key = root as usize;
+        {
+            let mut roots = lock_gc_roots();
+            roots.clear();
+        }
+        gc_register_root(root, 99);
+        {
+            let roots = lock_gc_roots();
+            assert_eq!(roots.get(&key), Some(&99));
+        }
+        gc_unregister_root(root);
+        {
+            let roots = lock_gc_roots();
+            assert!(!roots.contains_key(&key));
+        }
+        unsafe { drop(Box::from_raw(root)) };
+    }
+
+    #[test]
+    fn gc_safepoint_is_callable_noop() {
+        gc_safepoint();
     }
 }

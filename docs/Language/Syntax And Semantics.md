@@ -39,6 +39,7 @@ This note is a reader's map into `DESIGN.md`, not a replacement for it.
 - `slice.ref_at(index)` returns `Option[Ref[T]]`; out-of-bounds returns `null`.
 - `ref.get()` returns `T`; `ref.set(value)` returns `Void`.
 - The raw host ABI helpers are compiler-internal and are not available as Aura source stubs.
+- GC-prep runtime metadata (`layout_id`, `trace_kind`) and safepoint insertion are implementation details; they do not change this source-level API contract.
 
 ## Control Flow Surface
 

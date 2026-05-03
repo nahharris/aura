@@ -162,8 +162,15 @@ fn pipe_operator_lowers_to_call_ir() {
         .find(|d| d.name == "y")
         .expect("y declaration should exist");
 
-    let CheckedExpr::Call { callee, args } = &decl.value else {
-        panic!("pipe expression should lower to call")
+    let (callee, args) = match &decl.value {
+        CheckedExpr::Call { callee, args } => (callee, args),
+        CheckedExpr::Block(items) => {
+            let Some(CheckedExpr::Call { callee, args }) = items.last() else {
+                panic!("pipe expression should lower to call in final block position");
+            };
+            (callee, args)
+        }
+        _ => panic!("pipe expression should lower to call"),
     };
     assert!(matches!(callee.as_ref(), CheckedExpr::Ident(name) if name == "inc"));
     assert_eq!(args.len(), 1);
@@ -183,8 +190,15 @@ fn pipe_operator_consumes_placeholder_in_rhs_call_without_any_nodes() {
         .find(|d| d.name == "y")
         .expect("y declaration should exist");
 
-    let CheckedExpr::Call { callee, args } = &decl.value else {
-        panic!("pipe expression should lower to call")
+    let (callee, args) = match &decl.value {
+        CheckedExpr::Call { callee, args } => (callee, args),
+        CheckedExpr::Block(items) => {
+            let Some(CheckedExpr::Call { callee, args }) = items.last() else {
+                panic!("pipe expression should lower to call in final block position");
+            };
+            (callee, args)
+        }
+        _ => panic!("pipe expression should lower to call"),
     };
     assert!(matches!(callee.as_ref(), CheckedExpr::Ident(name) if name == "add"));
     assert_eq!(args.len(), 2);

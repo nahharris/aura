@@ -293,6 +293,79 @@ mod llvm_lowering {
         })
     }
 
+    pub fn type_layout_id(_types: &TyInterner, ty_id: TyId) -> u64 {
+        ty_id.0 as u64
+    }
+
+    pub fn type_trace_kind(types: &TyInterner, ty_id: TyId) -> Result<u64, CodegenError> {
+        Ok(if type_contains_managed_pointers(types, ty_id)? {
+            1
+        } else {
+            0
+        })
+    }
+
+    fn type_contains_managed_pointers(types: &TyInterner, ty_id: TyId) -> Result<bool, CodegenError> {
+        let ty = types.get(ty_id).ok_or(CodegenError::InvalidTypeId(ty_id.0))?;
+        Ok(match ty {
+            Ty::Bool
+            | Ty::Int8
+            | Ty::UInt8
+            | Ty::Int16
+            | Ty::UInt16
+            | Ty::Int32
+            | Ty::UInt32
+            | Ty::Int64
+            | Ty::UInt64
+            | Ty::Int128
+            | Ty::UInt128
+            | Ty::ISize
+            | Ty::USize
+            | Ty::Float32
+            | Ty::Float64
+            | Ty::Char
+            | Ty::Void
+            | Ty::Never => false,
+            Ty::Tuple(items) => {
+                let mut has_ptr = false;
+                for item in items {
+                    has_ptr |= type_contains_managed_pointers(types, *item)?;
+                }
+                has_ptr
+            }
+            Ty::Struct(fields) => {
+                let mut has_ptr = false;
+                for (_, field_ty) in fields {
+                    has_ptr |= type_contains_managed_pointers(types, *field_ty)?;
+                }
+                has_ptr
+            }
+            Ty::Enum(variants) => {
+                let mut has_ptr = false;
+                for (_, payload) in variants {
+                    if let Some(payload_ty) = payload {
+                        has_ptr |= type_contains_managed_pointers(types, *payload_ty)?;
+                    }
+                }
+                has_ptr
+            }
+            Ty::Array { item, .. } => type_contains_managed_pointers(types, *item)?,
+            Ty::RawAlloc(_)
+            | Ty::Slice(_)
+            | Ty::Ref(_)
+            | Ty::List(_)
+            | Ty::Dict { .. }
+            | Ty::Set(_)
+            | Ty::Func { .. }
+            | Ty::Macro { .. }
+            | Ty::Nominal(_)
+            | Ty::Union(_)
+            | Ty::GenericParam(_)
+            | Ty::InferVar(_)
+            | Ty::Any => true,
+        })
+    }
+
     fn payload_storage_type<'ctx>(
         context: &'ctx Context,
         size: u64,
@@ -333,6 +406,7 @@ mod llvm_lowering {
 #[cfg(feature = "llvm-backend")]
 pub use llvm_lowering::{
     aggregate_storage_type, enum_basic_type, lower_basic_type, lower_function_type, type_layout,
+    type_layout_id, type_trace_kind,
 };
 
 #[cfg(test)]
@@ -341,6 +415,8 @@ mod tests {
     use aura_typecheck::{Ty, TyInterner};
 
     use super::{AuraValueType, classify_function_type, classify_type};
+    #[cfg(feature = "llvm-backend")]
+    use super::{type_layout_id, type_trace_kind};
 
     #[test]
     fn classify_primitives_into_llvm_scalars() {
@@ -409,5 +485,16 @@ mod tests {
             vec![AuraValueType::Int1, AuraValueType::Int32]
         );
         assert_eq!(lowered.ret, AuraValueType::Float64);
+    }
+
+    #[cfg(feature = "llvm-backend")]
+    #[test]
+    fn trace_kind_distinguishes_scalar_and_managed_pointer_types() {
+        let mut types = TyInterner::new();
+        let int_ty = types.intern(Ty::Int32);
+        let ref_ty = types.intern(Ty::Ref(int_ty));
+        assert_eq!(type_trace_kind(&types, int_ty).expect("trace kind"), 0);
+        assert_eq!(type_trace_kind(&types, ref_ty).expect("trace kind"), 1);
+        assert_ne!(type_layout_id(&types, int_ty), type_layout_id(&types, ref_ty));
     }
 }

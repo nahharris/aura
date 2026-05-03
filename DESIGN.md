@@ -195,24 +195,26 @@ This representation is used by builtin stubs so labeled trailing closure forms c
 
 Examples of built-in / standard types:
 
-| Type expression | Meaning |
-|---|---|
-| `Int` | 64-bit signed integer |
-| `Float` | 64-bit floating point |
-| `Bool` | Boolean |
-| `String` | UTF-8 string |
-| `Void` | Unit / no value other than `()` |
-| `List[T]` | Homogeneous list |
-| `Array[T, n: static Int]` | Fixed-size homogeneous array (`n` is a compile-time integer) |
-| `Dict[K, V]` | Key-value dictionary (maps are always spelled `Dict`, not `Map`) |
-| `Set[T]` | Homogeneous set |
-| `Func[A, B]` | Function from `A` (can be a tuple/struct parameter shape) to `B` |
-| `Macro[A, B]` | Declaration-only macro signature used by `defstub` for builtin forms |
-| `Option[T]` | `enum(null, some: T)` — nullable value |
-| `Result[T, E]` | `enum(err: E, ok: T)` — fallible value |
-| `Iterable[T]` | Any type that can be iterated |
-| `Any` | Shorthand for `interface()` — accepts any value |
-| `Never` | Bottom type — `Never` is assignable to every other type |
+
+| Type expression           | Meaning                                                              |
+| ------------------------- | -------------------------------------------------------------------- |
+| `Int`                     | 64-bit signed integer                                                |
+| `Float`                   | 64-bit floating point                                                |
+| `Bool`                    | Boolean                                                              |
+| `String`                  | UTF-8 string                                                         |
+| `Void`                    | Unit / no value other than `()`                                      |
+| `List[T]`                 | Homogeneous list                                                     |
+| `Array[T, n: static Int]` | Fixed-size homogeneous array (`n` is a compile-time integer)         |
+| `Dict[K, V]`              | Key-value dictionary (maps are always spelled `Dict`, not `Map`)     |
+| `Set[T]`                  | Homogeneous set                                                      |
+| `Func[A, B]`              | Function from `A` (can be a tuple/struct parameter shape) to `B`     |
+| `Macro[A, B]`             | Declaration-only macro signature used by `defstub` for builtin forms |
+| `Option[T]`               | `enum(null, some: T)` — nullable value                               |
+| `Result[T, E]`            | `enum(err: E, ok: T)` — fallible value                               |
+| `Iterable[T]`             | Any type that can be iterated                                        |
+| `Any`                     | Shorthand for `interface()` — accepts any value                      |
+| `Never`                   | Bottom type — `Never` is assignable to every other type              |
+
 
 ### Tuples
 
@@ -411,15 +413,17 @@ let y = x : Float;         // cast
 
 **Casting rules:**
 
-| From → To | Allowed? |
-|---|---|
-| Anonymous tuple/struct → named | Yes |
-| Named → anonymous tuple/struct | Yes |
-| Named type A → named type B | **No** — compile error |
-| Tuple → Struct | **No** — compile error |
-| Struct → Tuple | **No** — compile error |
-| Any type → `union(...)` / `interface()` containing it | Yes |
-| `union(...)` / `interface()` → contained type | Yes, but may panic at runtime |
+
+| From → To                                             | Allowed?                      |
+| ----------------------------------------------------- | ----------------------------- |
+| Anonymous tuple/struct → named                        | Yes                           |
+| Named → anonymous tuple/struct                        | Yes                           |
+| Named type A → named type B                           | **No** — compile error        |
+| Tuple → Struct                                        | **No** — compile error        |
+| Struct → Tuple                                        | **No** — compile error        |
+| Any type → `union(...)` / `interface()` containing it | Yes                           |
+| `union(...)` / `interface()` → contained type         | Yes, but may panic at runtime |
+
 
 ### Generics
 
@@ -643,7 +647,6 @@ Anonymous product types are written with `( )`.
   (1, 2)                            // (Int, Int)
   ("hello", 42, true)               // (String, Int, Bool)
   ```
-
 - A *struct* (named-field product) uses `name = value` syntax:
   ```aura
   (x = 1, y = 2)                    // (x: Int, y: Int)
@@ -784,38 +787,42 @@ Closures capture variables from the enclosing scope by reference. A captured var
 
 Operators are listed from **lowest** to **highest** precedence. All binary operators are left-associative unless noted.
 
-| Precedence | Operator(s) | Description |
-|---|---|---|
-| 1 (lowest) | `=` | Assignment (right-associative) |
-| 2 | `?:` | Elvis / null-coalescing |
-| 3 | `\|\|` | Logical OR |
-| 4 | `&&` | Logical AND |
-| 5 | `==`  `!=` | Equality / Inequality |
-| 6 | `<`  `>`  `<=`  `>=` | Comparison |
-| 7 | `..` | Range |
-| 8 | `+`  `-` | Addition / Subtraction |
-| 9 | `*`  `/`  `%` | Multiplication / Division / Remainder |
-| 10 | `:` | Cast / type annotation (postfix) |
-| 11 | `++`  `--` | Post-increment / Post-decrement (postfix) |
-| 12 | `!!` | Force-unwrap (postfix) |
-| 13 | `?.` | Safe navigation (postfix) |
-| 14 | `.` | Method call / field access (postfix) |
-| 15 (highest) | `( )` `[ ]` | Function call / index access (postfix) |
+
+| Precedence   | Operator(s)       | Description                               |
+| ------------ | ----------------- | ----------------------------------------- |
+| 1 (lowest)   | `=`               | Assignment (right-associative)            |
+| 2            | `?:`              | Elvis / null-coalescing                   |
+| 3            | &#124;&#124;      | Logical OR                                |
+| 4            | `&&`              | Logical AND                               |
+| 5            | `==` `!=`         | Equality / Inequality                     |
+| 6            | `<` `>` `<=` `>=` | Comparison                                |
+| 7            | `..`              | Range                                     |
+| 8            | `+` `-`           | Addition / Subtraction                    |
+| 9            | `*` `/` `%`       | Multiplication / Division / Remainder     |
+| 10           | `:`               | Cast / type annotation (postfix)          |
+| 11           | `++` `--`         | Post-increment / Post-decrement (postfix) |
+| 12           | `!!`              | Force-unwrap (postfix)                    |
+| 13           | `?.`              | Safe navigation (postfix)                 |
+| 14           | `.`               | Method call / field access (postfix)      |
+| 15 (highest) | `( )` `[ ]`       | Function call / index access (postfix)    |
+
 
 ### Special Operators
 
-| Operator | Name | Description |
-|---|---|---|
-| `=` | Assignment | Assigns to a declared local variable. Also used for named arguments and key-value pairs in literals. |
-| `:` | Annotation / Cast | In declarations: type annotation. In expressions: explicit cast. |
-| `..` | Range | Creates an inclusive range from left to right operand. Also used in destructuring to ignore a span of elements. |
-| `?.` | Safe navigation | Invokes a method on a nullable or fallible value. Propagates `null`/error without unwrapping. |
-| `?:` | Elvis | Returns the left operand if it is non-null/non-error, otherwise the right operand. |
-| `!!` | Force unwrap | Unwraps an `Option` or `Result`; panics at runtime if the value is `null` or an error. |
-| `~` | Guard | Used inside multi-arm closures to attach a boolean condition to a pattern arm. |
-| `_` | Wildcard | In patterns: discards a matched value. In calls: placeholder for a future argument (partial application). |
-| `++` | Post-increment | Mutates a numeric variable in place; equivalent to `x = x + 1`. Returns the new value. |
-| `--` | Post-decrement | Mutates a numeric variable in place; equivalent to `x = x - 1`. Returns the new value. |
+
+| Operator | Name              | Description                                                                                                     |
+| -------- | ----------------- | --------------------------------------------------------------------------------------------------------------- |
+| `=`      | Assignment        | Assigns to a declared local variable. Also used for named arguments and key-value pairs in literals.            |
+| `:`      | Annotation / Cast | In declarations: type annotation. In expressions: explicit cast.                                                |
+| `..`     | Range             | Creates an inclusive range from left to right operand. Also used in destructuring to ignore a span of elements. |
+| `?.`     | Safe navigation   | Invokes a method on a nullable or fallible value. Propagates `null`/error without unwrapping.                   |
+| `?:`     | Elvis             | Returns the left operand if it is non-null/non-error, otherwise the right operand.                              |
+| `!!`     | Force unwrap      | Unwraps an `Option` or `Result`; panics at runtime if the value is `null` or an error.                          |
+| `~`      | Guard             | Used inside multi-arm closures to attach a boolean condition to a pattern arm.                                  |
+| `_`      | Wildcard          | In patterns: discards a matched value. In calls: placeholder for a future argument (partial application).       |
+| `++`     | Post-increment    | Mutates a numeric variable in place; equivalent to `x = x + 1`. Returns the new value.                          |
+| `--`     | Post-decrement    | Mutates a numeric variable in place; equivalent to `x = x - 1`. Returns the new value.                          |
+
 
 ### Range Operator `..`
 
@@ -970,7 +977,7 @@ The `then` label may be written explicitly on the trailing lambda when desired f
 if (ok) then { doThing(); } else { doOther(); }
 ```
 
-Multi-branch conditionals are handled by `cases` — see [`cases`](#cases).
+Multi-branch conditionals are handled by `cases` — see [cases](#cases).
 
 ### `cases`
 
@@ -1048,7 +1055,9 @@ Stub definitions:
 defstub loop: Func[(do: Func[(), Void]), Never];
 defstub loop: Func[(while: Func[(), Bool], do: Func[(), Void]), Never];
 ```
-****
+
+---
+
 ### `return`
 
 Exits a labelled scope with a value. In the common case, `return` targets the enclosing `def` function body, whose implicit atom is the function's name.
@@ -1061,7 +1070,7 @@ An explicit atom target can be given to exit an outer scope by name:
 
 ```aura
 return[.label_name] value
-``` 
+```
 
 Because control-flow bodies are inlined, `return` inside an `if` branch or a `.each` closure exits the *enclosing function*, not the branch or closure itself.
 
@@ -1095,12 +1104,14 @@ break[.label_name] value // exit the loop labelled 'label with value
 
 `break` desugars as follows:
 
-| Sugar | Desugars to |
-|---|---|
-| `break` | `return .break(())` |
-| `break value` | `return .break(value)` |
-| `break[.label_name]` | `return[.label_name] .break(())` |
+
+| Sugar                      | Desugars to                         |
+| -------------------------- | ----------------------------------- |
+| `break`                    | `return .break(())`                 |
+| `break value`              | `return .break(value)`              |
+| `break[.label_name]`       | `return[.label_name] .break(())`    |
 | `break[.label_name] value` | `return[.label_name] .break(value)` |
+
 
 The `label_name` dot-identifier must refer to an enclosing `loop` body block. Using `break` outside a loop is a compile error.
 
@@ -1115,10 +1126,12 @@ continue[.label_name]   // next iteration of the loop labelled 'label
 
 `continue` desugars as follows:
 
-| Sugar | Desugars to |
-|---|---|
-| `continue` | `return .continue(())` |
+
+| Sugar                   | Desugars to                         |
+| ----------------------- | ----------------------------------- |
+| `continue`              | `return .continue(())`              |
 | `continue[.label_name]` | `return[.label_name] .continue(())` |
+
 
 Since the `do` closure return type is `union(Void, Control[B, C])`, if no continue exists, the function returns `()` which (under the hood) is the same as `return .continue(())`
 
@@ -1134,11 +1147,9 @@ loop do {
 `return`, `break`, and `continue` each resolve their target scope using the following rules:
 
 1. **Unlabelled jump** — targets the *nearest* enclosing scope of the appropriate kind:
-   - `return` targets the nearest enclosing `def` function body.
-   - `break` and `continue` target the nearest enclosing `loop` body.
-
+  - `return` targets the nearest enclosing `def` function body.
+  - `break` and `continue` target the nearest enclosing `loop` body.
 2. **Labelled jump** (`return[.label_name]`, `break[.label_name]`, `continue[.label_name]`) — walks outward through enclosing scopes and targets the first block whose atom matches `'label`. A compile error is raised if no matching label is found.
-
 3. **Inlining.** The bodies of `loop`, `if`, `cases`, and `.each` (and any other macro whose body parameter is `Expr[Func[...]]`) are **inlined** at the call site by the compiler. No stack frame is created for the closure call. As a result, a `return` or `break` inside a control-flow body compiles to a direct jump instruction rather than a function return — the label resolution above is a compile-time operation. This is what gives these macros the semantics of built-in syntax without any runtime overhead.
 
 The jump forms also have declaration-only macro stubs:
@@ -1456,6 +1467,10 @@ ref.set(7)          // Void
 leak-only for the process lifetime, so `Ref[T]` values are non-null and cannot dangle once produced.
 `Slice[T]` and `Ref[T]` expose no raw pointer or unchecked source-level API.
 
+GC-prep contract (phase 1) is additive and does not change source semantics: runtime allocations now
+carry compiler-derived metadata (`layout_id`, `trace_kind`) in addition to element size/alignment.
+Codegen also emits explicit runtime safepoints at call boundaries for future collectors.
+
 `Slice.get(index)` and `Slice.ref_at(index)` return `null` when `index` is out of bounds.
 `Slice.set(index, value)` returns `false` when out of bounds and `true` after a successful write.
 The compiler lowers these operations to internal runtime-host ABI helpers with concrete element
@@ -1514,3 +1529,4 @@ Notes:
 
 - `.test.aura` files are not part of production compilation.
 - `x.aura` and `x.test.aura` represent the same module namespace for test builds.
+

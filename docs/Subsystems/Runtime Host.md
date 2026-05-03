@@ -43,6 +43,9 @@ The host also implements compiler-internal managed-memory helpers:
 - `slice_ref_at`
 - `ref_get`
 - `ref_set`
+- `gc_register_root`
+- `gc_unregister_root`
+- `gc_safepoint`
 
 These helpers are not part of the Aura-callable STL stub surface.
 
@@ -81,12 +84,14 @@ The exported helpers use this object model:
 
 Generated code treats `RawAlloc[T]`, `Slice[T]`, and `Ref[T]` as opaque pointer-shaped handles. The runtime host owns the concrete structs and stores managed allocation bytes in zero-initialized leak-only storage.
 
-- `raw_alloc_new(count, elem_size, elem_align)` allocates process-lifetime storage for `count` elements.
+- `raw_alloc_new(count, elem_size, elem_align, layout_id, trace_kind)` allocates process-lifetime storage for `count` elements and records GC-prep metadata.
 - `raw_alloc_slice(alloc)` creates an opaque full-allocation slice handle.
 - `slice_get(slice, index, out)` copies one element into compiler-provided stack storage and returns `false` when out of bounds.
 - `slice_set(slice, index, value)` copies one element from compiler-provided stack storage and returns `false` when out of bounds.
 - `slice_ref_at(slice, index)` returns a non-null `Ref` handle for in-bounds indices and a null host pointer for out-of-bounds.
 - `ref_get(ref, out)` and `ref_set(ref, value)` copy values through non-null `Ref` handles.
+- `gc_register_root(slot_ptr, layout_id)` and `gc_unregister_root(slot_ptr)` maintain root bookkeeping for future tracing collectors.
+- `gc_safepoint()` marks collector synchronization boundaries and is currently a runtime no-op.
 
 Aura source only sees the safe methods documented in [[Syntax And Semantics]]. The raw helper names stay compiler-internal so Aura code cannot obtain or manipulate host pointers directly.
 
