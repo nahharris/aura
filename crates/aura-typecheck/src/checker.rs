@@ -2078,6 +2078,17 @@ impl TypeChecker {
                     self.unknown_ty()
                 }
             }
+            Expr::Catch { expr, fallback } => {
+                let try_ty = self.infer_expr(expr);
+                if matches!(
+                    self.interner.get(self.unifier.resolve(try_ty)),
+                    Some(Ty::Never)
+                ) {
+                    return self.infer_expr(fallback);
+                }
+                let fallback_ty = self.infer_expr_with_expected(fallback, try_ty);
+                self.join_types(try_ty, fallback_ty, "catch result")
+            }
             Expr::List(items) => {
                 if let Some(first) = items.first() {
                     let item_ty = self.infer_expr(first);
@@ -2506,6 +2517,16 @@ impl TypeChecker {
                         self.active_loop_targets[target_idx].target.clone(),
                     );
                 }
+                self.interner.intern(Ty::Never)
+            }
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                static_args: _,
+            } if macro_name == "panic" => {
+                let message_ty = self.infer_expr(operand);
+                let string_ty = self.interner.intern(Ty::Nominal("String".to_string()));
+                self.require_assignable(string_ty, message_ty, "panic message");
                 self.interner.intern(Ty::Never)
             }
             Expr::MacroApply {
@@ -5179,6 +5200,11 @@ impl TypeChecker {
                     CheckedExpr::Any
                 }
             }
+            Expr::Catch { expr, fallback } => CheckedExpr::Catch {
+                result_ty: self.preview_expr_ty(fallback),
+                expr: Box::new(self.lower_expr(expr)),
+                fallback: Box::new(self.lower_expr(fallback)),
+            },
             Expr::Tuple(items) => {
                 CheckedExpr::Tuple(items.iter().map(|item| self.lower_expr(item)).collect())
             }
@@ -5533,6 +5559,13 @@ impl TypeChecker {
                     .get(&Self::expr_cache_key(expr))
                     .cloned()
                     .unwrap_or_default(),
+            },
+            Expr::MacroApply {
+                macro_name,
+                operand,
+                static_args: _,
+            } if macro_name == "panic" => CheckedExpr::Panic {
+                message: Box::new(self.lower_expr(operand)),
             },
             Expr::MacroApply {
                 macro_name,
@@ -6738,6 +6771,56 @@ mod tests {
         assert!(matches!(
             module.ir.declarations[0].value,
             CheckedExpr::Cases { .. }
+        ));
+        let x_ty = module.value_types.get("x").expect("x should exist");
+        assert!(matches!(module.types.get(*x_ty), Some(Ty::Int32)));
+    }
+
+    #[test]
+    fn panic_macro_typechecks_as_never() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
+                doc: None,
+                name: "x".to_string(),
+                value: Expr::MacroApply {
+                    macro_name: "panic".to_string(),
+                    static_args: Vec::new(),
+                    operand: Box::new(Expr::String("boom".to_string())),
+                },
+            }],
+        };
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        let x_ty = module.value_types.get("x").expect("x should exist");
+        assert!(matches!(module.types.get(*x_ty), Some(Ty::Never)));
+        assert!(matches!(module.ir.declarations[0].value, CheckedExpr::Panic { .. }));
+    }
+
+    #[test]
+    fn catch_expression_lowers_to_checked_catch_node() {
+        let program = Program {
+            declarations: vec![Decl::Assign {
+                static_params: Vec::new(),
+                doc: None,
+                name: "x".to_string(),
+                value: Expr::Catch {
+                    expr: Box::new(Expr::MacroApply {
+                        macro_name: "panic".to_string(),
+                        static_args: Vec::new(),
+                        operand: Box::new(Expr::String("boom".to_string())),
+                    }),
+                    fallback: Box::new(Expr::Int("7".to_string())),
+                },
+            }],
+        };
+
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        assert!(matches!(
+            module.ir.declarations[0].value,
+            CheckedExpr::Catch { .. }
         ));
         let x_ty = module.value_types.get("x").expect("x should exist");
         assert!(matches!(module.types.get(*x_ty), Some(Ty::Int32)));

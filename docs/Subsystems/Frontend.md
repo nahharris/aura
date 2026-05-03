@@ -45,6 +45,11 @@ Own the syntax-facing compiler surface: tokens, lexing, AST construction, parsin
 - Compound assignments and postfix `++`/`--` desugar during parsing to normal assignment with a binary RHS, preserving right-associative assignment precedence.
 - Numeric member syntax after a postfix-capable expression, such as `coord.0`, is tokenized as member access rather than as a malformed float literal.
 
+## Panic/Catch Surface
+
+- `panic "message"` parses as macro application (`Expr::MacroApply` with `macro_name = "panic"`).
+- `catch (expr) else { fallback }` parses as a dedicated `Expr::Catch` node, matching inline call-style control-flow syntax.
+
 ## Entry Points
 
 - `Parser` is re-exported from `crates/aura-frontend/src/lib.rs`

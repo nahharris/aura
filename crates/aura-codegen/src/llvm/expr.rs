@@ -47,6 +47,8 @@ pub fn classify_expr_kind(expr: &CheckedExpr) -> &'static str {
         CheckedExpr::AssignLocal { .. } => "assign_local",
         CheckedExpr::FieldAccess { .. } => "field_access",
         CheckedExpr::ForceUnwrap { .. } => "force_unwrap",
+        CheckedExpr::Panic { .. } => "panic",
+        CheckedExpr::Catch { .. } => "catch",
         CheckedExpr::AssignField { .. } => "assign_field",
         CheckedExpr::Closure { .. } => "closure",
         CheckedExpr::Any => "any",
@@ -187,6 +189,12 @@ pub fn lower_expr<'ctx, 'm>(
             payload_ty,
             payload_variant_index,
         } => lower_force_unwrap(cg, expr, *enum_ty, *payload_ty, *payload_variant_index),
+        CheckedExpr::Panic { message } => lower_panic_expr(cg, message),
+        CheckedExpr::Catch {
+            result_ty,
+            expr,
+            fallback,
+        } => lower_catch_expr(cg, *result_ty, expr, fallback),
         CheckedExpr::AssignField {
             object,
             object_ty,
@@ -1045,10 +1053,15 @@ fn lower_force_unwrap<'ctx, 'm>(
         .ok_or(CodegenError::UnsupportedExpression("force_unwrap"))?;
     let enum_basic_ty =
         lower_basic_type(cg.context, &cg.checked.types, enum_ty)?.into_struct_type();
+    let payload_basic_ty = lower_basic_type(cg.context, &cg.checked.types, payload_ty)?;
     let value = lower_expr(cg, expr)?;
     let slot = cg
         .builder
         .build_alloca(enum_basic_ty, "force_unwrap_value")
+        .map_err(|_| CodegenError::UnsupportedExpression("force_unwrap"))?;
+    let result_slot = cg
+        .builder
+        .build_alloca(payload_basic_ty, "force_unwrap_result")
         .map_err(|_| CodegenError::UnsupportedExpression("force_unwrap"))?;
     cg.builder
         .build_store(slot, value)
@@ -1064,15 +1077,157 @@ fn lower_force_unwrap<'ctx, 'm>(
         .map_err(|_| CodegenError::UnsupportedExpression("force_unwrap"))?;
     let some_block = cg.context.append_basic_block(function, "force_unwrap_some");
     let null_block = cg.context.append_basic_block(function, "force_unwrap_null");
+    let merge_block = cg.context.append_basic_block(function, "force_unwrap_merge");
     cg.builder
         .build_conditional_branch(ok, some_block, null_block)
         .map_err(|_| CodegenError::UnsupportedExpression("force_unwrap"))?;
     cg.builder.position_at_end(null_block);
+    let panic_message = CheckedExpr::String("force unwrap failed".to_string());
+    let _ = lower_panic_expr(cg, &panic_message)?;
     cg.builder
-        .build_unreachable()
+        .build_store(result_slot, payload_basic_ty.const_zero())
+        .map_err(|_| CodegenError::UnsupportedExpression("force_unwrap"))?;
+    cg.builder
+        .build_unconditional_branch(merge_block)
         .map_err(|_| CodegenError::UnsupportedExpression("force_unwrap"))?;
     cg.builder.position_at_end(some_block);
-    load_enum_payload(cg, slot, enum_basic_ty, payload_ty)
+    let payload = load_enum_payload(cg, slot, enum_basic_ty, payload_ty)?;
+    cg.builder
+        .build_store(result_slot, payload)
+        .map_err(|_| CodegenError::UnsupportedExpression("force_unwrap"))?;
+    cg.builder
+        .build_unconditional_branch(merge_block)
+        .map_err(|_| CodegenError::UnsupportedExpression("force_unwrap"))?;
+    cg.builder.position_at_end(merge_block);
+    cg.builder
+        .build_load(payload_basic_ty, result_slot, "force_unwrap_result_load")
+        .map_err(|_| CodegenError::UnsupportedExpression("force_unwrap"))
+}
+
+#[cfg(feature = "llvm-backend")]
+fn lower_panic_expr<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    message: &CheckedExpr,
+) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    let panic_fn = if let Some(function) = cg.module.get_function("aura_panic") {
+        function
+    } else {
+        let Some(fn_ty) = runtime_builtin_function_type(cg, "aura_panic") else {
+            return Err(CodegenError::UnsupportedExpression("panic"));
+        };
+        cg.module
+            .add_function("aura_panic", fn_ty, Some(Linkage::External))
+    };
+    let msg_value = lower_expr(cg, message)?;
+    let args = [BasicMetadataValueEnum::from(msg_value)];
+    cg.builder
+        .build_call(panic_fn, &args, "call_aura_panic")
+        .map_err(|_| CodegenError::UnsupportedExpression("panic"))?;
+    Ok(cg
+        .context
+        .ptr_type(AddressSpace::default())
+        .const_null()
+        .as_basic_value_enum())
+}
+
+#[cfg(feature = "llvm-backend")]
+fn lower_catch_expr<'ctx, 'm>(
+    cg: &CodegenContext<'ctx, 'm>,
+    result_ty: aura_typecheck::TyId,
+    expr: &CheckedExpr,
+    fallback: &CheckedExpr,
+) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    let current_block = cg
+        .builder
+        .get_insert_block()
+        .ok_or(CodegenError::UnsupportedExpression("catch"))?;
+    let function = current_block
+        .get_parent()
+        .ok_or(CodegenError::UnsupportedExpression("catch"))?;
+    let then_block = cg.context.append_basic_block(function, "catch_ok");
+    let else_block = cg.context.append_basic_block(function, "catch_fallback");
+    let merge_block = cg.context.append_basic_block(function, "catch_merge");
+
+    let has_result = !matches!(cg.checked.types.get(result_ty), Some(Ty::Void | Ty::Never));
+    let result_slot = if has_result {
+        let result_basic_ty = lower_basic_type(cg.context, &cg.checked.types, result_ty)?;
+        Some(
+            cg.builder
+                .build_alloca(result_basic_ty, "catch_result")
+                .map_err(|_| CodegenError::UnsupportedExpression("catch"))?,
+        )
+    } else {
+        None
+    };
+
+    let begin_fn = if let Some(function) = cg.module.get_function("aura_catch_begin") {
+        function
+    } else {
+        let Some(fn_ty) = runtime_builtin_function_type(cg, "aura_catch_begin") else {
+            return Err(CodegenError::UnsupportedExpression("catch"));
+        };
+        cg.module
+            .add_function("aura_catch_begin", fn_ty, Some(Linkage::External))
+    };
+    cg.builder
+        .build_call(begin_fn, &[], "call_aura_catch_begin")
+        .map_err(|_| CodegenError::UnsupportedExpression("catch"))?;
+
+    let try_value = lower_expr(cg, expr)?;
+    if let Some(result_slot) = result_slot {
+        let stored = coerce_basic_value_for_slot(cg, try_value, result_ty)?;
+        cg.builder
+            .build_store(result_slot, stored)
+            .map_err(|_| CodegenError::UnsupportedExpression("catch"))?;
+    }
+
+    let end_fn = if let Some(function) = cg.module.get_function("aura_catch_end") {
+        function
+    } else {
+        let Some(fn_ty) = runtime_builtin_function_type(cg, "aura_catch_end") else {
+            return Err(CodegenError::UnsupportedExpression("catch"));
+        };
+        cg.module
+            .add_function("aura_catch_end", fn_ty, Some(Linkage::External))
+    };
+    let panicked = cg
+        .builder
+        .build_call(end_fn, &[], "call_aura_catch_end")
+        .map_err(|_| CodegenError::UnsupportedExpression("catch"))?
+        .try_as_basic_value()
+        .left()
+        .ok_or(CodegenError::UnsupportedExpression("catch"))?
+        .into_int_value();
+    cg.builder
+        .build_conditional_branch(panicked, else_block, then_block)
+        .map_err(|_| CodegenError::UnsupportedExpression("catch"))?;
+
+    cg.builder.position_at_end(then_block);
+    branch_to_if_open(cg, merge_block, "catch")?;
+
+    cg.builder.position_at_end(else_block);
+    let fallback_value = lower_expr(cg, fallback)?;
+    if let Some(result_slot) = result_slot {
+        let stored = coerce_basic_value_for_slot(cg, fallback_value, result_ty)?;
+        cg.builder
+            .build_store(result_slot, stored)
+            .map_err(|_| CodegenError::UnsupportedExpression("catch"))?;
+    }
+    branch_to_if_open(cg, merge_block, "catch")?;
+
+    cg.builder.position_at_end(merge_block);
+    if let Some(result_slot) = result_slot {
+        let result_basic_ty = lower_basic_type(cg.context, &cg.checked.types, result_ty)?;
+        return cg
+            .builder
+            .build_load(result_basic_ty, result_slot, "catch_result_load")
+            .map_err(|_| CodegenError::UnsupportedExpression("catch"));
+    }
+    Ok(cg
+        .context
+        .ptr_type(AddressSpace::default())
+        .const_null()
+        .as_basic_value_enum())
 }
 
 #[cfg(feature = "llvm-backend")]

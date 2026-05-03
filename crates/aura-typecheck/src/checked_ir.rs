@@ -81,6 +81,14 @@ pub enum CheckedExpr {
         payload_ty: TyId,
         payload_variant_index: usize,
     },
+    Panic {
+        message: Box<CheckedExpr>,
+    },
+    Catch {
+        result_ty: TyId,
+        expr: Box<CheckedExpr>,
+        fallback: Box<CheckedExpr>,
+    },
     AssignField {
         object: Box<CheckedExpr>,
         object_ty: TyId,

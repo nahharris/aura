@@ -71,6 +71,7 @@ Resolve symbols, enforce type rules, and emit checked IR for downstream codegen.
 - Struct and tuple field reads lower to `CheckedExpr::FieldAccess`; field/index assignments lower to `CheckedExpr::AssignField` after resolving the object type, field index, and field type.
 - Field assignment requires an assignable root place. `let` locals are assignable, immutable locals are rejected, and function parameters can be mutated through fields while remaining non-reassignable as bindings.
 - `If`, `Cases`, and `Loop` are dedicated checked-IR control-flow nodes.
+- Panic/catch lowering now introduces dedicated `CheckedExpr::Panic` and `CheckedExpr::Catch` nodes.
 - `Return`, `Break`, and `Continue` carry resolved target names so LLVM lowering can emit direct control transfer.
 - Managed-memory calls lower to `CheckedExpr::MemoryOp` nodes so backend codegen receives the operation kind, element type, result type, and already-lowered arguments without exposing raw pointers to Aura source.
 

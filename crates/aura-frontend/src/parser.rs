@@ -13,7 +13,7 @@ use std::collections::HashSet;
 
 const BUILTIN_MACROS: &[&str] = &[
     "def", "defstub", "let", "const", "inline", "builtin", "return", "break", "continue", "loop",
-    "doc",
+    "doc", "catch",
 ];
 
 const KNOWN_GENERIC_RECEIVERS: &[&str] = &[
@@ -1155,6 +1155,9 @@ where
         if self.peek_ident_is("label") {
             return self.parse_label_expr();
         }
+        if self.peek_ident_is("catch") && self.peek_n(1) == Some(&TokenKind::LParen) {
+            return self.parse_catch_expr();
+        }
         if self.is_macro_apply_start() {
             self.parse_macro_apply_expr()
         } else {
@@ -1207,6 +1210,31 @@ where
             Expr::Label {
                 label,
                 expr: Box::new(expr),
+            },
+        ))
+    }
+
+    fn parse_catch_expr(&mut self) -> Result<Expr, ParseError> {
+        let mark = self.mark();
+        self.expect_ident_exact("catch")?;
+        self.expect_simple(
+            &TokenKind::LParen,
+            "expected '(' after catch",
+            vec!["("],
+        )?;
+        let expr = self.parse_expr()?;
+        self.expect_simple(
+            &TokenKind::RParen,
+            "expected ')' after catch expression",
+            vec![")"],
+        )?;
+        self.expect_ident_exact("else")?;
+        let fallback = self.parse_brace_body_expr()?;
+        Ok(self.with_span(
+            mark,
+            Expr::Catch {
+                expr: Box::new(expr),
+                fallback: Box::new(fallback),
             },
         ))
     }
@@ -2612,6 +2640,37 @@ mod tests {
         assert_eq!(trailing.len(), 1);
         assert_eq!(trailing[0].label, "when");
         assert!(matches!(u(&trailing[0].body), Expr::MultiArm(_)));
+    }
+
+    #[test]
+    fn parse_panic_macro_application_shape() {
+        let src = "def main() -> Void { panic \"boom\" }";
+        let parsed = Parser::parse_source(src).expect("should parse panic macro application");
+        let Decl::Function(function) = &parsed.declarations[0] else {
+            panic!("expected function declaration")
+        };
+        assert!(matches!(
+            u(&function.body),
+            Expr::MacroApply { macro_name, operand, .. }
+                if macro_name == "panic" && matches!(u(operand.as_ref()), Expr::String(text) if text == "boom")
+        ));
+    }
+
+    #[test]
+    fn parse_catch_else_expression_shape() {
+        let src = "def x = catch (panic \"boom\") else { \"fallback\" }";
+        let parsed = Parser::parse_source(src).expect("should parse catch expression");
+        let Decl::Assign { value, .. } = parsed.declarations.first().expect("expected decl") else {
+            panic!("expected assignment")
+        };
+        let Expr::Catch { expr, fallback } = u(value) else {
+            panic!("expected catch expression")
+        };
+        assert!(matches!(
+            u(expr.as_ref()),
+            Expr::MacroApply { macro_name, .. } if macro_name == "panic"
+        ));
+        assert!(matches!(u(fallback.as_ref()), Expr::String(text) if text == "fallback"));
     }
 
     #[test]

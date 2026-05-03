@@ -38,6 +38,7 @@ Checked-IR control-flow nodes lower directly to LLVM block/branch structures:
 
 - `If` and `Cases` produce conditional branches plus merge blocks/result slots when needed.
 - `Loop` produces condition/body/break blocks and records loop targets for nested jumps.
+- `Catch` uses runtime panic-state guards (`aura_catch_begin`/`aura_catch_end`) and merge-block result selection.
 - `Return`, `Break`, and `Continue` emit direct control transfer using resolved checked-IR targets.
 
 For the first byte-buffer path, checked member calls are lowered to runtime symbols:
@@ -46,6 +47,7 @@ For the first byte-buffer path, checked member calls are lowered to runtime symb
 - `bytes.get(index)` -> `bytes_get(bytes, index)`
 - `bytes.set(index, value)` -> `bytes_set(bytes, index, value)`
 - `string.into()` -> `string_into(string_ptr)`
+- `panic "message"` -> `aura_panic(message)`
 - `syscall_write(fd, bytes)` -> direct external runtime call
 
 String literals still lower to global NUL-terminated byte storage on the LLVM side. `String.into()` is what materializes owned mutable `Bytes` by copying from that literal/runtime string storage in the runtime host.
@@ -62,6 +64,8 @@ Managed memory operations lower from `CheckedExpr::MemoryOp` nodes rather than p
 The element size and alignment come from LLVM type layout classification in codegen; Aura source cannot call the raw helper symbols directly.
 
 Struct and tuple literals lower to aggregate storage pointers in LLVM. `FieldAccess` loads from a resolved field GEP, and `AssignField` stores through the same indexed field pointer before returning the assigned value.
+
+`!!` force unwrap now follows the shared panic path on failure instead of lowering directly to an unconditional trap.
 
 ## Testing
 

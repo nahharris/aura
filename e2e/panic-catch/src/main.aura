@@ -1,0 +1,9 @@
+use io = "@stl/io";
+
+def main() -> Void {
+    let recovered = catch (panic "boom") else { "recovered from panic" };
+    io.println(recovered);
+
+    let direct = catch ("no panic path") else { "unused fallback" };
+    io.println(direct);
+}
