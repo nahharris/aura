@@ -1508,10 +1508,25 @@ impl TypeChecker {
             }
         };
 
-        Some(CheckedExpr::Call {
+        let call = CheckedExpr::Call {
             callee: Box::new(CheckedExpr::Ident(name.to_string())),
             args: lowered_args,
-        })
+        };
+        Some(self.wrap_call_with_gc_safepoint(call))
+    }
+
+    fn wrap_call_with_gc_safepoint(&mut self, call: CheckedExpr) -> CheckedExpr {
+        let unknown = self.unknown_ty();
+        let void_ty = self.interner.intern(Ty::Void);
+        CheckedExpr::Block(vec![
+            CheckedExpr::MemoryOp {
+                op: MemoryOpKind::GcSafepoint,
+                item_ty: unknown,
+                result_ty: void_ty,
+                args: Vec::new(),
+            },
+            call,
+        ])
     }
 
     fn pipe_to_call_expr(lhs: &Expr, rhs: &Expr) -> Expr {
@@ -5362,19 +5377,21 @@ impl TypeChecker {
                             vec![self.lower_expr(object)]
                         };
                         lowered_args.extend(args.iter().map(|a| self.lower_expr(a)));
-                        return CheckedExpr::Call {
+                        let call = CheckedExpr::Call {
                             callee: Box::new(CheckedExpr::Ident(method_link_name)),
                             args: lowered_args,
                         };
+                        return self.wrap_call_with_gc_safepoint(call);
                     }
                 }
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
                     if let Expr::Ident(namespace) = TypeChecker::base_expr(object) {
                         if let Some(binding) = self.namespace_binding(namespace, field) {
-                            return CheckedExpr::Call {
+                            let call = CheckedExpr::Call {
                                 callee: Box::new(CheckedExpr::Ident(binding.link_name.clone())),
                                 args: args.iter().map(|a| self.lower_expr(a)).collect(),
                             };
+                            return self.wrap_call_with_gc_safepoint(call);
                         }
                     }
                 }
@@ -5386,10 +5403,11 @@ impl TypeChecker {
                         return lowered;
                     }
                 }
-                CheckedExpr::Call {
+                let call = CheckedExpr::Call {
                     callee: Box::new(self.lower_expr(callee)),
                     args: args.iter().map(|a| self.lower_expr(a)).collect(),
-                }
+                };
+                self.wrap_call_with_gc_safepoint(call)
             }
             Expr::MacroApply {
                 macro_name,
@@ -6112,7 +6130,7 @@ fn ty_to_ref(ty: &Ty, interner: &TyInterner) -> TypeRef {
 #[cfg(test)]
 mod tests {
     use super::TypeChecker;
-    use crate::checked_ir::CheckedExpr;
+    use crate::checked_ir::{CheckedExpr, MemoryOpKind};
     use crate::types::Ty;
     use crate::CheckContext;
     use aura_frontend::ast::{
@@ -6129,6 +6147,84 @@ mod tests {
     }
 
     use crate::{check_module, check_module_with_options, CheckOptions};
+
+    fn contains_gc_safepoint(expr: &CheckedExpr) -> bool {
+        match expr {
+            CheckedExpr::MemoryOp {
+                op: MemoryOpKind::GcSafepoint,
+                ..
+            } => true,
+            CheckedExpr::Block(items) | CheckedExpr::MultiArm(items) => {
+                items.iter().any(contains_gc_safepoint)
+            }
+            CheckedExpr::Call { callee, args } => {
+                contains_gc_safepoint(callee) || args.iter().any(contains_gc_safepoint)
+            }
+            CheckedExpr::EnumCtor { payload, .. } | CheckedExpr::DotIdent { payload, .. } => payload
+                .as_deref()
+                .is_some_and(contains_gc_safepoint),
+            CheckedExpr::FieldAccess { object, .. } => contains_gc_safepoint(object),
+            CheckedExpr::ForceUnwrap { expr, .. } => contains_gc_safepoint(expr),
+            CheckedExpr::AssignField { object, value, .. } => {
+                contains_gc_safepoint(object) || contains_gc_safepoint(value)
+            }
+            CheckedExpr::Label { expr, .. } => contains_gc_safepoint(expr),
+            CheckedExpr::EnumMatch {
+                scrutinee,
+                arms,
+                default_arm,
+                ..
+            } => {
+                contains_gc_safepoint(scrutinee)
+                    || arms.iter().any(|arm| contains_gc_safepoint(&arm.body))
+                    || default_arm
+                        .as_deref()
+                        .is_some_and(contains_gc_safepoint)
+            }
+            CheckedExpr::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                contains_gc_safepoint(condition)
+                    || contains_gc_safepoint(then_branch)
+                    || else_branch
+                        .as_deref()
+                        .is_some_and(contains_gc_safepoint)
+            }
+            CheckedExpr::Cases { arms, .. } => arms
+                .iter()
+                .any(|arm| contains_gc_safepoint(&arm.guard) || contains_gc_safepoint(&arm.body)),
+            CheckedExpr::Loop { condition, body, .. } => {
+                condition
+                    .as_deref()
+                    .is_some_and(contains_gc_safepoint)
+                    || contains_gc_safepoint(body)
+            }
+            CheckedExpr::Return { value, .. } => contains_gc_safepoint(value),
+            CheckedExpr::Break { value, .. } => value
+                .as_deref()
+                .is_some_and(contains_gc_safepoint),
+            CheckedExpr::Coerce { expr, .. } | CheckedExpr::Cast { expr, .. } => {
+                contains_gc_safepoint(expr)
+            }
+            CheckedExpr::Tuple(items) | CheckedExpr::List(items) => {
+                items.iter().any(contains_gc_safepoint)
+            }
+            CheckedExpr::Struct(fields) => fields.iter().any(|(_, item)| contains_gc_safepoint(item)),
+            CheckedExpr::Dict(entries) => entries
+                .iter()
+                .any(|(k, v)| contains_gc_safepoint(k) || contains_gc_safepoint(v)),
+            CheckedExpr::LocalBind { bindings, .. } => {
+                bindings.iter().any(|binding| contains_gc_safepoint(&binding.value))
+            }
+            CheckedExpr::AssignLocal { value, .. } => contains_gc_safepoint(value),
+            CheckedExpr::MemoryOp { args, .. } => args.iter().any(contains_gc_safepoint),
+            CheckedExpr::MacroApply { operand, .. } => contains_gc_safepoint(operand),
+            _ => false,
+        }
+    }
 
     #[test]
     fn allows_implicit_numeric_widening_on_reassignment() {
@@ -6432,8 +6528,9 @@ mod tests {
         let module = checked.module.expect("module should exist");
         assert!(matches!(
             module.ir.declarations[0].value,
-            CheckedExpr::Call { .. }
+            CheckedExpr::Block(_)
         ));
+        assert!(contains_gc_safepoint(&module.ir.declarations[0].value));
     }
 
     #[test]
@@ -9502,6 +9599,24 @@ mod tests {
             checked.module.is_some(),
             "expected module, got diagnostics: {:?}",
             checked.diagnostics
+        );
+    }
+
+    #[test]
+    fn call_lowering_inserts_gc_safepoint_memory_op() {
+        let program = Parser::parse_source("def id(x: Int) -> Int { x }; def value = id(1)")
+            .expect("source should parse");
+        let checked = check_module(&program);
+        let module = checked.module.expect("module should exist");
+        let value_decl = module
+            .ir
+            .declarations
+            .iter()
+            .find(|decl| decl.name == "value")
+            .expect("value declaration");
+        assert!(
+            contains_gc_safepoint(&value_decl.value),
+            "expected gc safepoint in lowered call expression"
         );
     }
 

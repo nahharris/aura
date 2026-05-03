@@ -26,6 +26,7 @@ use super::context::{CodegenContext, LoopTarget};
 #[cfg(feature = "llvm-backend")]
 use super::types::{
     AuraFunctionType, AuraValueType, aggregate_storage_type, lower_basic_type, type_layout,
+    type_layout_id, type_trace_kind,
 };
 
 pub fn classify_expr_kind(expr: &CheckedExpr) -> &'static str {
@@ -445,7 +446,16 @@ fn memory_runtime_function<'ctx, 'm>(
     let usize_ty = cg.context.i64_type();
     let bool_ty = cg.context.bool_type();
     let fn_ty = match name {
-        "raw_alloc_new" => ptr.fn_type(&[usize_ty.into(), usize_ty.into(), usize_ty.into()], false),
+        "raw_alloc_new" => ptr.fn_type(
+            &[
+                usize_ty.into(),
+                usize_ty.into(),
+                usize_ty.into(),
+                usize_ty.into(),
+                usize_ty.into(),
+            ],
+            false,
+        ),
         "raw_alloc_slice" => ptr.fn_type(&[ptr.into()], false),
         "slice_get" => bool_ty.fn_type(&[ptr.into(), usize_ty.into(), ptr.into()], false),
         "slice_set" => bool_ty.fn_type(&[ptr.into(), usize_ty.into(), ptr.into()], false),
@@ -458,6 +468,12 @@ fn memory_runtime_function<'ctx, 'm>(
             .context
             .void_type()
             .fn_type(&[ptr.into(), ptr.into()], false),
+        "gc_register_root" => cg
+            .context
+            .void_type()
+            .fn_type(&[ptr.into(), usize_ty.into()], false),
+        "gc_unregister_root" => cg.context.void_type().fn_type(&[ptr.into()], false),
+        "gc_safepoint" => cg.context.void_type().fn_type(&[], false),
         _ => return Err(CodegenError::UnsupportedExpression("memory_op")),
     };
 
@@ -596,8 +612,12 @@ fn lower_memory_op<'ctx, 'm>(
                 .and_then(|arg| lower_expr(cg, arg))
                 .and_then(|value| coerce_to_usize(cg, value))?;
             let layout = type_layout(&cg.checked.types, item_ty)?;
+            let layout_id = type_layout_id(&cg.checked.types, item_ty);
+            let trace_kind = type_trace_kind(&cg.checked.types, item_ty)?;
             let size = cg.context.i64_type().const_int(layout.size, false);
             let align = cg.context.i64_type().const_int(layout.align, false);
+            let layout_id = cg.context.i64_type().const_int(layout_id, false);
+            let trace_kind = cg.context.i64_type().const_int(trace_kind, false);
             call_memory_runtime(
                 cg,
                 "raw_alloc_new",
@@ -605,6 +625,8 @@ fn lower_memory_op<'ctx, 'm>(
                     count.as_basic_value_enum(),
                     size.as_basic_value_enum(),
                     align.as_basic_value_enum(),
+                    layout_id.as_basic_value_enum(),
+                    trace_kind.as_basic_value_enum(),
                 ],
             )?
             .ok_or(CodegenError::UnsupportedExpression("memory_op"))
@@ -748,6 +770,42 @@ fn lower_memory_op<'ctx, 'm>(
                 "ref_set",
                 &[reference, value_slot.as_basic_value_enum()],
             )?;
+            Ok(cg
+                .context
+                .ptr_type(AddressSpace::default())
+                .const_null()
+                .as_basic_value_enum())
+        }
+        MemoryOpKind::GcRegisterRoot => {
+            let slot = args
+                .first()
+                .ok_or(CodegenError::UnsupportedExpression("memory_op"))
+                .and_then(|arg| lower_expr(cg, arg))?;
+            let layout_id = match args.get(1) {
+                Some(arg) => coerce_to_usize(cg, lower_expr(cg, arg)?)?.as_basic_value_enum(),
+                None => cg.context.i64_type().const_zero().as_basic_value_enum(),
+            };
+            let _ = call_memory_runtime(cg, "gc_register_root", &[slot, layout_id])?;
+            Ok(cg
+                .context
+                .ptr_type(AddressSpace::default())
+                .const_null()
+                .as_basic_value_enum())
+        }
+        MemoryOpKind::GcUnregisterRoot => {
+            let slot = args
+                .first()
+                .ok_or(CodegenError::UnsupportedExpression("memory_op"))
+                .and_then(|arg| lower_expr(cg, arg))?;
+            let _ = call_memory_runtime(cg, "gc_unregister_root", &[slot])?;
+            Ok(cg
+                .context
+                .ptr_type(AddressSpace::default())
+                .const_null()
+                .as_basic_value_enum())
+        }
+        MemoryOpKind::GcSafepoint => {
+            let _ = call_memory_runtime(cg, "gc_safepoint", &[])?;
             Ok(cg
                 .context
                 .ptr_type(AddressSpace::default())
@@ -1575,6 +1633,7 @@ fn lower_call<'ctx, 'm>(
     callee: &CheckedExpr,
     args: &[CheckedExpr],
 ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+    let _ = call_memory_runtime(cg, "gc_safepoint", &[])?;
     if let CheckedExpr::DotIdent { name, payload } = callee {
         if let Some(payload_expr) = payload {
             let _ = lower_expr(cg, payload_expr)?;

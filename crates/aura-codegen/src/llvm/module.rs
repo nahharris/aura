@@ -491,14 +491,14 @@ mod tests {
 
         let ir = super::emit_module_stub("managed_memory", &module).expect("emit ir");
 
-        assert!(ir.contains("declare ptr @raw_alloc_new(i64, i64, i64)"));
+        assert!(ir.contains("declare ptr @raw_alloc_new(i64, i64, i64, i64, i64)"));
         assert!(ir.contains("declare ptr @raw_alloc_slice(ptr)"));
         assert!(ir.contains("declare i1 @slice_set(ptr, i64, ptr)"));
         assert!(ir.contains("declare i1 @slice_get(ptr, i64, ptr)"));
         assert!(ir.contains("declare ptr @slice_ref_at(ptr, i64)"));
         assert!(ir.contains("declare void @ref_set(ptr, ptr)"));
         assert!(ir.contains("declare void @ref_get(ptr, ptr)"));
-        assert!(ir.contains("call ptr @raw_alloc_new(i64 2, i64 4, i64 4)"));
+        assert!(ir.contains("call ptr @raw_alloc_new(i64 2, i64 4, i64 4,"));
         assert!(ir.contains("call ptr @raw_alloc_slice(ptr"));
         assert!(ir.contains("call i1 @slice_set(ptr"));
         assert!(ir.contains("call i1 @slice_get(ptr"));
