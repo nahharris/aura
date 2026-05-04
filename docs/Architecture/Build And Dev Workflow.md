@@ -21,6 +21,8 @@ tags:
 
 Continuous integration in `.github/workflows/ci.yml` runs in parallel: **fmt-check** and **docs check** on Ubuntu only (same inputs on every OS); **workspace** tests on Ubuntu and Windows with **clippy on Ubuntu only**; **llvm** setup + clippy + tests on both Ubuntu and Windows (toolchains and linking differ by OS).
 
+GitHub.com branch protection, required checks, and auto-merge are summarized in [[Architecture/GitHub Repo Settings]] (update that note when settings change).
+
 ## LLVM-Sensitive Work
 
 Run LLVM-backed checks and CLI builds through `cargo xtask llvm ...` so the managed toolchain is injected consistently.
@@ -33,5 +35,6 @@ Run LLVM-backed checks and CLI builds through `cargo xtask llvm ...` so the mana
 
 ## Related Notes
 
+- [[Architecture/GitHub Repo Settings]]
 - [[Subsystems/Xtask]]
 - [[Generated/Commands Inventory]]

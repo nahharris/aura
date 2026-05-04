@@ -15,6 +15,7 @@ tags:
 
 - [[Architecture/Repo Map]]
 - [[Architecture/Build And Dev Workflow]]
+- [[Architecture/GitHub Repo Settings]]
 - [[Architecture/Testing Strategy]]
 - [[Language/Design Overview]]
 - [[Contracts/Typecheck IR]]

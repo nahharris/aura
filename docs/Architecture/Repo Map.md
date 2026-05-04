@@ -30,7 +30,7 @@ tags:
 - Language rules: [[Language/Design Overview]] and [[Language/Syntax And Semantics]]
 - AUON notation spec: [[Language/AUON]]
 - Compiler subsystems: [[Subsystems/Frontend]], [[Subsystems/Typecheck]], [[Subsystems/Codegen]]
-- Developer workflows: [[Architecture/Build And Dev Workflow]] and [[Architecture/Testing Strategy]]
+- Developer workflows: [[Architecture/Build And Dev Workflow]], [[Architecture/GitHub Repo Settings]], and [[Architecture/Testing Strategy]]
 - Current IR contract: [[Contracts/Typecheck IR]]
 
 ## Generated Support
