@@ -33,7 +33,7 @@ After extraction, `toolchains/llvm/<major>` is a link to the versioned install. 
 
 On Linux, `cargo xtask llvm …` prepends `<prefix>/lib` to `LD_LIBRARY_PATH` when spawning `cargo` so `llvm-sys` build scripts can execute `llvm-config` and load `libLLVM.so` (matching the CI workflow’s `GITHUB_ENV` step).
 
-The official x86_64 Linux LLVM 18 prebuilt targets Ubuntu 18.04 and expects **`libtinfo.so.5`** (ncurses5). Distros that only provide ncurses6 need **`libncurses5`** / **`libtinfo5`** (see the LLVM job in `.github/workflows/ci.yml`).
+The official x86_64 Linux LLVM 18 prebuilt targets Ubuntu 18.04 and expects **`libtinfo.so.5`**. Ubuntu 24.04+ runners no longer ship that soname via apt; CI installs Ubuntu 22.04’s `libtinfo5` package from the archive (see `.github/workflows/ci.yml`).
 
 ## Related
 

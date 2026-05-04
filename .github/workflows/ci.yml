@@ -76,8 +76,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          # LLVM.org Ubuntu 18.04 tarballs link libtinfo.so.5; newer runners only ship libtinfo.so.6.
-          sudo apt-get install -y libxml2 zlib1g libzstd1 libncurses5 libtinfo5
+          sudo apt-get install -y libxml2 zlib1g libzstd1 wget ca-certificates
+          # LLVM.org x86_64 Linux tarballs target Ubuntu 18.04 and link libtinfo.so.5. Ubuntu 24.04+
+          # images dropped ncurses5 packages; install Jammy's libtinfo5 .deb (same ABI family as tinfo6).
+          wget -q "http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb"
+          sudo apt-get install -y ./libtinfo5_6.3-2ubuntu0.1_amd64.deb
       - uses: Swatinem/rust-cache@v2
       # Cache only the downloaded tarball. Caching the extracted `toolchains/llvm`
       # tree can restore broken `toolchains/llvm/18` symlinks across runners.
