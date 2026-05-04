@@ -25,7 +25,7 @@ Centralize automation for the workspace, including dev commands, LLVM toolchain 
 
 - `dev` — includes `fmt-check` and `ci` for CI parity with GitHub Actions
 - `llvm` — includes `ci` (doctor + clippy + test) after `llvm setup`
-- `docs`
+- `docs` — `docs sync` / `docs check` walk the repo for inventories; paths like `.opencode/` are skipped so local agent tooling does not affect generated vault tables or CI.
 
 ## Related
 
