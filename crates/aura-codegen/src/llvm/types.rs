@@ -242,7 +242,7 @@ mod llvm_lowering {
             .unwrap_or(1);
         let payload_field = payload_storage_type(context, max_payload_size, max_payload_align)?;
         Ok(context
-            .struct_type(&[context.i32_type().into(), payload_field.into()], false)
+            .struct_type(&[context.i32_type().into(), payload_field], false)
             .as_basic_type_enum())
     }
 
@@ -306,8 +306,13 @@ mod llvm_lowering {
         })
     }
 
-    fn type_contains_managed_pointers(types: &TyInterner, ty_id: TyId) -> Result<bool, CodegenError> {
-        let ty = types.get(ty_id).ok_or(CodegenError::InvalidTypeId(ty_id.0))?;
+    fn type_contains_managed_pointers(
+        types: &TyInterner,
+        ty_id: TyId,
+    ) -> Result<bool, CodegenError> {
+        let ty = types
+            .get(ty_id)
+            .ok_or(CodegenError::InvalidTypeId(ty_id.0))?;
         Ok(match ty {
             Ty::Bool
             | Ty::Int8
@@ -497,6 +502,9 @@ mod tests {
         let ref_ty = types.intern(Ty::Ref(int_ty));
         assert_eq!(type_trace_kind(&types, int_ty).expect("trace kind"), 0);
         assert_eq!(type_trace_kind(&types, ref_ty).expect("trace kind"), 1);
-        assert_ne!(type_layout_id(&types, int_ty), type_layout_id(&types, ref_ty));
+        assert_ne!(
+            type_layout_id(&types, int_ty),
+            type_layout_id(&types, ref_ty)
+        );
     }
 }

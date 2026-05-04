@@ -115,7 +115,11 @@ pub struct AuraRawAlloc {
     len: usize,
     elem_size: usize,
     elem_align: usize,
+    /// Reserved for layout / tracing metadata aligned with generated allocations.
+    #[allow(dead_code)]
     layout_id: usize,
+    /// Reserved for layout / tracing metadata aligned with generated allocations.
+    #[allow(dead_code)]
     trace_kind: usize,
     storage: Vec<u8>,
 }
@@ -474,11 +478,18 @@ pub extern "C" fn aura_catch_end() -> i32 {
     PANIC_ACTIVE.with(|active| {
         let was_active = active.get();
         active.set(false);
-        if was_active { 1 } else { 0 }
+        if was_active {
+            1
+        } else {
+            0
+        }
     })
 }
 
 #[unsafe(no_mangle)]
+/// # Safety
+/// `_message` is currently unused; callers must pass null or a pointer that remains valid for the
+/// duration of the call in case a future implementation reads it.
 pub unsafe extern "C" fn aura_panic_set_hook(_message: *const u8) {
     PANIC_HOOK_ENABLED.with(|enabled| enabled.set(true));
 }
@@ -518,9 +529,9 @@ pub extern "C" fn syscall_exit(code: i32) -> ! {
 mod tests {
     use super::{
         aura_catch_begin, aura_catch_end, bytes_get, bytes_new, bytes_set, gc_register_root,
-        gc_safepoint, gc_unregister_root, lock_gc_roots, raw_alloc_len, raw_alloc_new, raw_alloc_ref,
-        raw_alloc_ref_alloc, raw_alloc_slice, ref_get, ref_set, slice_get, slice_ref_at, slice_set,
-        string_into, syscall_write, AuraBytes,
+        gc_safepoint, gc_unregister_root, lock_gc_roots, raw_alloc_len, raw_alloc_new,
+        raw_alloc_ref, raw_alloc_ref_alloc, raw_alloc_slice, ref_get, ref_set, slice_get,
+        slice_ref_at, slice_set, string_into, syscall_write, AuraBytes,
     };
 
     #[test]

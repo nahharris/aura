@@ -525,6 +525,8 @@ fn render_commands_inventory() -> String {
 | `cargo xtask dev test` | Run the full workspace test suite. |
 | `cargo xtask dev lint` | Run clippy with warnings denied. |
 | `cargo xtask dev fmt` | Format the workspace. |
+| `cargo xtask dev fmt-check` | Fail if sources are not rustfmt-clean (CI-safe). |
+| `cargo xtask dev ci` | Full CI parity: fmt-check, lint, test, docs check, LLVM doctor + clippy + test. |
 | `cargo xtask dev qa` | Format, lint, and test. |
 
 ## LLVM Flow
@@ -533,6 +535,7 @@ fn render_commands_inventory() -> String {
 | --- | --- |
 | `cargo xtask llvm setup` | Install or validate the managed LLVM toolchain. |
 | `cargo xtask llvm doctor` | Check the managed LLVM toolchain. |
+| `cargo xtask llvm ci` | Doctor, then clippy and tests (toolchain must already be installed). |
 | `cargo xtask llvm check` | Check `aura-codegen` with the LLVM backend feature. |
 | `cargo xtask llvm build` | Build `aura-codegen` with the LLVM backend feature. |
 | `cargo xtask llvm test` | Test `aura-codegen` with the LLVM backend feature. |

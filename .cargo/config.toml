@@ -1,5 +1,7 @@
 [alias]
 xtask = "run -p xtask --"
+ci = "xtask dev ci"
+fmt-check = "xtask dev fmt-check"
 qa = "xtask dev qa"
 lint = "xtask dev lint"
 test-all = "xtask dev test"

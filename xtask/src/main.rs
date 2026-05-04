@@ -50,6 +50,10 @@ enum DevCommands {
     Test,
     Lint,
     Fmt,
+    /// Fail if the workspace is not rustfmt-clean (does not modify files).
+    FmtCheck,
+    /// Full CI parity: fmt check, clippy, tests, docs check, then LLVM doctor + clippy + tests.
+    Ci,
     Qa,
 }
 
@@ -57,6 +61,8 @@ enum DevCommands {
 enum LlvmCommands {
     Setup,
     Doctor,
+    /// LLVM doctor, clippy, and tests (expects toolchain already installed; use `llvm setup` first on a fresh machine).
+    Ci,
     Check,
     Build,
     Test,
@@ -85,12 +91,15 @@ fn main() -> Result<()> {
             DevCommands::Test => dev_test(&sh),
             DevCommands::Lint => dev_lint(&sh),
             DevCommands::Fmt => dev_fmt(&sh),
+            DevCommands::FmtCheck => dev_fmt_check(&sh),
+            DevCommands::Ci => dev_ci(&sh, &root),
             DevCommands::Qa => dev_qa(&sh),
         },
         Commands::Docs { command } => docs::run(command, &root),
         Commands::Llvm { command } => match command {
             LlvmCommands::Setup => llvm_setup(&sh),
             LlvmCommands::Doctor => llvm_doctor(&sh),
+            LlvmCommands::Ci => llvm_ci(&sh),
             LlvmCommands::Check => llvm_check(&sh),
             LlvmCommands::Build => llvm_build(&sh),
             LlvmCommands::Test => llvm_test(&sh),
@@ -124,6 +133,27 @@ fn dev_lint(sh: &Shell) -> Result<()> {
 
 fn dev_fmt(sh: &Shell) -> Result<()> {
     cmd!(sh, "cargo fmt --all").run()?;
+    Ok(())
+}
+
+fn dev_fmt_check(sh: &Shell) -> Result<()> {
+    cmd!(sh, "cargo fmt --all -- --check").run()?;
+    Ok(())
+}
+
+fn dev_ci(sh: &Shell, root: &Path) -> Result<()> {
+    dev_fmt_check(sh)?;
+    dev_lint(sh)?;
+    dev_test(sh)?;
+    docs::run(DocsCommands::Check, root)?;
+    llvm_ci(sh)?;
+    Ok(())
+}
+
+fn llvm_ci(sh: &Shell) -> Result<()> {
+    llvm_doctor(sh)?;
+    llvm_clippy(sh)?;
+    llvm_test(sh)?;
     Ok(())
 }
 

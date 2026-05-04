@@ -47,7 +47,9 @@ impl Unifier {
                     return Err(Box::new(
                         Diagnostic::error(Issue::UnifyMismatch)
                             .with_related("interface member count differs", None)
-                            .with_hint("use interfaces with the same method set for this constraint"),
+                            .with_hint(
+                                "use interfaces with the same method set for this constraint",
+                            ),
                     ));
                 }
                 let names_a: HashSet<_> = a.iter().map(|(n, _)| n).collect();
@@ -65,8 +67,13 @@ impl Unifier {
                     let Some(ty_b) = map_b.get(&name).copied() else {
                         return Err(Box::new(
                             Diagnostic::error(Issue::UnifyMismatch)
-                                .with_related("interface member name missing on right-hand side", None)
-                                .with_hint("interfaces unify by member name, not declaration order"),
+                                .with_related(
+                                    "interface member name missing on right-hand side",
+                                    None,
+                                )
+                                .with_hint(
+                                    "interfaces unify by member name, not declaration order",
+                                ),
                         ));
                     };
                     let ty = self.unify(interner, ty_a, ty_b, _context)?;

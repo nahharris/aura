@@ -658,9 +658,5 @@ fn interface_values_lower_with_runtime_object_and_dynamic_dispatch_nodes() {
         .iter()
         .find(|decl| decl.name == "call")
         .expect("call function should exist");
-    assert!(matches!(
-        call_decl.value,
-        CheckedExpr::InterfaceCall { .. }
-    ));
-
+    assert!(matches!(call_decl.value, CheckedExpr::InterfaceCall { .. }));
 }

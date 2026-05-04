@@ -23,8 +23,8 @@ Centralize automation for the workspace, including dev commands, LLVM toolchain 
 
 ## Command Families
 
-- `dev`
-- `llvm`
+- `dev` — includes `fmt-check` and `ci` for CI parity with GitHub Actions
+- `llvm` — includes `ci` (doctor + clippy + test) after `llvm setup`
 - `docs`
 
 ## Related

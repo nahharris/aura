@@ -15,7 +15,11 @@ tags:
 - `cargo xtask dev test`
 - `cargo xtask dev lint`
 - `cargo xtask dev fmt`
+- `cargo xtask dev fmt-check` — rustfmt in check mode (CI-safe)
+- `cargo xtask dev ci` — same checks as GitHub Actions locally (includes docs + LLVM)
 - `cargo xtask dev qa`
+
+Continuous integration in `.github/workflows/ci.yml` runs in parallel: **fmt-check** and **docs check** on Ubuntu only (same inputs on every OS); **workspace** tests on Ubuntu and Windows with **clippy on Ubuntu only**; **llvm** setup + clippy + tests on both Ubuntu and Windows (toolchains and linking differ by OS).
 
 ## LLVM-Sensitive Work
 

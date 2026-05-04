@@ -61,11 +61,23 @@ pub enum Ty {
     Slice(TyId),
     Ref(TyId),
     List(TyId),
-    Dict { key: TyId, value: TyId },
+    Dict {
+        key: TyId,
+        value: TyId,
+    },
     Set(TyId),
-    Array { item: TyId, size: u64 },
-    Func { params: Vec<FuncParam>, ret: TyId },
-    Macro { params: Vec<FuncParam>, ret: TyId },
+    Array {
+        item: TyId,
+        size: u64,
+    },
+    Func {
+        params: Vec<FuncParam>,
+        ret: TyId,
+    },
+    Macro {
+        params: Vec<FuncParam>,
+        ret: TyId,
+    },
     Tuple(Vec<TyId>),
     Struct(Vec<(String, TyId)>),
     Union(Vec<TyId>),

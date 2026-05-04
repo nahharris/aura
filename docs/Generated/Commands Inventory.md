@@ -2,7 +2,7 @@
 title: Commands Inventory
 kind: generated
 generated_by: cargo xtask docs sync
-generated_at: 2026-05-03T18:53:52.5470381Z
+generated_at: 2026-05-04T00:59:06.6774126Z
 ---
 
 # Commands Inventory
@@ -16,6 +16,8 @@ generated_at: 2026-05-03T18:53:52.5470381Z
 | `cargo xtask dev test` | Run the full workspace test suite. |
 | `cargo xtask dev lint` | Run clippy with warnings denied. |
 | `cargo xtask dev fmt` | Format the workspace. |
+| `cargo xtask dev fmt-check` | Fail if sources are not rustfmt-clean (CI-safe). |
+| `cargo xtask dev ci` | Full CI parity: fmt-check, lint, test, docs check, LLVM doctor + clippy + test. |
 | `cargo xtask dev qa` | Format, lint, and test. |
 
 ## LLVM Flow
@@ -24,6 +26,7 @@ generated_at: 2026-05-03T18:53:52.5470381Z
 | --- | --- |
 | `cargo xtask llvm setup` | Install or validate the managed LLVM toolchain. |
 | `cargo xtask llvm doctor` | Check the managed LLVM toolchain. |
+| `cargo xtask llvm ci` | Doctor, then clippy and tests (toolchain must already be installed). |
 | `cargo xtask llvm check` | Check `aura-codegen` with the LLVM backend feature. |
 | `cargo xtask llvm build` | Build `aura-codegen` with the LLVM backend feature. |
 | `cargo xtask llvm test` | Test `aura-codegen` with the LLVM backend feature. |

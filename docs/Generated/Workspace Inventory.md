@@ -2,7 +2,7 @@
 title: Workspace Inventory
 kind: generated
 generated_by: cargo xtask docs sync
-generated_at: 2026-05-03T18:53:52.5470381Z
+generated_at: 2026-05-04T00:59:06.6774126Z
 ---
 
 # Workspace Inventory

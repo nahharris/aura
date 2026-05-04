@@ -94,7 +94,10 @@ pub struct Param {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeExpr {
-    Named { name: String, args: Vec<StaticArg> },
+    Named {
+        name: String,
+        args: Vec<StaticArg>,
+    },
     /// `interface(name: T, ...)` — empty `interface()` is the top type (see stdlib `Any`).
     Interface(Vec<(String, TypeExpr)>),
     Tuple(Vec<TypeExpr>),
