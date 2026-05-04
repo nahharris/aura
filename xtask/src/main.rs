@@ -560,29 +560,54 @@ fn extract_archive(paths: &LlvmPaths) -> Result<()> {
             .with_context(|| format!("failed to remove '{}'", paths.install_dir.display()))?;
     }
 
-    let extracted_dir = find_first_subdir(&paths.temp_extract_dir)?;
-    fs::rename(&extracted_dir, &paths.install_dir).with_context(|| {
-        format!(
-            "failed to finalize extracted LLVM directory '{}'",
-            paths.install_dir.display()
-        )
-    })?;
-
-    fs::remove_dir_all(&paths.temp_extract_dir)
-        .with_context(|| format!("failed to remove '{}'", paths.temp_extract_dir.display()))?;
+    let extracted_root = find_llvm_extract_root(&paths.temp_extract_dir)?;
+    if extracted_root == paths.temp_extract_dir {
+        fs::rename(&paths.temp_extract_dir, &paths.install_dir).with_context(|| {
+            format!(
+                "failed to finalize extracted LLVM directory '{}'",
+                paths.install_dir.display()
+            )
+        })?;
+    } else {
+        fs::rename(&extracted_root, &paths.install_dir).with_context(|| {
+            format!(
+                "failed to finalize extracted LLVM directory '{}'",
+                paths.install_dir.display()
+            )
+        })?;
+        fs::remove_dir_all(&paths.temp_extract_dir)
+            .with_context(|| format!("failed to remove '{}'", paths.temp_extract_dir.display()))?;
+    }
     Ok(())
 }
 
-fn find_first_subdir(root: &Path) -> Result<PathBuf> {
-    let mut dirs = fs::read_dir(root)
-        .with_context(|| format!("failed to read '{}'", root.display()))?
+/// Prefer the directory that actually contains `bin/llvm-config` so we do not pick an unrelated
+/// top-level folder when the archive has multiple entries, and support a flat unpack layout.
+fn find_llvm_extract_root(extract_root: &Path) -> Result<PathBuf> {
+    if llvm_config_path(extract_root).is_file() {
+        return Ok(extract_root.to_path_buf());
+    }
+    let mut dirs = fs::read_dir(extract_root)
+        .with_context(|| format!("failed to read '{}'", extract_root.display()))?
         .filter_map(|entry| entry.ok().map(|e| e.path()))
         .filter(|p| p.is_dir())
         .collect::<Vec<_>>();
     dirs.sort();
-    dirs.into_iter()
-        .next()
-        .context("extracted archive did not contain a top-level directory")
+    for dir in dirs {
+        if llvm_config_path(&dir).is_file() {
+            return Ok(dir);
+        }
+    }
+    let expected = if cfg!(windows) {
+        "bin/llvm-config.exe"
+    } else {
+        "bin/llvm-config"
+    };
+    bail!(
+        "extracted LLVM archive did not contain '{}' under '{}' or any subdirectory",
+        expected,
+        extract_root.display()
+    );
 }
 
 fn ensure_major_link(paths: &LlvmPaths) -> Result<()> {
@@ -612,7 +637,7 @@ fn ensure_major_link(paths: &LlvmPaths) -> Result<()> {
             .with_context(|| format!("failed to create '{}'", parent.display()))?;
     }
 
-    create_link(&paths.install_dir, &paths.major_link)
+    create_link(&canonical_install, &paths.major_link)
 }
 
 fn validate_install(paths: &LlvmPaths) -> Result<()> {
