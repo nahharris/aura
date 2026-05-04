@@ -72,6 +72,11 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install LLVM prebuilt dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxml2 zlib1g libzstd1
       - uses: Swatinem/rust-cache@v2
       # Cache only the downloaded tarball. Caching the extracted `toolchains/llvm`
       # tree can restore broken `toolchains/llvm/18` symlinks across runners.

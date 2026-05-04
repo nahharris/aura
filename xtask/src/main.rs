@@ -194,36 +194,44 @@ fn llvm_check(sh: &Shell) -> Result<()> {
     let prefix = llvm_env_prefix()?;
     ensure_windows_libxml2_stub(&prefix)?;
     let _guard = sh.push_env("LLVM_SYS_180_PREFIX", &prefix);
-    cmd!(sh, "cargo check -p aura-codegen --features llvm-backend").run()?;
-    Ok(())
+    with_sh_ld_library_path(sh, &prefix, |sh| {
+        cmd!(sh, "cargo check -p aura-codegen --features llvm-backend").run()?;
+        Ok(())
+    })
 }
 
 fn llvm_build(sh: &Shell) -> Result<()> {
     let prefix = llvm_env_prefix()?;
     ensure_windows_libxml2_stub(&prefix)?;
     let _guard = sh.push_env("LLVM_SYS_180_PREFIX", &prefix);
-    cmd!(sh, "cargo build -p aura-codegen --features llvm-backend").run()?;
-    Ok(())
+    with_sh_ld_library_path(sh, &prefix, |sh| {
+        cmd!(sh, "cargo build -p aura-codegen --features llvm-backend").run()?;
+        Ok(())
+    })
 }
 
 fn llvm_test(sh: &Shell) -> Result<()> {
     let prefix = llvm_env_prefix()?;
     ensure_windows_libxml2_stub(&prefix)?;
     let _guard = sh.push_env("LLVM_SYS_180_PREFIX", &prefix);
-    cmd!(sh, "cargo test -p aura-codegen --features llvm-backend").run()?;
-    Ok(())
+    with_sh_ld_library_path(sh, &prefix, |sh| {
+        cmd!(sh, "cargo test -p aura-codegen --features llvm-backend").run()?;
+        Ok(())
+    })
 }
 
 fn llvm_clippy(sh: &Shell) -> Result<()> {
     let prefix = llvm_env_prefix()?;
     ensure_windows_libxml2_stub(&prefix)?;
     let _guard = sh.push_env("LLVM_SYS_180_PREFIX", &prefix);
-    cmd!(
-        sh,
-        "cargo clippy -p aura-codegen --features llvm-backend --all-targets -- -D warnings"
-    )
-    .run()?;
-    Ok(())
+    with_sh_ld_library_path(sh, &prefix, |sh| {
+        cmd!(
+            sh,
+            "cargo clippy -p aura-codegen --features llvm-backend --all-targets -- -D warnings"
+        )
+        .run()?;
+        Ok(())
+    })
 }
 
 fn llvm_run(args: &[String]) -> Result<()> {
@@ -244,6 +252,7 @@ fn llvm_build_runtime_host(prefix: &str) -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.arg("build").arg("-p").arg("aura-runtime-host");
     cmd.env("LLVM_SYS_180_PREFIX", prefix);
+    apply_linux_ld_library_path_to_command(&mut cmd, prefix)?;
     let status = cmd
         .status()
         .context("failed to build aura-runtime-host for LLVM flow")?;
@@ -273,6 +282,7 @@ fn run_cargo_with_llvm_env(mode: &str, args: &[String], prefix: &str) -> Result<
     }
     cmd.args(args);
     cmd.env("LLVM_SYS_180_PREFIX", prefix);
+    apply_linux_ld_library_path_to_command(&mut cmd, prefix)?;
     let status = cmd.status().context("failed to start cargo command")?;
     if !status.success() {
         bail!("cargo command failed with status {status}");
@@ -285,6 +295,48 @@ fn llvm_env_prefix() -> Result<String> {
     ensure_llvm_toolchain(&paths)?;
     validate_install(&paths)?;
     prefix_env_value(&paths)
+}
+
+/// Prepend `<prefix>/lib` to `LD_LIBRARY_PATH` on Linux so `llvm-config` and `llvm-sys` build
+/// scripts can load `libLLVM.so`. CI often sets this via `GITHUB_ENV`, but child `cargo` processes
+/// must still see it whenever only `LLVM_SYS_*_PREFIX` is forwarded.
+fn linux_llvm_ld_library_path(prefix: &str) -> Result<Option<String>> {
+    if !cfg!(target_os = "linux") {
+        return Ok(None);
+    }
+    let lib = Path::new(prefix).join("lib");
+    let lib = fs::canonicalize(&lib).with_context(|| {
+        format!(
+            "failed to canonicalize LLVM lib directory '{}'",
+            lib.display()
+        )
+    })?;
+    let lib = lib.to_string_lossy().into_owned();
+    Ok(Some(match env::var("LD_LIBRARY_PATH") {
+        Ok(extra) if !extra.is_empty() => format!("{lib}:{extra}"),
+        _ => lib,
+    }))
+}
+
+fn apply_linux_ld_library_path_to_command(cmd: &mut Command, prefix: &str) -> Result<()> {
+    if let Some(ld) = linux_llvm_ld_library_path(prefix)? {
+        cmd.env("LD_LIBRARY_PATH", ld);
+    }
+    Ok(())
+}
+
+fn with_sh_ld_library_path<R>(
+    sh: &Shell,
+    prefix: &str,
+    f: impl FnOnce(&Shell) -> Result<R>,
+) -> Result<R> {
+    match linux_llvm_ld_library_path(prefix)? {
+        Some(ld) => {
+            let _ld = sh.push_env("LD_LIBRARY_PATH", &ld);
+            f(sh)
+        }
+        None => f(sh),
+    }
 }
 
 fn ensure_windows_libxml2_stub(prefix: &str) -> Result<()> {
@@ -644,6 +696,26 @@ fn validate_install(paths: &LlvmPaths) -> Result<()> {
     let config = llvm_config_path(&paths.major_link);
     if !config.is_file() {
         bail!("llvm-config not found at '{}'", config.display());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let prefix = prefix_env_value(paths)?;
+        let mut cmd = Command::new(&config);
+        cmd.arg("--version");
+        if let Some(ld) = linux_llvm_ld_library_path(&prefix)? {
+            cmd.env("LD_LIBRARY_PATH", &ld);
+        }
+        let output = cmd
+            .output()
+            .with_context(|| format!("failed to execute '{}'", config.display()))?;
+        if !output.status.success() {
+            bail!(
+                "'{} --version' failed ({}): {}",
+                config.display(),
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
     }
     Ok(())
 }
