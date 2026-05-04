@@ -2,7 +2,7 @@
 title: Commands Inventory
 kind: generated
 generated_by: cargo xtask docs sync
-generated_at: 2026-05-04T01:21:43.7118915Z
+generated_at: 2026-05-04T01:25:06.708827Z
 ---
 
 # Commands Inventory

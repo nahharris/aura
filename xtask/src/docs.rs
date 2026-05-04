@@ -262,6 +262,7 @@ fn should_skip_relative_path(path: &str) -> bool {
     let normalized = path.replace('\\', "/");
     let prefixes = [
         ".git",
+        ".opencode",
         "target",
         "target2",
         "toolchains",
@@ -1383,6 +1384,10 @@ members = ["crates/aura-cli", "crates/aura-frontend", "xtask"]
         assert!(should_skip_relative_path("docs/.obsidian/workspace.json"));
         assert!(should_skip_relative_path(
             "tool/tree-sitter-aura/node_modules/pkg/index.js"
+        ));
+        assert!(should_skip_relative_path(".opencode"));
+        assert!(should_skip_relative_path(
+            ".opencode/node_modules/pkg/index.js"
         ));
         assert!(!should_skip_relative_path(
             "crates/aura-frontend/src/lib.rs"

@@ -5965,6 +5965,11 @@ impl TypeChecker {
                                 .find(|d| d.name == *fname && !d.is_extern)
                                 .cloned()
                             {
+                                // Explicit specialization: substitute the declaration function type,
+                                // then reuse the template's already-lowered `value`. Bodies that still embed
+                                // callee-specific type IDs or nested generic static parameters are not
+                                // re-walked for substitution here; that remains follow-up work if we need
+                                // casts, inner generic calls, or interface plumbing under the mangled symbol.
                                 let new_ty = self.substitute_ty_id(template.ty, &subst);
                                 self.ir.declarations.push(CheckedDecl {
                                     name: mangled.clone(),
@@ -9367,6 +9372,68 @@ mod tests {
         let module = checked.module.expect("module should exist");
         let y_ty = module.value_types.get("y").expect("y type should exist");
         assert!(matches!(module.types.get(*y_ty), Some(Ty::Int32)));
+    }
+
+    #[test]
+    fn explicit_generic_specialization_registers_mangled_ir_decl() {
+        let program = Program {
+            declarations: vec![
+                Decl::Function(FunctionDecl {
+                    doc: None,
+                    static_params: vec![ty_param("T"), ty_param("U")],
+                    receiver: None,
+                    name: "first".to_string(),
+                    params: vec![aura_frontend::ast::Param {
+                        name: "x".to_string(),
+                        ty: TypeExpr::Named {
+                            name: "T".to_string(),
+                            args: Vec::new(),
+                        },
+                    }],
+                    return_type: TypeExpr::Named {
+                        name: "T".to_string(),
+                        args: Vec::new(),
+                    },
+                    body: Expr::Block(vec![Expr::Ident("x".to_string())]),
+                }),
+                Decl::Assign {
+                    static_params: Vec::new(),
+                    doc: None,
+                    name: "y".to_string(),
+                    value: Expr::Call {
+                        callee: Box::new(Expr::Ident("first".to_string())),
+                        static_args: vec![
+                            StaticArg::Type(TypeExpr::InferHole),
+                            StaticArg::Type(TypeExpr::Named {
+                                name: "Int".to_string(),
+                                args: Vec::new(),
+                            }),
+                        ],
+                        args: vec![Expr::Int("1".to_string())],
+
+                        trailing: Vec::new(),
+                    },
+                },
+            ],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked.module.is_some());
+        let module = checked.module.expect("module should exist");
+        assert!(
+            module
+                .ir
+                .declarations
+                .iter()
+                .any(|d| d.name == "first__infer_Int"),
+            "expected mangled specialization decl, have: {:?}",
+            module
+                .ir
+                .declarations
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
