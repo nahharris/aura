@@ -755,14 +755,16 @@ impl ProjectCompiler {
         source: &str,
     ) -> Result<PathBuf, ProjectCompileError> {
         let target = if let Some(alias_source) = source.strip_prefix('@') {
-            let (alias_tail, module_tail) = alias_source
-                .split_once('/')
-                .map(|(alias, rest)| (format!("@{alias}"), Some(rest)))
-                .unwrap_or_else(|| (format!("@{alias_source}"), None));
-            let dependency_root = package.dependencies.get(&alias_tail).ok_or_else(|| {
+            // Manifest `dependencies` keys are bare names (e.g. `"stl" = .path(...)`);
+            // Aura imports use the `@name` / `@name/module` syntax.
+            let (dep_alias, module_tail) = match alias_source.split_once('/') {
+                Some((alias, rest)) => (alias, Some(rest)),
+                None => (alias_source, None),
+            };
+            let dependency_root = package.dependencies.get(dep_alias).ok_or_else(|| {
                 ProjectCompileError::Resolve {
                     path: Some(importer_path.to_path_buf()),
-                    message: format!("unknown dependency alias '{alias_tail}'"),
+                    message: format!("unknown dependency alias '@{dep_alias}'"),
                 }
             })?;
             module_source_to_file(&dependency_root.join("src"), module_tail.unwrap_or("lib"))
@@ -1481,6 +1483,57 @@ mod tests {
                 .iter()
                 .any(|decl| decl.name == "hidden")
         );
+
+        fs::remove_dir_all(root).expect("cleanup should succeed");
+    }
+
+    #[test]
+    fn at_prefixed_use_resolves_manifest_dependency_key() {
+        let root = temp_test_dir("at_prefix_dep");
+        let dependency_root = root.join("vendor").join("stl");
+
+        create_file(
+            &dependency_root.join("project.auon"),
+            r#"
+                name = "stl",
+                version = "0.1.0",
+                kind = .library,
+                dependencies = [],
+            "#,
+        );
+        create_file(
+            &dependency_root.join("src").join("io.aura"),
+            "def answer() -> Int { 42 }",
+        );
+        create_file(
+            &dependency_root.join("src").join("lib.aura"),
+            "def x = 1;",
+        );
+
+        create_file(
+            &root.join("project.auon"),
+            r#"
+                name = "app",
+                version = "0.1.0",
+                kind = .binary,
+                dependencies = [
+                    "stl" = .path("vendor/stl"),
+                ],
+            "#,
+        );
+        create_file(
+            &root.join("src").join("main.aura"),
+            r#"use io = "@stl/io";
+                def main() -> Int { io.answer() }"#,
+        );
+
+        compile_project(
+            &root.join("project.auon"),
+            ProjectCompileOptions {
+                enforce_entry_main_signature: false,
+            },
+        )
+        .expect("project should compile");
 
         fs::remove_dir_all(root).expect("cleanup should succeed");
     }
