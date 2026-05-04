@@ -13,7 +13,7 @@ related_contracts:
   []
 related_notes:
   - "Architecture/Build And Dev Workflow"
-last_reviewed: 2026-05-04
+last_reviewed: 2026-05-05
 
 # Xtask
 
@@ -32,6 +32,8 @@ Centralize automation for the workspace, including dev commands, LLVM toolchain 
 After extraction, `toolchains/llvm/<major>` is a link to the versioned install. On Unix the link target is **canonical (absolute)** so `bin/llvm-config` resolves correctly (relative targets would be interpreted from the link’s parent directory and could miss the install).
 
 On Linux, `cargo xtask llvm …` prepends `<prefix>/lib` to `LD_LIBRARY_PATH` when spawning `cargo` so `llvm-sys` build scripts can execute `llvm-config` and load `libLLVM.so` (matching the CI workflow’s `GITHUB_ENV` step).
+
+The official x86_64 Linux LLVM 18 prebuilt targets Ubuntu 18.04 and expects **`libtinfo.so.5`** (ncurses5). Distros that only provide ncurses6 need **`libncurses5`** / **`libtinfo5`** (see the LLVM job in `.github/workflows/ci.yml`).
 
 ## Related
 
