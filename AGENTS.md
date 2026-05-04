@@ -85,7 +85,7 @@ cargo docs-check
 
 ### CI parity before ending a session
 
-Before wrapping up non-trivial work (especially codegen, xtask, `docs/` generated inventories, or LLVM paths), run **`cargo xtask dev ci`** (or **`cargo ci`**) so local results match [GitHub Actions](https://github.com/nahharris/aura/actions/workflows/ci.yml): rustfmt check and `docs check` (Linux runners), workspace clippy once plus tests on Linux and Windows, then LLVM doctor, clippy, and tests (Linux and Windows).
+Before wrapping up non-trivial work (especially codegen, xtask, `docs/` generated inventories, or LLVM paths), run `**cargo xtask dev ci**` (or `**cargo ci**`) so local results match [GitHub Actions](https://github.com/nahharris/aura/actions/workflows/ci.yml): rustfmt check and `docs check` (Linux runners), workspace clippy once plus tests on Linux and Windows, then LLVM doctor, clippy, and tests (Linux and Windows).
 
 Doc-only or inventory edits still use `cargo xtask docs sync` when you change what should be generated; `dev ci` includes `docs check` so a single command catches stale generated notes before you stop.
 
@@ -161,3 +161,4 @@ cargo xtask dev test
 - New syntax work must include parser tests in `crates/aura-frontend/src/parser.rs` (or dedicated frontend tests).
 - Prefer descriptive test names and `assert_eq!` where direct value comparison is suitable.
 - If the task changes architecture, workflows, or curated documentation, update the affected Obsidian notes under `docs/` and verify the docs workflow still passes when relevant.
+

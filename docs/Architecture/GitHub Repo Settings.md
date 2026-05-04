@@ -50,6 +50,8 @@ These job names are registered as required contexts (GitHub Actions app):
 
 If `.github/workflows/ci.yml` **renames jobs** or changes the **matrix**, update the branch rule so required contexts still match; otherwise merges stay blocked with “Expected — Waiting for status to be reported”.
 
+The **llvm** job caches only `toolchains/cache` (the LLVM tarball download), not the extracted `toolchains/llvm` tree, so the `toolchains/llvm/18` symlink is always recreated correctly on each runner.
+
 ### Submodule checkout in CI
 
 The **CI** workflow checks out **git submodules** so Cargo `path` dependencies under `tool/` resolve. Submodule repositories maintain their **own** CI; Aura does not duplicate their gates beyond what this workspace already builds and tests. See `AGENTS.md` at the repository root (companion surfaces / submodule note) and comments in `.github/workflows/ci.yml`.

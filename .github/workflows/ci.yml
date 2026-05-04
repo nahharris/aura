@@ -73,11 +73,11 @@ jobs:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Cache only the downloaded tarball. Caching the extracted `toolchains/llvm`
+      # tree can restore broken `toolchains/llvm/18` symlinks across runners.
       - uses: actions/cache@v4
         with:
-          path: |
-            toolchains/cache
-            toolchains/llvm
+          path: toolchains/cache
           key: llvm-18.1.8-${{ runner.os }}-${{ hashFiles('xtask/src/main.rs') }}
       - run: cargo xtask llvm setup
       - name: Prefer bundled LLVM shared libraries at runtime (Linux)
