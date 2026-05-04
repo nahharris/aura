@@ -716,7 +716,7 @@ where
             return Ok(TypeExpr::Static(Box::new(inner)));
         }
 
-        if self.peek_ident_is("interface") {
+        if self.peek_ident_is("interface") && matches!(self.peek_n(1), Some(TokenKind::LParen)) {
             self.bump();
             return self.parse_interface_type_expr();
         }
@@ -3367,6 +3367,20 @@ mod tests {
         let src = "def Broken = interface(read Func[(), String])";
         let err = Parser::parse_source(src).expect_err("interface member syntax should require ':'");
         assert!(err.message.contains("expected"));
+    }
+
+    #[test]
+    fn parse_interface_identifier_is_named_type_not_keyword() {
+        let src = "def alias = interface;";
+        let parsed = Parser::parse_source(src).expect("parse type named `interface`");
+        let value = match &parsed.declarations[0] {
+            Decl::Assign { value, .. } => value,
+            _ => panic!("expected assignment"),
+        };
+        assert!(matches!(
+            u(value),
+            Expr::TypeExpr(TypeExpr::Named { name, args }) if name == "interface" && args.is_empty()
+        ));
     }
 
     #[test]

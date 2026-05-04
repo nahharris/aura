@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use aura_diagnostics::type_ref::FuncParamRef;
 use aura_diagnostics::{Diagnostic, Issue, PrimitiveType, Stage, TypeRef, TypingContext};
@@ -366,8 +366,14 @@ impl TypeChecker {
                 PrimitiveType::Char => self.interner.intern(Ty::Char),
                 PrimitiveType::Void => self.interner.intern(Ty::Void),
                 PrimitiveType::Never => self.interner.intern(Ty::Never),
-                PrimitiveType::Any => self.interner.intern(Ty::Any),
             },
+            TypeRef::Interface(members) => {
+                let fields = members
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), self.type_ref_to_ty(ty)))
+                    .collect::<Vec<_>>();
+                self.interner.intern(Ty::Interface(fields))
+            }
             TypeRef::InferVar(v) => self.interner.intern(Ty::InferVar(*v)),
             TypeRef::GenericParam(name) => self.interner.intern(Ty::GenericParam(name.clone())),
             TypeRef::Nominal(name) => self.nominal_ty(name),
@@ -458,13 +464,6 @@ impl TypeChecker {
                     .map(|item| self.type_ref_to_ty(item))
                     .collect::<Vec<_>>();
                 self.interner.intern(Ty::Union(item_tys))
-            }
-            TypeRef::Interface(members) => {
-                let member_tys = members
-                    .iter()
-                    .map(|(name, ty)| (name.clone(), self.type_ref_to_ty(ty)))
-                    .collect::<Vec<_>>();
-                self.interner.intern(Ty::Interface(member_tys))
             }
             TypeRef::Enum(variants) => {
                 let lowered = variants
@@ -769,7 +768,11 @@ impl TypeChecker {
             self.typecheck_error(
                 Issue::TypeMismatch {
                     context: TypingContext::Custom("enum constructor".to_string()),
-                    expected: ty_to_ref(self.interner.get(enum_ty).unwrap_or(&Ty::Any), &self.interner),
+                    expected: self
+                        .interner
+                        .get(enum_ty)
+                        .map(|t| ty_to_ref(t, &self.interner))
+                        .unwrap_or(TypeRef::Unknown),
                     actual: TypeRef::Unknown,
                 },
                 format!("type mismatch in enum constructor: {reason}"),
@@ -1194,14 +1197,16 @@ impl TypeChecker {
                         self.typecheck_error(
                             Issue::TypeMismatch {
                                 context: TypingContext::Assignment,
-                                expected: ty_to_ref(
-                                    self.interner.get(binding.ty).unwrap_or(&Ty::Any),
-                                    &self.interner,
-                                ),
-                                actual: ty_to_ref(
-                                    self.interner.get(binding.ty).unwrap_or(&Ty::Any),
-                                    &self.interner,
-                                ),
+                                expected: self
+                                    .interner
+                                    .get(binding.ty)
+                                    .map(|t| ty_to_ref(t, &self.interner))
+                                    .unwrap_or(TypeRef::Unknown),
+                                actual: self
+                                    .interner
+                                    .get(binding.ty)
+                                    .map(|t| ty_to_ref(t, &self.interner))
+                                    .unwrap_or(TypeRef::Unknown),
                             },
                             format!("cannot assign through immutable local '{name}'"),
                         )
@@ -2418,10 +2423,11 @@ impl TypeChecker {
                                         context: TypingContext::Custom(
                                             "enum constructor".to_string(),
                                         ),
-                                        expected: ty_to_ref(
-                                            self.interner.get(enum_ty).unwrap_or(&Ty::Any),
-                                            &self.interner,
-                                        ),
+                                        expected: self
+                                            .interner
+                                            .get(enum_ty)
+                                            .map(|t| ty_to_ref(t, &self.interner))
+                                            .unwrap_or(TypeRef::Unknown),
                                         actual: TypeRef::Unknown,
                                     },
                                     format!(
@@ -3524,10 +3530,10 @@ impl TypeChecker {
             return self.unknown_ty();
         };
 
-        if matches!(lhs_ty, Ty::Any) {
+        if matches!(&lhs_ty, Ty::Interface(m) if m.is_empty()) {
             return rhs;
         }
-        if matches!(rhs_ty, Ty::Any) {
+        if matches!(&rhs_ty, Ty::Interface(m) if m.is_empty()) {
             return lhs;
         }
         if matches!(lhs_ty, Ty::Never) {
@@ -3619,13 +3625,26 @@ impl TypeChecker {
                 self.interner.intern(Ty::Struct(lowered))
             }
             TypeExpr::Interface(members) => {
-                if members.is_empty() {
-                    return self.interner.intern(Ty::Any);
-                }
-                let lowered = members
+                let mut lowered: Vec<(String, TyId)> = members
                     .iter()
                     .map(|(name, ty)| (name.clone(), self.resolve_type_expr(ty)))
-                    .collect::<Vec<_>>();
+                    .collect();
+                lowered.sort_by(|a, b| a.0.cmp(&b.0));
+                for w in lowered.windows(2) {
+                    if w[0].0 == w[1].0 {
+                        self.diagnostics.push(
+                            self.typecheck_error(
+                                Issue::InterfaceDuplicateMember {
+                                    name: w[0].0.clone(),
+                                },
+                                format!("duplicate interface member `{}`", w[0].0),
+                            )
+                            .with_stage(Stage::Typecheck)
+                            .with_hint("each interface member name must appear at most once"),
+                        );
+                        return self.unknown_ty();
+                    }
+                }
                 self.interner.intern(Ty::Interface(lowered))
             }
             TypeExpr::Named { name, args } => {
@@ -3691,7 +3710,7 @@ impl TypeChecker {
                         }
                     }
                     if members.is_empty() {
-                        return self.interner.intern(Ty::Any);
+                        return self.interner.intern(Ty::Interface(Vec::new()));
                     }
                     return self.interner.intern(Ty::Interface(members));
                 }
@@ -3774,10 +3793,6 @@ impl TypeChecker {
                     "Never" => {
                         self.enforce_exact_type_arity("Never", args, 0);
                         self.interner.intern(Ty::Never)
-                    }
-                    "Any" => {
-                        self.enforce_exact_type_arity("Any", args, 0);
-                        self.interner.intern(Ty::Any)
                     }
                     "Bytes" => {
                         self.enforce_exact_type_arity("Bytes", args, 0);
@@ -4853,12 +4868,12 @@ impl TypeChecker {
             return true;
         }
         if let Some(alias) = self.aliases.get(interface) {
-            return matches!(self.interner.get(alias), Some(Ty::Interface(_) | Ty::Any));
+            return matches!(self.interner.get(alias), Some(Ty::Interface(_)));
         }
         if let Some((static_params, body)) = self.aliases.get_generic(interface) {
             if static_params.is_empty() {
                 let ty = self.resolve_type_expr(&body);
-                return matches!(self.interner.get(ty), Some(Ty::Interface(_) | Ty::Any));
+                return matches!(self.interner.get(ty), Some(Ty::Interface(_)));
             }
         }
         false
@@ -4902,9 +4917,6 @@ impl TypeChecker {
             return None;
         };
         let Ty::Interface(required_methods) = interface else {
-            if matches!(interface, Ty::Any) {
-                return None;
-            }
             return Some(InterfaceCheckFailure::MissingMethod {
                 interface: self.interface_label(interface_expr),
                 method: "<not-an-interface>".to_string(),
@@ -4964,7 +4976,7 @@ impl TypeChecker {
 
     fn satisfies_prelude_interface(&self, ty: &Ty, interface: &str) -> bool {
         match interface {
-            "interface" => matches!(ty, Ty::Any | Ty::Interface(_)),
+            "interface" => true,
             "Eq" => matches!(
                 ty,
                 Ty::Bool
@@ -5062,7 +5074,7 @@ impl TypeChecker {
             return ConversionDecision::Incompatible;
         };
 
-        if matches!(expected_ty, Ty::Any) {
+        if matches!(&expected_ty, Ty::Interface(m) if m.is_empty()) {
             return ConversionDecision::Identity;
         }
 
@@ -5073,6 +5085,12 @@ impl TypeChecker {
 
         if matches!(actual_ty, Ty::Never) {
             return ConversionDecision::Identity;
+        }
+
+        if let (Ty::Interface(_), Ty::Interface(_)) = (&expected_ty, &actual_ty) {
+            if self.structurally_equivalent(expected, actual) {
+                return ConversionDecision::Identity;
+            }
         }
 
         if matches!(expected_ty, Ty::Interface(_)) {
@@ -5213,8 +5231,32 @@ impl TypeChecker {
                         .all(|(x, y)| self.structurally_equivalent(x.ty, y.ty))
                     && self.structurally_equivalent(*ar, *br)
             }
+            (Ty::Interface(a), Ty::Interface(b)) => {
+                self.interface_member_sets_equivalent(a, b)
+            }
             _ => false,
         }
+    }
+
+    fn interface_member_sets_equivalent(
+        &self,
+        a: &[(String, TyId)],
+        b: &[(String, TyId)],
+    ) -> bool {
+        if a.len() != b.len() {
+            return false;
+        }
+        let names_a: HashSet<&str> = a.iter().map(|(n, _)| n.as_str()).collect();
+        let names_b: HashSet<&str> = b.iter().map(|(n, _)| n.as_str()).collect();
+        if names_a != names_b {
+            return false;
+        }
+        let map_b: HashMap<&str, TyId> = b.iter().map(|(n, t)| (n.as_str(), *t)).collect();
+        a.iter().all(|(name, ta)| {
+            map_b
+                .get(name.as_str())
+                .is_some_and(|tb| self.structurally_equivalent(*ta, *tb))
+        })
     }
 
     fn emit_type_mismatch(&mut self, expected: TyId, actual: TyId, context: &str, related: &str) {
@@ -6398,7 +6440,6 @@ fn ty_to_ref(ty: &Ty, interner: &TyInterner) -> TypeRef {
         Ty::Char => TypeRef::Primitive(PrimitiveType::Char),
         Ty::Void => TypeRef::Primitive(PrimitiveType::Void),
         Ty::Never => TypeRef::Primitive(PrimitiveType::Never),
-        Ty::Any => TypeRef::Primitive(PrimitiveType::Any),
         Ty::Nominal(name) => TypeRef::Nominal(name.clone()),
         Ty::RawAlloc(item) => TypeRef::RawAlloc(Box::new(
             interner
@@ -9340,7 +9381,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_interface_annotation_resolves_as_any_type() {
+    fn empty_interface_annotation_resolves_to_empty_interface_ty() {
         let src = r#"
             def x: interface() = 1
         "#;
@@ -9348,7 +9389,10 @@ mod tests {
         let checked = check_module(&parsed);
         let module = checked.module.expect("module should exist");
         let x_ty = module.value_types.get("x").copied().expect("x should be typed");
-        assert!(matches!(module.types.get(x_ty), Some(Ty::Any)));
+        assert!(matches!(
+            module.types.get(x_ty),
+            Some(Ty::Interface(m)) if m.is_empty()
+        ));
     }
 
     #[test]

@@ -40,7 +40,7 @@ pub fn classify_type(types: &TyInterner, ty_id: TyId) -> Result<AuraValueType, C
         Ty::Void => Ok(AuraValueType::Void),
         Ty::Enum(_) => Ok(AuraValueType::Aggregate(ty_id)),
         Ty::Never
-        | Ty::Any
+        | Ty::Interface(_)
         | Ty::Nominal(_)
         | Ty::RawAlloc(_)
         | Ty::Slice(_)
@@ -54,7 +54,6 @@ pub fn classify_type(types: &TyInterner, ty_id: TyId) -> Result<AuraValueType, C
         | Ty::Tuple(_)
         | Ty::Struct(_)
         | Ty::Union(_)
-        | Ty::Interface(_)
         | Ty::InterfaceObject(_)
         | Ty::GenericParam(_)
         | Ty::InferVar(_) => Ok(AuraValueType::Pointer),
@@ -364,7 +363,6 @@ mod llvm_lowering {
             | Ty::Union(_)
             | Ty::GenericParam(_)
             | Ty::InferVar(_)
-            | Ty::Any
             | Ty::Interface(_)
             | Ty::InterfaceObject(_) => true,
         })

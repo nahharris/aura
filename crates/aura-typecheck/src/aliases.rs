@@ -29,6 +29,10 @@ impl TypeAliases {
             "Float".to_string(),
             TypeAlias::Concrete(interner.intern(Ty::Float32)),
         );
+        aliases.insert(
+            "Any".to_string(),
+            TypeAlias::Concrete(interner.intern(Ty::Interface(Vec::new()))),
+        );
         Self { aliases }
     }
 
@@ -88,6 +92,11 @@ mod tests {
 
         assert!(matches!(interner.get(int), Some(Ty::Int32)));
         assert!(matches!(interner.get(float), Some(Ty::Float32)));
+        let any = aliases.get("Any").expect("Any alias");
+        assert!(matches!(
+            interner.get(any),
+            Some(Ty::Interface(m)) if m.is_empty()
+        ));
         assert!(aliases.get("String").is_none());
     }
 }

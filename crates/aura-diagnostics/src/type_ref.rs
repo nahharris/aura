@@ -20,7 +20,6 @@ pub enum PrimitiveType {
     Char,
     Void,
     Never,
-    Any,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -87,7 +86,6 @@ impl fmt::Display for PrimitiveType {
             Self::Char => "Char",
             Self::Void => "Void",
             Self::Never => "Never",
-            Self::Any => "Any",
         };
         f.write_str(name)
     }
@@ -144,14 +142,6 @@ impl fmt::Display for TypeRef {
                     .join(" | ");
                 write!(f, "union({joined})")
             }
-            Self::Interface(members) => {
-                let joined = members
-                    .iter()
-                    .map(|(name, ty)| format!("{name}: {ty}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                write!(f, "interface({joined})")
-            }
             Self::Enum(variants) => {
                 let joined = variants
                     .iter()
@@ -162,6 +152,17 @@ impl fmt::Display for TypeRef {
                     .collect::<Vec<_>>()
                     .join(", ");
                 write!(f, "enum({joined})")
+            }
+            Self::Interface(members) => {
+                if members.is_empty() {
+                    return f.write_str("Any");
+                }
+                let joined = members
+                    .iter()
+                    .map(|(name, ty)| format!("{name}: {ty}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "interface({joined})")
             }
             Self::Unknown => f.write_str("<unknown>"),
             Self::RawAlloc(item) => write!(f, "RawAlloc[{item}]"),
@@ -237,5 +238,11 @@ mod tests {
         };
 
         assert_eq!(ty.to_string(), "(as value: Int32) -> Void");
+    }
+
+    #[test]
+    fn empty_interface_displays_as_any() {
+        let ty = TypeRef::Interface(Vec::new());
+        assert_eq!(ty.to_string(), "Any");
     }
 }

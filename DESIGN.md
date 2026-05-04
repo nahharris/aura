@@ -195,7 +195,6 @@ This representation is used by builtin stubs so labeled trailing closure forms c
 
 Examples of built-in / standard types:
 
-
 | Type expression           | Meaning                                                              |
 | ------------------------- | -------------------------------------------------------------------- |
 | `Int`                     | 64-bit signed integer                                                |
@@ -212,9 +211,8 @@ Examples of built-in / standard types:
 | `Option[T]`               | `enum(null, some: T)` — nullable value                               |
 | `Result[T, E]`            | `enum(err: E, ok: T)` — fallible value                               |
 | `Iterable[T]`             | Any type that can be iterated                                        |
-| `Any`                     | Shorthand for `interface()` — accepts any value                      |
+| `Any`                     | Defined in `aura-stl` as `def Any = interface();` — the empty interface; accepts any value. The compiler also pre-registers this name like `Int`/`Float` so single-file programs resolve `Any` without importing the stdlib. |
 | `Never`                   | Bottom type — `Never` is assignable to every other type              |
-
 
 ### Tuples
 
@@ -366,7 +364,7 @@ def any_print(msg: interface(to_string: Func[(), String])) -> Void { ... }
 def ToStr = interface(to_string: Func[(), String])
 ```
 
-The compiler models `interface(...)` as a first-class type node through frontend AST and typecheck IR (not as a nominal fallback), preserving each declared member signature. Interface constraints are checked structurally against the receiver method set, including named aliases and anonymous `interface(...)` constraints. The empty interface `interface()` is equivalent to the builtin `Any` type and accepts any value. On the other hand, the `Never` type would be equivalent to an interface with all the imaginable methods, making it impossible to satisfy, yet castable to any other type.
+The compiler models `interface(...)` as a first-class type node through frontend AST and typecheck IR (not as a nominal fallback), preserving each declared member signature. Interface constraints are checked structurally against the receiver method set, including named aliases and anonymous `interface(...)` constraints. The empty interface `interface()` is the type named `Any` in the standard library (`aura-stl/src/any.aura`); it accepts any value. On the other hand, the `Never` type would be equivalent to an interface with all the imaginable methods, making it impossible to satisfy, yet castable to any other type.
 
 For runtime behavior, interface-typed values are lowered as interface objects (data pointer + witness/vtable pointer). Calls on interface-typed receivers lower through dynamic dispatch slots, while calls on concrete receiver types keep the direct static-call path.
 

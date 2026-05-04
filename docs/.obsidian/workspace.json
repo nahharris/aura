@@ -4,21 +4,21 @@
     "type": "split",
     "children": [
       {
-        "id": "1912ece4e3aebe6a",
+        "id": "9105efaab6785706",
         "type": "tabs",
         "children": [
           {
-            "id": "64d3a652f7f86ae7",
+            "id": "120d29afefd7d451",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Home.md",
+                "file": "Language/Syntax And Semantics.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Home"
+              "title": "Syntax And Semantics"
             }
           }
         ]
@@ -180,9 +180,13 @@
       "bases:Criar nova base": false
     }
   },
-  "active": "64d3a652f7f86ae7",
+  "active": "120d29afefd7d451",
   "lastOpenFiles": [
     "_meta/taxonomy.md",
+    "_meta",
+    "Language/AUON.md",
+    "Language/Examples Index.md",
+    "Language/Design Overview.md",
     "Home.md",
     "hot.md",
     "log.md",
@@ -198,7 +202,6 @@
     "Subsystems/Xtask.md",
     "Subsystems/Runtime Host.md",
     "Subsystems/Diagnostics.md",
-    "Language/AUON.md",
     "Bases/Subsystems.base",
     "Bases/Decisions.base",
     "Contracts/Typecheck IR.md",
@@ -207,9 +210,6 @@
     "Generated/Examples Inventory.md",
     "Generated/Directory Inventory.md",
     "Generated/Commands Inventory.md",
-    "Language/Examples Index.md",
-    "Language/Syntax And Semantics.md",
-    "Language/Design Overview.md",
-    "Subsystems/CLI.md"
+    "Language/Syntax And Semantics.md"
   ]
 }
