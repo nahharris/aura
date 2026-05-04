@@ -356,6 +356,46 @@ fn curated_note_specs() -> Vec<CuratedNoteSpec> {
             render: render_language_syntax_note,
         },
         CuratedNoteSpec {
+            path: "docs/Language/Lexical Rules.md",
+            required_fields: &["kind: language"],
+            render: render_language_lexical_rules_note,
+        },
+        CuratedNoteSpec {
+            path: "docs/Language/Type System.md",
+            required_fields: &["kind: language"],
+            render: render_language_type_system_note,
+        },
+        CuratedNoteSpec {
+            path: "docs/Language/Literals And Data.md",
+            required_fields: &["kind: language"],
+            render: render_language_literals_and_data_note,
+        },
+        CuratedNoteSpec {
+            path: "docs/Language/Bindings And Declarations.md",
+            required_fields: &["kind: language"],
+            render: render_language_bindings_and_declarations_note,
+        },
+        CuratedNoteSpec {
+            path: "docs/Language/Functions And Closures.md",
+            required_fields: &["kind: language"],
+            render: render_language_functions_and_closures_note,
+        },
+        CuratedNoteSpec {
+            path: "docs/Language/Calls Operators And Blocks.md",
+            required_fields: &["kind: language"],
+            render: render_language_calls_operators_and_blocks_note,
+        },
+        CuratedNoteSpec {
+            path: "docs/Language/Control Flow.md",
+            required_fields: &["kind: language"],
+            render: render_language_control_flow_note,
+        },
+        CuratedNoteSpec {
+            path: "docs/Language/Modules Projects And Runtime.md",
+            required_fields: &["kind: language"],
+            render: render_language_modules_projects_and_runtime_note,
+        },
+        CuratedNoteSpec {
             path: "docs/Language/Examples Index.md",
             required_fields: &["kind: language"],
             render: render_examples_index_note,
@@ -550,6 +590,16 @@ fn render_commands_inventory() -> String {
 | `cargo xtask docs sync` | Refresh generated inventories and scaffold missing vault notes. |
 | `cargo xtask docs check` | Fail when generated inventory notes are stale or required curated notes are missing. |
 | `cargo xtask docs new-adr --title "Decision Name"` | Create a dated ADR note. |
+
+## QMD (Docker)
+
+| Command | Purpose |
+| --- | --- |
+| `cargo xtask qmd build` | Build the local Docker image for qmd workflows. |
+| `cargo xtask qmd start` | Start qmd MCP in HTTP mode with `docs/` mounted at `http://127.0.0.1:8181/mcp`. |
+| `cargo xtask qmd stop` | Stop and remove the qmd MCP container. |
+| `cargo xtask qmd cmd -- <args...>` | Pass through arbitrary `qmd` CLI commands to the running qmd container. |
+| `cargo xtask qmd mcp` | Ensure MCP HTTP mode is running and print the endpoint URLs. |
 "#
         .to_string()
 }
@@ -620,6 +670,7 @@ tags:
 - [[Architecture/Build And Dev Workflow]]
 - [[Architecture/Testing Strategy]]
 - [[Language/Design Overview]]
+- [[Language/Syntax And Semantics]]
 - [[Contracts/Typecheck IR]]
 
 ## Subsystems
@@ -646,6 +697,10 @@ tags:
 ## Decisions
 
 - [[Decisions/README]]
+
+## Wiki Ops
+
+- QMD MCP: `cargo xtask qmd start`, then use `http://127.0.0.1:8181/mcp`.
 "#
         .to_string()
 }
@@ -713,6 +768,16 @@ Run LLVM-backed checks and CLI builds through `cargo xtask llvm ...` so the mana
 - Refresh generated vault content: `cargo xtask docs sync`
 - Verify generated docs are current: `cargo xtask docs check`
 - Record design decisions: `cargo xtask docs new-adr --title "Decision Name"`
+- Search and retrieve vault context with QMD when docs work spans multiple notes.
+
+## QMD Workflow
+
+- Build qmd container tooling: `cargo xtask qmd build`
+- Start HTTP MCP service: `cargo xtask qmd start`
+- Stop it: `cargo xtask qmd stop`
+- Pass through CLI commands: `cargo xtask qmd cmd -- <args...>`
+- MCP endpoint for IDE clients: `http://127.0.0.1:8181/mcp`
+- Health endpoint: `http://127.0.0.1:8181/health`
 
 ## Related Notes
 
@@ -765,18 +830,31 @@ tags:
 
 # Design Overview
 
-`DESIGN.md` is the authoritative language specification. The current design emphasizes a small primitive core, macro-driven extensibility, familiar surface syntax, and the absence of reserved structural keywords.
+Aura's language design source of truth lives in this vault. The language notes are split by topic so syntax, semantics, implementation notes, and onboarding paths stay together.
 
-## Themes
+## Core Principles
 
-- top-level scope is static-only
-- macros are first-class surface shapers
-- `static` is a reusable compile-time constraint concept
-- function-like declarations normalize to assignment semantics
+- Readable, familiar syntax with a small primitive core.
+- Macros shape surface syntax without turning parser rules into a special-case maze.
+- `static` is the shared compile-time interface concept.
+- Function-like declarations normalize to assignment semantics.
+
+## Spec Notes
+
+- [[Language/Lexical Rules]]
+- [[Language/Type System]]
+- [[Language/Literals And Data]]
+- [[Language/Bindings And Declarations]]
+- [[Language/Functions And Closures]]
+- [[Language/Calls Operators And Blocks]]
+- [[Language/Control Flow]]
+- [[Language/Modules Projects And Runtime]]
 
 ## Related Notes
 
 - [[Language/Syntax And Semantics]]
+- [[Language/AUON]]
+- [[Contracts/Typecheck IR]]
 - [[Subsystems/Frontend]]
 - [[Subsystems/Typecheck]]
 "#
@@ -794,15 +872,20 @@ tags:
 
 # Syntax And Semantics
 
-This note is a reader's map into `DESIGN.md`, not a replacement for it.
+This note is the quick operational map for Aura's current observable language rules. The detailed source of truth is split across the linked language notes.
 
 ## Canonical Rules To Keep In View
 
 - Macro declaration canonical form: `defmacro[static_args] macro_name(ast_node) -> T { ... }`
 - Macro application canonical forms: `macro_name node` and `macro_name[args] node`
 - Macro application consumes a single operand and chains right-associatively
+- Macro symbols are final and non-shadowable
+- Top-level scope is static-only: `def`, `defmacro`, and `use`
+- `static` is a reusable compile-time interface concept shared across features
+- Function-like declaration syntax is assignment sugar and normalizes to assignment semantics
 - `if` and `cases` are inline function calls, not dedicated parser special cases
 - trailing closure call arguments are labeled
+- `defstub` declares typed extern or builtin contracts at top level; same-name overloads are allowed only for stubs
 
 ## Where These Rules Land In Code
 
@@ -810,8 +893,98 @@ This note is a reader's map into `DESIGN.md`, not a replacement for it.
 - lexing: `crates/aura-frontend/src/lexer.rs`
 - parsing: `crates/aura-frontend/src/parser.rs`
 - static constraints: `crates/aura-frontend/src/static_eval.rs`
+- checked IR: `crates/aura-typecheck/src/checked_ir.rs`
+
+## Spec Map
+
+- [[Language/Lexical Rules]]
+- [[Language/Type System]]
+- [[Language/Literals And Data]]
+- [[Language/Bindings And Declarations]]
+- [[Language/Functions And Closures]]
+- [[Language/Calls Operators And Blocks]]
+- [[Language/Control Flow]]
+- [[Language/Modules Projects And Runtime]]
 "#
     .to_string()
+}
+
+fn render_language_lexical_rules_note(_: &RepoInventory) -> String {
+    render_language_topic_note(
+        "Lexical Rules",
+        "lexical rules, comments, identifiers, brackets, macro application, calls, and statement termination",
+    )
+}
+
+fn render_language_type_system_note(_: &RepoInventory) -> String {
+    render_language_topic_note(
+        "Type System",
+        "type expressions, generics, constraints, product types, sum types, interfaces, casts, and fallible patterns",
+    )
+}
+
+fn render_language_literals_and_data_note(_: &RepoInventory) -> String {
+    render_language_topic_note(
+        "Literals And Data",
+        "primitive literals, strings, collection literals, product values, sum values, nullable values, and string templates",
+    )
+}
+
+fn render_language_bindings_and_declarations_note(_: &RepoInventory) -> String {
+    render_language_topic_note(
+        "Bindings And Declarations",
+        "local bindings, `let`, `def`, `defstub`, scope rules, module-level declarations, and declaration normalization",
+    )
+}
+
+fn render_language_functions_and_closures_note(_: &RepoInventory) -> String {
+    render_language_topic_note(
+        "Functions And Closures",
+        "block closures, multi-arm closures, named parameters, patterns, and captures",
+    )
+}
+
+fn render_language_calls_operators_and_blocks_note(_: &RepoInventory) -> String {
+    render_language_topic_note(
+        "Calls Operators And Blocks",
+        "operator precedence, range syntax, block expressions, labeled blocks, positional calls, named calls, and trailing closures",
+    )
+}
+
+fn render_language_control_flow_note(_: &RepoInventory) -> String {
+    render_language_topic_note(
+        "Control Flow",
+        "`if`, `cases`, `loop`, `return`, `break`, `continue`, and jump target scope resolution",
+    )
+}
+
+fn render_language_modules_projects_and_runtime_note(_: &RepoInventory) -> String {
+    render_language_topic_note(
+        "Modules Projects And Runtime",
+        "imports, project manifests, runtime extern stubs, and managed memory handles",
+    )
+}
+
+fn render_language_topic_note(title: &str, summary: &str) -> String {
+    format!(
+        r#"---
+title: "{title}"
+kind: language
+tags:
+  - aura
+  - language
+---
+
+# {title}
+
+This curated note owns Aura {summary}. Fill it from [[Language/Design Overview]] when rebuilding the vault.
+
+## Related Notes
+
+- [[Language/Design Overview]]
+- [[Language/Syntax And Semantics]]
+"#
+    )
 }
 
 fn render_examples_index_note(_: &RepoInventory) -> String {
@@ -1051,6 +1224,7 @@ Centralize automation for the workspace, including dev commands, LLVM toolchain 
 - `dev`
 - `llvm`
 - `docs`
+- `qmd`
 "#,
     )
 }
@@ -1404,6 +1578,28 @@ members = ["crates/aura-cli", "crates/aura-frontend", "xtask"]
         assert!(markdown.contains("crates/aura-cli"));
         assert!(markdown.contains("crates/aura-frontend"));
         assert!(markdown.contains("| Path |"));
+    }
+
+    #[test]
+    fn language_scaffold_does_not_point_to_root_design_doc() {
+        let inventory = RepoInventory {
+            workspace_members: Vec::new(),
+            top_level_directories: Vec::new(),
+            example_files: Vec::new(),
+            test_files: Vec::new(),
+        };
+
+        for spec in curated_note_specs()
+            .into_iter()
+            .filter(|spec| spec.path.starts_with("docs/Language/"))
+        {
+            let rendered = (spec.render)(&inventory);
+            assert!(
+                !rendered.contains("DESIGN.md"),
+                "{} still references DESIGN.md",
+                spec.path
+            );
+        }
     }
 
     #[test]

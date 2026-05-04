@@ -41,6 +41,10 @@ enum Commands {
         #[command(subcommand)]
         command: LlvmCommands,
     },
+    Qmd {
+        #[command(subcommand)]
+        command: QmdCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -78,6 +82,29 @@ enum LlvmCommands {
     Clean,
 }
 
+#[derive(Subcommand, Debug)]
+enum QmdCommands {
+    /// Build the local Docker image used for qmd workflows.
+    Build,
+    /// Start the qmd container with MCP HTTP mode enabled.
+    Start,
+    /// Stop and remove the qmd MCP container.
+    Stop,
+    /// Pass arbitrary arguments to `qmd` inside the running qmd container.
+    Cmd {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Ensure MCP HTTP mode is running and print the endpoint.
+    Mcp,
+}
+
+const QMD_IMAGE: &str = "aura-qmd:local";
+const QMD_CONTAINER: &str = "aura-qmd";
+const QMD_CACHE_VOLUME: &str = "aura-qmd-cache";
+const QMD_HTTP_PORT: u16 = 8181;
+const QMD_BUN_CLI_PATH: &str = "/root/.bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js";
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let sh = Shell::new()?;
@@ -108,6 +135,159 @@ fn main() -> Result<()> {
             LlvmCommands::Cargo { args } => llvm_cargo(&args),
             LlvmCommands::Clean => llvm_clean(),
         },
+        Commands::Qmd { command } => qmd_run(command, &root),
+    }
+}
+
+fn qmd_run(command: QmdCommands, root: &Path) -> Result<()> {
+    match command {
+        QmdCommands::Build => qmd_build(root),
+        QmdCommands::Start => qmd_start(root),
+        QmdCommands::Stop => qmd_stop(),
+        QmdCommands::Cmd { args } => qmd_cmd(&args),
+        QmdCommands::Mcp => qmd_mcp(root),
+    }
+}
+
+fn qmd_build(root: &Path) -> Result<()> {
+    let context = root.join("tool").join("qmd");
+    if !context.is_dir() {
+        bail!(
+            "missing qmd Docker context at '{}'; expected tool/qmd",
+            context.display()
+        );
+    }
+
+    run_status(
+        Command::new("docker")
+            .arg("build")
+            .arg("-t")
+            .arg(QMD_IMAGE)
+            .arg(&context),
+        "failed to run docker build for qmd image",
+    )?;
+    println!("built qmd image '{QMD_IMAGE}'");
+    Ok(())
+}
+
+fn qmd_start(root: &Path) -> Result<()> {
+    let docs_dir = ensure_docs_dir(root)?;
+    let docs_mount = format!("{}:/workspace/docs", docker_mount_source(&docs_dir)?);
+    let cache_mount = format!("{QMD_CACHE_VOLUME}:/root/.cache/qmd");
+    let port_mapping = format!("{QMD_HTTP_PORT}:{QMD_HTTP_PORT}");
+
+    let _ = Command::new("docker")
+        .arg("rm")
+        .arg("-f")
+        .arg(QMD_CONTAINER)
+        .status();
+
+    run_status(
+        Command::new("docker")
+            .arg("run")
+            .arg("-d")
+            .arg("--name")
+            .arg(QMD_CONTAINER)
+            .arg("-p")
+            .arg(&port_mapping)
+            .arg("-v")
+            .arg(&cache_mount)
+            .arg("-v")
+            .arg(&docs_mount)
+            .arg("-w")
+            .arg("/workspace/docs")
+            .arg(QMD_IMAGE),
+        "failed to start qmd MCP container",
+    )?;
+    println!("started qmd MCP container '{QMD_CONTAINER}' on http://127.0.0.1:{QMD_HTTP_PORT}/mcp");
+    Ok(())
+}
+
+fn qmd_stop() -> Result<()> {
+    let status = Command::new("docker")
+        .arg("rm")
+        .arg("-f")
+        .arg(QMD_CONTAINER)
+        .status()
+        .context("failed to run docker rm for qmd container")?;
+
+    if status.success() {
+        println!("stopped qmd MCP container '{QMD_CONTAINER}'");
+    } else {
+        println!("qmd MCP container '{QMD_CONTAINER}' was not running");
+    }
+    Ok(())
+}
+
+fn qmd_cmd(args: &[String]) -> Result<()> {
+    if args.is_empty() {
+        bail!("usage: cargo xtask qmd cmd -- <qmd args...>");
+    }
+
+    let mut cmd = Command::new("docker");
+    cmd.arg("exec")
+        .arg("-i")
+        .arg(QMD_CONTAINER)
+        .arg("bun")
+        .arg(QMD_BUN_CLI_PATH);
+    cmd.args(args);
+    run_status(
+        &mut cmd,
+        "failed to execute qmd command in helper container",
+    )
+}
+
+fn qmd_mcp(root: &Path) -> Result<()> {
+    qmd_start(root)?;
+    println!("MCP endpoint: http://127.0.0.1:{QMD_HTTP_PORT}/mcp");
+    println!("health check: http://127.0.0.1:{QMD_HTTP_PORT}/health");
+    Ok(())
+}
+
+fn ensure_docs_dir(root: &Path) -> Result<PathBuf> {
+    let docs = root.join("docs");
+    fs::create_dir_all(&docs)
+        .with_context(|| format!("failed to create docs directory '{}'", docs.display()))?;
+    fs::canonicalize(&docs)
+        .with_context(|| format!("failed to resolve docs directory '{}'", docs.display()))
+}
+
+fn docker_mount_source(path: &Path) -> Result<String> {
+    #[cfg(windows)]
+    {
+        let mut raw = path.to_string_lossy().replace('\\', "/");
+        if let Some(stripped) = raw.strip_prefix("//?/") {
+            raw = stripped.to_string();
+        }
+        let mut chars = raw.chars();
+        let drive = chars
+            .next()
+            .context("expected drive letter in Windows path")?;
+        let colon = chars
+            .next()
+            .context("expected ':' after drive letter in Windows path")?;
+        if !drive.is_ascii_alphabetic() || colon != ':' {
+            bail!(
+                "failed to convert Windows path '{}' to docker mount path",
+                raw
+            );
+        }
+        let rest = chars.as_str();
+        return Ok(format!("/{}{}", drive.to_ascii_lowercase(), rest));
+    }
+
+    #[cfg(not(windows))]
+    {
+        Ok(path.to_string_lossy().to_string())
+    }
+}
+
+fn run_status(cmd: &mut Command, context_message: &str) -> Result<()> {
+    let status = cmd.status().with_context(|| context_message.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("command failed with status {status}")
     }
 }
 

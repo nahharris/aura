@@ -18,7 +18,19 @@ tags:
 - [[Architecture/GitHub Repo Settings]]
 - [[Architecture/Testing Strategy]]
 - [[Language/Design Overview]]
+- [[Language/Syntax And Semantics]]
 - [[Contracts/Typecheck IR]]
+
+## Language Source
+
+- [[Language/Lexical Rules]]
+- [[Language/Type System]]
+- [[Language/Literals And Data]]
+- [[Language/Bindings And Declarations]]
+- [[Language/Functions And Closures]]
+- [[Language/Calls Operators And Blocks]]
+- [[Language/Control Flow]]
+- [[Language/Modules Projects And Runtime]]
 
 ## Subsystems
 
@@ -50,3 +62,4 @@ tags:
 - [[hot]]
 - [[log]]
 - [[_meta/taxonomy]]
+- QMD MCP: `cargo xtask qmd start`, then use `http://127.0.0.1:8181/mcp`.
