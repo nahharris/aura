@@ -32,6 +32,18 @@ Run LLVM-backed checks and CLI builds through `cargo xtask llvm ...` so the mana
 - Refresh generated vault content: `cargo xtask docs sync`
 - Verify generated docs are current: `cargo xtask docs check`
 - Record design decisions: `cargo xtask docs new-adr --title "Decision Name"`
+- Search and retrieve vault context with QMD when docs work spans multiple notes.
+
+## QMD Workflow
+
+Aura wraps [QMD](https://github.com/tobi/qmd) in Docker so agents can query the local `docs/` vault through MCP without installing QMD globally.
+
+- Build the local image: `cargo xtask qmd build`
+- Start the HTTP MCP container: `cargo xtask qmd start`
+- Stop it: `cargo xtask qmd stop`
+- Pass through CLI commands: `cargo xtask qmd cmd -- <args...>`
+- MCP endpoint: `http://127.0.0.1:8181/mcp`
+- Health endpoint: `http://127.0.0.1:8181/health`
 
 ## Related Notes
 

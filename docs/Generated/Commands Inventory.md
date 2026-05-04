@@ -2,7 +2,7 @@
 title: Commands Inventory
 kind: generated
 generated_by: cargo xtask docs sync
-generated_at: 2026-05-04T01:25:06.708827Z
+generated_at: 2026-05-04T11:20:46.1935762Z
 ---
 
 # Commands Inventory
@@ -40,4 +40,14 @@ generated_at: 2026-05-04T01:25:06.708827Z
 | `cargo xtask docs sync` | Refresh generated inventories and scaffold missing vault notes. |
 | `cargo xtask docs check` | Fail when generated inventory notes are stale or required curated notes are missing. |
 | `cargo xtask docs new-adr --title "Decision Name"` | Create a dated ADR note. |
+
+## QMD (Docker)
+
+| Command | Purpose |
+| --- | --- |
+| `cargo xtask qmd build` | Build the local Docker image for qmd workflows. |
+| `cargo xtask qmd start` | Start qmd MCP in HTTP mode with `docs/` mounted at `http://127.0.0.1:8181/mcp`. |
+| `cargo xtask qmd stop` | Stop and remove the qmd MCP container. |
+| `cargo xtask qmd cmd -- <args...>` | Pass through arbitrary `qmd` CLI commands to the running qmd container. |
+| `cargo xtask qmd mcp` | Ensure MCP HTTP mode is running and print the endpoint URLs. |
 
