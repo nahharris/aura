@@ -50,6 +50,10 @@ enum DevCommands {
     Test,
     Lint,
     Fmt,
+    /// Fail if the workspace is not rustfmt-clean (does not modify files).
+    FmtCheck,
+    /// Full CI parity: fmt check, clippy, tests, docs check, then LLVM doctor + clippy + tests.
+    Ci,
     Qa,
 }
 
@@ -57,6 +61,8 @@ enum DevCommands {
 enum LlvmCommands {
     Setup,
     Doctor,
+    /// LLVM doctor, clippy, and tests (expects toolchain already installed; use `llvm setup` first on a fresh machine).
+    Ci,
     Check,
     Build,
     Test,
@@ -85,12 +91,15 @@ fn main() -> Result<()> {
             DevCommands::Test => dev_test(&sh),
             DevCommands::Lint => dev_lint(&sh),
             DevCommands::Fmt => dev_fmt(&sh),
+            DevCommands::FmtCheck => dev_fmt_check(&sh),
+            DevCommands::Ci => dev_ci(&sh, &root),
             DevCommands::Qa => dev_qa(&sh),
         },
         Commands::Docs { command } => docs::run(command, &root),
         Commands::Llvm { command } => match command {
             LlvmCommands::Setup => llvm_setup(&sh),
             LlvmCommands::Doctor => llvm_doctor(&sh),
+            LlvmCommands::Ci => llvm_ci(&sh),
             LlvmCommands::Check => llvm_check(&sh),
             LlvmCommands::Build => llvm_build(&sh),
             LlvmCommands::Test => llvm_test(&sh),
@@ -124,6 +133,27 @@ fn dev_lint(sh: &Shell) -> Result<()> {
 
 fn dev_fmt(sh: &Shell) -> Result<()> {
     cmd!(sh, "cargo fmt --all").run()?;
+    Ok(())
+}
+
+fn dev_fmt_check(sh: &Shell) -> Result<()> {
+    cmd!(sh, "cargo fmt --all -- --check").run()?;
+    Ok(())
+}
+
+fn dev_ci(sh: &Shell, root: &Path) -> Result<()> {
+    dev_fmt_check(sh)?;
+    dev_lint(sh)?;
+    dev_test(sh)?;
+    docs::run(DocsCommands::Check, root)?;
+    llvm_ci(sh)?;
+    Ok(())
+}
+
+fn llvm_ci(sh: &Shell) -> Result<()> {
+    llvm_doctor(sh)?;
+    llvm_clippy(sh)?;
+    llvm_test(sh)?;
     Ok(())
 }
 
@@ -164,36 +194,44 @@ fn llvm_check(sh: &Shell) -> Result<()> {
     let prefix = llvm_env_prefix()?;
     ensure_windows_libxml2_stub(&prefix)?;
     let _guard = sh.push_env("LLVM_SYS_180_PREFIX", &prefix);
-    cmd!(sh, "cargo check -p aura-codegen --features llvm-backend").run()?;
-    Ok(())
+    with_sh_ld_library_path(sh, &prefix, |sh| {
+        cmd!(sh, "cargo check -p aura-codegen --features llvm-backend").run()?;
+        Ok(())
+    })
 }
 
 fn llvm_build(sh: &Shell) -> Result<()> {
     let prefix = llvm_env_prefix()?;
     ensure_windows_libxml2_stub(&prefix)?;
     let _guard = sh.push_env("LLVM_SYS_180_PREFIX", &prefix);
-    cmd!(sh, "cargo build -p aura-codegen --features llvm-backend").run()?;
-    Ok(())
+    with_sh_ld_library_path(sh, &prefix, |sh| {
+        cmd!(sh, "cargo build -p aura-codegen --features llvm-backend").run()?;
+        Ok(())
+    })
 }
 
 fn llvm_test(sh: &Shell) -> Result<()> {
     let prefix = llvm_env_prefix()?;
     ensure_windows_libxml2_stub(&prefix)?;
     let _guard = sh.push_env("LLVM_SYS_180_PREFIX", &prefix);
-    cmd!(sh, "cargo test -p aura-codegen --features llvm-backend").run()?;
-    Ok(())
+    with_sh_ld_library_path(sh, &prefix, |sh| {
+        cmd!(sh, "cargo test -p aura-codegen --features llvm-backend").run()?;
+        Ok(())
+    })
 }
 
 fn llvm_clippy(sh: &Shell) -> Result<()> {
     let prefix = llvm_env_prefix()?;
     ensure_windows_libxml2_stub(&prefix)?;
     let _guard = sh.push_env("LLVM_SYS_180_PREFIX", &prefix);
-    cmd!(
-        sh,
-        "cargo clippy -p aura-codegen --features llvm-backend --all-targets -- -D warnings"
-    )
-    .run()?;
-    Ok(())
+    with_sh_ld_library_path(sh, &prefix, |sh| {
+        cmd!(
+            sh,
+            "cargo clippy -p aura-codegen --features llvm-backend --all-targets -- -D warnings"
+        )
+        .run()?;
+        Ok(())
+    })
 }
 
 fn llvm_run(args: &[String]) -> Result<()> {
@@ -214,6 +252,7 @@ fn llvm_build_runtime_host(prefix: &str) -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.arg("build").arg("-p").arg("aura-runtime-host");
     cmd.env("LLVM_SYS_180_PREFIX", prefix);
+    apply_linux_ld_library_path_to_command(&mut cmd, prefix)?;
     let status = cmd
         .status()
         .context("failed to build aura-runtime-host for LLVM flow")?;
@@ -243,6 +282,7 @@ fn run_cargo_with_llvm_env(mode: &str, args: &[String], prefix: &str) -> Result<
     }
     cmd.args(args);
     cmd.env("LLVM_SYS_180_PREFIX", prefix);
+    apply_linux_ld_library_path_to_command(&mut cmd, prefix)?;
     let status = cmd.status().context("failed to start cargo command")?;
     if !status.success() {
         bail!("cargo command failed with status {status}");
@@ -255,6 +295,48 @@ fn llvm_env_prefix() -> Result<String> {
     ensure_llvm_toolchain(&paths)?;
     validate_install(&paths)?;
     prefix_env_value(&paths)
+}
+
+/// Prepend `<prefix>/lib` to `LD_LIBRARY_PATH` on Linux so `llvm-config` and `llvm-sys` build
+/// scripts can load `libLLVM.so`. CI often sets this via `GITHUB_ENV`, but child `cargo` processes
+/// must still see it whenever only `LLVM_SYS_*_PREFIX` is forwarded.
+fn linux_llvm_ld_library_path(prefix: &str) -> Result<Option<String>> {
+    if !cfg!(target_os = "linux") {
+        return Ok(None);
+    }
+    let lib = Path::new(prefix).join("lib");
+    let lib = fs::canonicalize(&lib).with_context(|| {
+        format!(
+            "failed to canonicalize LLVM lib directory '{}'",
+            lib.display()
+        )
+    })?;
+    let lib = lib.to_string_lossy().into_owned();
+    Ok(Some(match env::var("LD_LIBRARY_PATH") {
+        Ok(extra) if !extra.is_empty() => format!("{lib}:{extra}"),
+        _ => lib,
+    }))
+}
+
+fn apply_linux_ld_library_path_to_command(cmd: &mut Command, prefix: &str) -> Result<()> {
+    if let Some(ld) = linux_llvm_ld_library_path(prefix)? {
+        cmd.env("LD_LIBRARY_PATH", ld);
+    }
+    Ok(())
+}
+
+fn with_sh_ld_library_path<R>(
+    sh: &Shell,
+    prefix: &str,
+    f: impl FnOnce(&Shell) -> Result<R>,
+) -> Result<R> {
+    match linux_llvm_ld_library_path(prefix)? {
+        Some(ld) => {
+            let _ld = sh.push_env("LD_LIBRARY_PATH", &ld);
+            f(sh)
+        }
+        None => f(sh),
+    }
 }
 
 fn ensure_windows_libxml2_stub(prefix: &str) -> Result<()> {
@@ -530,29 +612,54 @@ fn extract_archive(paths: &LlvmPaths) -> Result<()> {
             .with_context(|| format!("failed to remove '{}'", paths.install_dir.display()))?;
     }
 
-    let extracted_dir = find_first_subdir(&paths.temp_extract_dir)?;
-    fs::rename(&extracted_dir, &paths.install_dir).with_context(|| {
-        format!(
-            "failed to finalize extracted LLVM directory '{}'",
-            paths.install_dir.display()
-        )
-    })?;
-
-    fs::remove_dir_all(&paths.temp_extract_dir)
-        .with_context(|| format!("failed to remove '{}'", paths.temp_extract_dir.display()))?;
+    let extracted_root = find_llvm_extract_root(&paths.temp_extract_dir)?;
+    if extracted_root == paths.temp_extract_dir {
+        fs::rename(&paths.temp_extract_dir, &paths.install_dir).with_context(|| {
+            format!(
+                "failed to finalize extracted LLVM directory '{}'",
+                paths.install_dir.display()
+            )
+        })?;
+    } else {
+        fs::rename(&extracted_root, &paths.install_dir).with_context(|| {
+            format!(
+                "failed to finalize extracted LLVM directory '{}'",
+                paths.install_dir.display()
+            )
+        })?;
+        fs::remove_dir_all(&paths.temp_extract_dir)
+            .with_context(|| format!("failed to remove '{}'", paths.temp_extract_dir.display()))?;
+    }
     Ok(())
 }
 
-fn find_first_subdir(root: &Path) -> Result<PathBuf> {
-    let mut dirs = fs::read_dir(root)
-        .with_context(|| format!("failed to read '{}'", root.display()))?
+/// Prefer the directory that actually contains `bin/llvm-config` so we do not pick an unrelated
+/// top-level folder when the archive has multiple entries, and support a flat unpack layout.
+fn find_llvm_extract_root(extract_root: &Path) -> Result<PathBuf> {
+    if llvm_config_path(extract_root).is_file() {
+        return Ok(extract_root.to_path_buf());
+    }
+    let mut dirs = fs::read_dir(extract_root)
+        .with_context(|| format!("failed to read '{}'", extract_root.display()))?
         .filter_map(|entry| entry.ok().map(|e| e.path()))
         .filter(|p| p.is_dir())
         .collect::<Vec<_>>();
     dirs.sort();
-    dirs.into_iter()
-        .next()
-        .context("extracted archive did not contain a top-level directory")
+    for dir in dirs {
+        if llvm_config_path(&dir).is_file() {
+            return Ok(dir);
+        }
+    }
+    let expected = if cfg!(windows) {
+        "bin/llvm-config.exe"
+    } else {
+        "bin/llvm-config"
+    };
+    bail!(
+        "extracted LLVM archive did not contain '{}' under '{}' or any subdirectory",
+        expected,
+        extract_root.display()
+    );
 }
 
 fn ensure_major_link(paths: &LlvmPaths) -> Result<()> {
@@ -582,13 +689,33 @@ fn ensure_major_link(paths: &LlvmPaths) -> Result<()> {
             .with_context(|| format!("failed to create '{}'", parent.display()))?;
     }
 
-    create_link(&paths.install_dir, &paths.major_link)
+    create_link(&canonical_install, &paths.major_link)
 }
 
 fn validate_install(paths: &LlvmPaths) -> Result<()> {
     let config = llvm_config_path(&paths.major_link);
     if !config.is_file() {
         bail!("llvm-config not found at '{}'", config.display());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let prefix = prefix_env_value(paths)?;
+        let mut cmd = Command::new(&config);
+        cmd.arg("--version");
+        if let Some(ld) = linux_llvm_ld_library_path(&prefix)? {
+            cmd.env("LD_LIBRARY_PATH", &ld);
+        }
+        let output = cmd
+            .output()
+            .with_context(|| format!("failed to execute '{}'", config.display()))?;
+        if !output.status.success() {
+            bail!(
+                "'{} --version' failed ({}): {}",
+                config.display(),
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
     }
     Ok(())
 }

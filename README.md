@@ -2,7 +2,7 @@
 
 [![Status: Pre-Alpha](https://img.shields.io/badge/status-pre--alpha-blue)](#project-status)
 [![Rust Workspace](https://img.shields.io/badge/rust-workspace-orange?logo=rust)](#for-developers)
-[![CI](https://img.shields.io/badge/ci-not%20configured-lightgrey)](#for-developers)
+[![CI](https://github.com/nahharris/aura/actions/workflows/ci.yml/badge.svg)](https://github.com/nahharris/aura/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-TBD-lightgrey)](#project-status)
 
 > [!NOTE]

@@ -888,7 +888,8 @@ impl TypeChecker {
         field: &str,
     ) -> Option<(usize, Vec<FuncParam>, TyId)> {
         let interface_ty = self.unifier.resolve(interface_ty);
-        let Some(Ty::Interface(members) | Ty::InterfaceObject(members)) = self.interner.get(interface_ty)
+        let Some(Ty::Interface(members) | Ty::InterfaceObject(members)) =
+            self.interner.get(interface_ty)
         else {
             return None;
         };
@@ -911,9 +912,7 @@ impl TypeChecker {
         trailing: &[LabeledClosureArg],
         expected: Option<TyId>,
     ) -> Option<TyId> {
-        let Some((_, params, ret)) = self.interface_method_sig(receiver_ty, field) else {
-            return None;
-        };
+        let (_, params, ret) = self.interface_method_sig(receiver_ty, field)?;
         if !trailing.is_empty() {
             self.diagnostics.push(
                 self.typecheck_error(
@@ -998,12 +997,15 @@ impl TypeChecker {
             | (Some(Ty::Slice(p)), Some(Ty::Slice(a)))
             | (Some(Ty::Ref(p)), Some(Ty::Ref(a))) => self.match_receiver_ty(*p, *a, subst),
             (Some(Ty::Dict { key: pk, value: pv }), Some(Ty::Dict { key: ak, value: av })) => {
-                self.match_receiver_ty(*pk, *ak, subst)
-                    && self.match_receiver_ty(*pv, *av, subst)
+                self.match_receiver_ty(*pk, *ak, subst) && self.match_receiver_ty(*pv, *av, subst)
             }
-            (Some(Ty::Array { item: pi, size: ps }), Some(Ty::Array { item: ai, size: as_ })) => {
-                ps == as_ && self.match_receiver_ty(*pi, *ai, subst)
-            }
+            (
+                Some(Ty::Array { item: pi, size: ps }),
+                Some(Ty::Array {
+                    item: ai,
+                    size: as_,
+                }),
+            ) => ps == as_ && self.match_receiver_ty(*pi, *ai, subst),
             (Some(Ty::Tuple(p)), Some(Ty::Tuple(a))) => {
                 p.len() == a.len()
                     && p.iter()
@@ -1906,7 +1908,8 @@ impl TypeChecker {
                 });
                 let previous_match_subject = self.current_match_subject.clone();
                 if let Some(first_param) = function.params.first() {
-                    let subject_ty = receiver_ty.unwrap_or_else(|| self.resolve_type_expr(&first_param.ty));
+                    let subject_ty =
+                        receiver_ty.unwrap_or_else(|| self.resolve_type_expr(&first_param.ty));
                     self.current_match_subject = Some(MatchSubject {
                         name: first_param.name.clone(),
                         ty: subject_ty,
@@ -2299,9 +2302,13 @@ impl TypeChecker {
                 if let Expr::Member { object, field } = TypeChecker::base_expr(callee.as_ref()) {
                     if let Some(receiver_ty) = self.resolve_type_receiver_expr(object) {
                         let receiver_ty = self.unifier.resolve(receiver_ty);
-                        if let Some(ret) =
-                            self.infer_interface_member_call(receiver_ty, field, args, trailing, None)
-                        {
+                        if let Some(ret) = self.infer_interface_member_call(
+                            receiver_ty,
+                            field,
+                            args,
+                            trailing,
+                            None,
+                        ) {
                             return ret;
                         }
                         if let Some(method) = self.lookup_method(receiver_ty, field) {
@@ -2713,7 +2720,9 @@ impl TypeChecker {
                             Some(Ty::Never)
                         );
                     }
-                    if rest_diverges && matches!(Self::base_expr(last), Expr::Tuple(items) if items.is_empty()) {
+                    if rest_diverges
+                        && matches!(Self::base_expr(last), Expr::Tuple(items) if items.is_empty())
+                    {
                         self.interner.intern(Ty::Never)
                     } else {
                         self.infer_expr_with_expected(last, expected)
@@ -2818,7 +2827,11 @@ impl TypeChecker {
                             trailing,
                             Some(expected),
                         ) {
-                            self.require_assignable(expected, actual, "bidirectional expected type");
+                            self.require_assignable(
+                                expected,
+                                actual,
+                                "bidirectional expected type",
+                            );
                             return actual;
                         }
                         if let Some(method) = self.lookup_method(receiver_ty, field) {
@@ -2832,7 +2845,11 @@ impl TypeChecker {
                                 trailing,
                                 Some(expected),
                             );
-                            self.require_assignable(expected, actual, "bidirectional expected type");
+                            self.require_assignable(
+                                expected,
+                                actual,
+                                "bidirectional expected type",
+                            );
                             return actual;
                         }
                     }
@@ -4354,12 +4371,13 @@ impl TypeChecker {
                             name: iface_name, ..
                         } = interface
                         {
-                            self.pending_constraints.push(TypeConstraint::InterfaceExists {
-                                interface: iface_name.clone(),
-                                context: format!("generic call `{name}` for `{}`", param.name),
-                                obligations: self.obligation_stack.clone(),
-                                span: self.current_expr_span,
-                            });
+                            self.pending_constraints
+                                .push(TypeConstraint::InterfaceExists {
+                                    interface: iface_name.clone(),
+                                    context: format!("generic call `{name}` for `{}`", param.name),
+                                    obligations: self.obligation_stack.clone(),
+                                    span: self.current_expr_span,
+                                });
                         }
                         self.pending_constraints
                             .push(TypeConstraint::InterfaceBound {
@@ -4387,6 +4405,77 @@ impl TypeChecker {
         }
 
         self.substitute_ty_id(callee_ty, &subst)
+    }
+
+    /// Substitution map for a generic call with explicit static arguments (one type per generic
+    /// parameter). Returns `None` when static arguments are partial, use value static args, or
+    /// the callee is not generic.
+    fn substitution_for_explicit_generic_call(
+        &mut self,
+        function_name: &str,
+        static_args: &[StaticArg],
+    ) -> Option<HashMap<String, TyId>> {
+        let generic_params = self.function_generics.get(function_name)?.clone();
+        if static_args.is_empty() || static_args.len() != generic_params.len() {
+            return None;
+        }
+        let mut subst = HashMap::new();
+        for (idx, param) in generic_params.iter().enumerate() {
+            let mapped = self.resolve_static_arg_type(static_args.get(idx)?)?;
+            subst.insert(param.name.clone(), mapped);
+        }
+        Some(subst)
+    }
+
+    fn mangle_static_args_for_specialization(static_args: &[StaticArg]) -> String {
+        static_args
+            .iter()
+            .map(Self::mangle_one_static_arg)
+            .collect::<Vec<_>>()
+            .join("_")
+    }
+
+    fn mangle_one_static_arg(arg: &StaticArg) -> String {
+        match arg {
+            StaticArg::Type(ty) => Self::mangle_type_expr_for_specialization(ty),
+            StaticArg::Value(v) => format!("{v:?}"),
+        }
+    }
+
+    fn mangle_type_expr_for_specialization(ty: &TypeExpr) -> String {
+        match ty {
+            TypeExpr::Named { name, args } => {
+                if args.is_empty() {
+                    name.clone()
+                } else {
+                    format!(
+                        "{}_{}",
+                        name,
+                        args.iter()
+                            .map(Self::mangle_one_static_arg)
+                            .collect::<Vec<_>>()
+                            .join("_")
+                    )
+                }
+            }
+            TypeExpr::Interface(_) => "interface".to_string(),
+            TypeExpr::Tuple(items) => format!(
+                "tuple_{}",
+                items
+                    .iter()
+                    .map(Self::mangle_type_expr_for_specialization)
+                    .collect::<Vec<_>>()
+                    .join("_")
+            ),
+            TypeExpr::Struct(_) => "struct".to_string(),
+            TypeExpr::Static(inner) => {
+                format!(
+                    "static_{}",
+                    Self::mangle_type_expr_for_specialization(inner)
+                )
+            }
+            TypeExpr::InferHole => "infer".to_string(),
+        }
     }
 
     fn substitute_ty_id(&mut self, ty_id: TyId, subst: &HashMap<String, TyId>) -> TyId {
@@ -4893,9 +4982,7 @@ impl TypeChecker {
         interface_expr: &TypeExpr,
     ) -> Option<InterfaceCheckFailure> {
         let subject_ty = self.unifier.resolve(subject_ty);
-        let Some(subject) = self.interner.get(subject_ty).cloned() else {
-            return None;
-        };
+        let subject = self.interner.get(subject_ty).cloned()?;
 
         if let TypeExpr::Named { name, .. } = interface_expr {
             if self.interface_name_exists(name) {
@@ -4913,9 +5000,7 @@ impl TypeChecker {
 
         let interface_ty = self.resolve_type_expr(interface_expr);
         let interface_ty = self.unifier.resolve(interface_ty);
-        let Some(interface) = self.interner.get(interface_ty).cloned() else {
-            return None;
-        };
+        let interface = self.interner.get(interface_ty).cloned()?;
         let Ty::Interface(required_methods) = interface else {
             return Some(InterfaceCheckFailure::MissingMethod {
                 interface: self.interface_label(interface_expr),
@@ -4949,9 +5034,7 @@ impl TypeChecker {
     ) -> Option<InterfaceCheckFailure> {
         let subject_ty = self.unifier.resolve(subject_ty);
         let interface_ty = self.unifier.resolve(interface_ty);
-        let Some(interface) = self.interner.get(interface_ty).cloned() else {
-            return None;
-        };
+        let interface = self.interner.get(interface_ty).cloned()?;
         let Ty::Interface(required_methods) = interface else {
             return None;
         };
@@ -5231,18 +5314,12 @@ impl TypeChecker {
                         .all(|(x, y)| self.structurally_equivalent(x.ty, y.ty))
                     && self.structurally_equivalent(*ar, *br)
             }
-            (Ty::Interface(a), Ty::Interface(b)) => {
-                self.interface_member_sets_equivalent(a, b)
-            }
+            (Ty::Interface(a), Ty::Interface(b)) => self.interface_member_sets_equivalent(a, b),
             _ => false,
         }
     }
 
-    fn interface_member_sets_equivalent(
-        &self,
-        a: &[(String, TyId)],
-        b: &[(String, TyId)],
-    ) -> bool {
+    fn interface_member_sets_equivalent(&self, a: &[(String, TyId)], b: &[(String, TyId)]) -> bool {
         if a.len() != b.len() {
             return false;
         }
@@ -5722,7 +5799,12 @@ impl TypeChecker {
                     .map(|(k, v)| (self.lower_expr(k), self.lower_expr(v)))
                     .collect(),
             ),
-            Expr::Call { callee, args, .. } => {
+            Expr::Call {
+                callee,
+                static_args,
+                args,
+                ..
+            } => {
                 if let Expr::Ident(name) = TypeChecker::base_expr(callee.as_ref()) {
                     if name == "if" {
                         let condition = args
@@ -5864,6 +5946,48 @@ impl TypeChecker {
                         self.lower_builtin_member_call(object, field, args, result_ty)
                     {
                         return lowered;
+                    }
+                }
+                if let Expr::Ident(fname) = TypeChecker::base_expr(callee.as_ref()) {
+                    if let Some(subst) =
+                        self.substitution_for_explicit_generic_call(fname, static_args)
+                    {
+                        let mangled = format!(
+                            "{}__{}",
+                            fname,
+                            Self::mangle_static_args_for_specialization(static_args)
+                        );
+                        if !self.ir.declarations.iter().any(|d| d.name == mangled) {
+                            if let Some(template) = self
+                                .ir
+                                .declarations
+                                .iter()
+                                .find(|d| d.name == *fname && !d.is_extern)
+                                .cloned()
+                            {
+                                // Explicit specialization: substitute the declaration function type,
+                                // then reuse the template's already-lowered `value`. Bodies that still embed
+                                // callee-specific type IDs or nested generic static parameters are not
+                                // re-walked for substitution here; that remains follow-up work if we need
+                                // casts, inner generic calls, or interface plumbing under the mangled symbol.
+                                let new_ty = self.substitute_ty_id(template.ty, &subst);
+                                self.ir.declarations.push(CheckedDecl {
+                                    name: mangled.clone(),
+                                    link_name: mangled.clone(),
+                                    params: template.params.clone(),
+                                    ty: new_ty,
+                                    is_extern: false,
+                                    value: template.value.clone(),
+                                });
+                            }
+                        }
+                        let lowered_args: Vec<_> =
+                            args.iter().map(|a| self.lower_expr(a)).collect();
+                        let call = CheckedExpr::Call {
+                            callee: Box::new(CheckedExpr::Ident(mangled)),
+                            args: lowered_args,
+                        };
+                        return self.wrap_call_with_gc_safepoint(call);
                     }
                 }
                 let call = CheckedExpr::Call {
@@ -6642,9 +6766,9 @@ mod tests {
             CheckedExpr::Call { callee, args } => {
                 contains_gc_safepoint(callee) || args.iter().any(contains_gc_safepoint)
             }
-            CheckedExpr::EnumCtor { payload, .. } | CheckedExpr::DotIdent { payload, .. } => payload
-                .as_deref()
-                .is_some_and(contains_gc_safepoint),
+            CheckedExpr::EnumCtor { payload, .. } | CheckedExpr::DotIdent { payload, .. } => {
+                payload.as_deref().is_some_and(contains_gc_safepoint)
+            }
             CheckedExpr::FieldAccess { object, .. } => contains_gc_safepoint(object),
             CheckedExpr::ForceUnwrap { expr, .. } => contains_gc_safepoint(expr),
             CheckedExpr::AssignField { object, value, .. } => {
@@ -6659,9 +6783,7 @@ mod tests {
             } => {
                 contains_gc_safepoint(scrutinee)
                     || arms.iter().any(|arm| contains_gc_safepoint(&arm.body))
-                    || default_arm
-                        .as_deref()
-                        .is_some_and(contains_gc_safepoint)
+                    || default_arm.as_deref().is_some_and(contains_gc_safepoint)
             }
             CheckedExpr::If {
                 condition,
@@ -6671,36 +6793,34 @@ mod tests {
             } => {
                 contains_gc_safepoint(condition)
                     || contains_gc_safepoint(then_branch)
-                    || else_branch
-                        .as_deref()
-                        .is_some_and(contains_gc_safepoint)
+                    || else_branch.as_deref().is_some_and(contains_gc_safepoint)
             }
             CheckedExpr::Cases { arms, .. } => arms
                 .iter()
                 .any(|arm| contains_gc_safepoint(&arm.guard) || contains_gc_safepoint(&arm.body)),
-            CheckedExpr::Loop { condition, body, .. } => {
-                condition
-                    .as_deref()
-                    .is_some_and(contains_gc_safepoint)
+            CheckedExpr::Loop {
+                condition, body, ..
+            } => {
+                condition.as_deref().is_some_and(contains_gc_safepoint)
                     || contains_gc_safepoint(body)
             }
             CheckedExpr::Return { value, .. } => contains_gc_safepoint(value),
-            CheckedExpr::Break { value, .. } => value
-                .as_deref()
-                .is_some_and(contains_gc_safepoint),
+            CheckedExpr::Break { value, .. } => value.as_deref().is_some_and(contains_gc_safepoint),
             CheckedExpr::Coerce { expr, .. } | CheckedExpr::Cast { expr, .. } => {
                 contains_gc_safepoint(expr)
             }
             CheckedExpr::Tuple(items) | CheckedExpr::List(items) => {
                 items.iter().any(contains_gc_safepoint)
             }
-            CheckedExpr::Struct(fields) => fields.iter().any(|(_, item)| contains_gc_safepoint(item)),
+            CheckedExpr::Struct(fields) => {
+                fields.iter().any(|(_, item)| contains_gc_safepoint(item))
+            }
             CheckedExpr::Dict(entries) => entries
                 .iter()
                 .any(|(k, v)| contains_gc_safepoint(k) || contains_gc_safepoint(v)),
-            CheckedExpr::LocalBind { bindings, .. } => {
-                bindings.iter().any(|binding| contains_gc_safepoint(&binding.value))
-            }
+            CheckedExpr::LocalBind { bindings, .. } => bindings
+                .iter()
+                .any(|binding| contains_gc_safepoint(&binding.value)),
             CheckedExpr::AssignLocal { value, .. } => contains_gc_safepoint(value),
             CheckedExpr::MemoryOp { args, .. } => args.iter().any(contains_gc_safepoint),
             CheckedExpr::MacroApply { operand, .. } => contains_gc_safepoint(operand),
@@ -7377,7 +7497,10 @@ mod tests {
         let module = checked.module.expect("module should exist");
         let x_ty = module.value_types.get("x").expect("x should exist");
         assert!(matches!(module.types.get(*x_ty), Some(Ty::Never)));
-        assert!(matches!(module.ir.declarations[0].value, CheckedExpr::Panic { .. }));
+        assert!(matches!(
+            module.ir.declarations[0].value,
+            CheckedExpr::Panic { .. }
+        ));
     }
 
     #[test]
@@ -9252,6 +9375,68 @@ mod tests {
     }
 
     #[test]
+    fn explicit_generic_specialization_registers_mangled_ir_decl() {
+        let program = Program {
+            declarations: vec![
+                Decl::Function(FunctionDecl {
+                    doc: None,
+                    static_params: vec![ty_param("T"), ty_param("U")],
+                    receiver: None,
+                    name: "first".to_string(),
+                    params: vec![aura_frontend::ast::Param {
+                        name: "x".to_string(),
+                        ty: TypeExpr::Named {
+                            name: "T".to_string(),
+                            args: Vec::new(),
+                        },
+                    }],
+                    return_type: TypeExpr::Named {
+                        name: "T".to_string(),
+                        args: Vec::new(),
+                    },
+                    body: Expr::Block(vec![Expr::Ident("x".to_string())]),
+                }),
+                Decl::Assign {
+                    static_params: Vec::new(),
+                    doc: None,
+                    name: "y".to_string(),
+                    value: Expr::Call {
+                        callee: Box::new(Expr::Ident("first".to_string())),
+                        static_args: vec![
+                            StaticArg::Type(TypeExpr::InferHole),
+                            StaticArg::Type(TypeExpr::Named {
+                                name: "Int".to_string(),
+                                args: Vec::new(),
+                            }),
+                        ],
+                        args: vec![Expr::Int("1".to_string())],
+
+                        trailing: Vec::new(),
+                    },
+                },
+            ],
+        };
+
+        let checked = check_module(&program);
+        assert!(checked.module.is_some());
+        let module = checked.module.expect("module should exist");
+        assert!(
+            module
+                .ir
+                .declarations
+                .iter()
+                .any(|d| d.name == "first__infer_Int"),
+            "expected mangled specialization decl, have: {:?}",
+            module
+                .ir
+                .declarations
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn interface_bound_failure_reports_diagnostic() {
         let program = Program {
             declarations: vec![
@@ -9324,12 +9509,10 @@ mod tests {
             "expected module, diagnostics: {:?}",
             checked.diagnostics
         );
-        assert!(
-            checked
-                .diagnostics
-                .iter()
-                .all(|d| d.severity != aura_diagnostics::Severity::Error)
-        );
+        assert!(checked
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != aura_diagnostics::Severity::Error));
     }
 
     #[test]
@@ -9388,7 +9571,11 @@ mod tests {
         let parsed = Parser::parse_source(src).expect("parse should succeed");
         let checked = check_module(&parsed);
         let module = checked.module.expect("module should exist");
-        let x_ty = module.value_types.get("x").copied().expect("x should be typed");
+        let x_ty = module
+            .value_types
+            .get("x")
+            .copied()
+            .expect("x should be typed");
         assert!(matches!(
             module.types.get(x_ty),
             Some(Ty::Interface(m)) if m.is_empty()

@@ -316,9 +316,7 @@ pub fn lower_expr<'ctx, 'm>(
 }
 
 #[cfg(feature = "llvm-backend")]
-fn interface_object_type<'ctx>(
-    cg: &CodegenContext<'ctx, '_>,
-) -> inkwell::types::StructType<'ctx> {
+fn interface_object_type<'ctx>(cg: &CodegenContext<'ctx, '_>) -> inkwell::types::StructType<'ctx> {
     let ptr = cg.context.ptr_type(AddressSpace::default());
     cg.context.struct_type(&[ptr.into(), ptr.into()], false)
 }
@@ -368,7 +366,10 @@ fn lower_make_interface_obj<'ctx, 'm>(
                     )
                     .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?
             };
-            let fn_ptr = thunk.as_global_value().as_pointer_value().as_basic_value_enum();
+            let fn_ptr = thunk
+                .as_global_value()
+                .as_pointer_value()
+                .as_basic_value_enum();
             cg.builder
                 .build_store(slot_ptr, fn_ptr)
                 .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?;
@@ -431,11 +432,7 @@ fn lower_interface_call<'ctx, 'm>(
     let ptr_ty = cg.context.ptr_type(AddressSpace::default());
     let vtable_as_ptr_ptr = cg
         .builder
-        .build_bit_cast(
-            vtable_ptr,
-            ptr_ty.ptr_type(AddressSpace::default()),
-            "iface_call_vtable_cast",
-        )
+        .build_bit_cast(vtable_ptr, ptr_ty, "iface_call_vtable_cast")
         .map_err(|_| CodegenError::UnsupportedExpression("interface_call"))?
         .into_pointer_value();
     let slot_ptr = unsafe {
@@ -457,7 +454,7 @@ fn lower_interface_call<'ctx, 'm>(
         .builder
         .build_bit_cast(
             fn_ptr.into_pointer_value(),
-            fn_ty.ptr_type(AddressSpace::default()),
+            cg.context.ptr_type(AddressSpace::default()),
             "iface_call_callable",
         )
         .map_err(|_| CodegenError::UnsupportedExpression("interface_call"))?
@@ -533,7 +530,10 @@ fn ensure_interface_thunk<'ctx, 'm>(
     method_link: &str,
     method_fn: FunctionValue<'ctx>,
 ) -> Result<FunctionValue<'ctx>, CodegenError> {
-    let thunk_name = format!("__aura_iface_thunk_{}_{}_{}", concrete_ty.0, method_index, method_link);
+    let thunk_name = format!(
+        "__aura_iface_thunk_{}_{}_{}",
+        concrete_ty.0, method_index, method_link
+    );
     if let Some(existing) = cg.module.get_function(&thunk_name) {
         return Ok(existing);
     }
@@ -551,7 +551,7 @@ fn ensure_interface_thunk<'ctx, 'm>(
         .builder
         .build_bit_cast(
             data_param,
-            concrete_basic.ptr_type(AddressSpace::default()),
+            cg.context.ptr_type(AddressSpace::default()),
             "iface_thunk_concrete_ptr",
         )
         .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?
@@ -577,25 +577,24 @@ fn ensure_interface_thunk<'ctx, 'm>(
             .try_as_basic_value()
             .left()
             .ok_or(CodegenError::UnsupportedExpression("make_interface_obj"))?;
-        if let Some(expected_ret) = thunk.get_type().get_return_type() {
-            if let (BasicValueEnum::IntValue(ret_int), BasicTypeEnum::IntType(expected_int)) =
+        if let Some(expected_ret) = thunk.get_type().get_return_type()
+            && let (BasicValueEnum::IntValue(ret_int), BasicTypeEnum::IntType(expected_int)) =
                 (ret, expected_ret)
-            {
-                let from_w = ret_int.get_type().get_bit_width();
-                let to_w = expected_int.get_bit_width();
-                if from_w != to_w {
-                    ret = if from_w > to_w {
-                        cg.builder
-                            .build_int_truncate(ret_int, expected_int, "iface_ret_trunc")
-                            .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?
-                            .as_basic_value_enum()
-                    } else {
-                        cg.builder
-                            .build_int_z_extend(ret_int, expected_int, "iface_ret_zext")
-                            .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?
-                            .as_basic_value_enum()
-                    };
-                }
+        {
+            let from_w = ret_int.get_type().get_bit_width();
+            let to_w = expected_int.get_bit_width();
+            if from_w != to_w {
+                ret = if from_w > to_w {
+                    cg.builder
+                        .build_int_truncate(ret_int, expected_int, "iface_ret_trunc")
+                        .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?
+                        .as_basic_value_enum()
+                } else {
+                    cg.builder
+                        .build_int_z_extend(ret_int, expected_int, "iface_ret_zext")
+                        .map_err(|_| CodegenError::UnsupportedExpression("make_interface_obj"))?
+                        .as_basic_value_enum()
+                };
             }
         }
         cg.builder
@@ -715,7 +714,7 @@ fn field_ptr<'ctx, 'm>(
 }
 
 #[cfg(feature = "llvm-backend")]
-fn coerce_basic_value_for_slot<'ctx, 'm>(
+pub(super) fn coerce_basic_value_for_slot<'ctx, 'm>(
     cg: &CodegenContext<'ctx, 'm>,
     value: BasicValueEnum<'ctx>,
     target_ty: aura_typecheck::TyId,
@@ -1266,46 +1265,42 @@ fn lower_enum_match<'ctx, 'm>(
 
         cg.builder.position_at_end(arm_block);
         cg.push_local_scope();
-        if let Some(name) = &arm.binding_name {
-            if let Some(payload_ty) = variants
+        if let Some(name) = &arm.binding_name
+            && let Some(payload_ty) = variants
                 .get(arm.variant_index)
                 .and_then(|(_, payload)| *payload)
-            {
-                let payload_value =
-                    load_enum_payload(cg, scrutinee_slot, enum_basic_ty, payload_ty)?;
-                let slot = allocate_local_slot(cg, name, payload_ty)?;
-                cg.builder
-                    .build_store(slot.ptr, payload_value)
-                    .map_err(|_| CodegenError::UnsupportedExpression("enum_match"))?;
-                cg.insert_local(name.clone(), slot);
-            }
+        {
+            let payload_value = load_enum_payload(cg, scrutinee_slot, enum_basic_ty, payload_ty)?;
+            let slot = allocate_local_slot(cg, name, payload_ty)?;
+            cg.builder
+                .build_store(slot.ptr, payload_value)
+                .map_err(|_| CodegenError::UnsupportedExpression("enum_match"))?;
+            cg.insert_local(name.clone(), slot);
         }
-        if !arm.struct_bindings.is_empty() {
-            if let Some(payload_ty) = variants
+        if !arm.struct_bindings.is_empty()
+            && let Some(payload_ty) = variants
                 .get(arm.variant_index)
                 .and_then(|(_, payload)| *payload)
-            {
-                let payload_value =
-                    load_enum_payload(cg, scrutinee_slot, enum_basic_ty, payload_ty)?;
-                let BasicValueEnum::StructValue(payload_struct) = payload_value else {
-                    return Err(CodegenError::UnsupportedExpression("enum_match"));
-                };
-                for binding in &arm.struct_bindings {
-                    let field_value = cg
-                        .builder
-                        .build_extract_value(
-                            payload_struct,
-                            binding.field_index as u32,
-                            &format!("enum_match_{}", binding.name),
-                        )
-                        .map_err(|_| CodegenError::UnsupportedExpression("enum_match"))?;
-                    let slot = allocate_local_slot(cg, &binding.name, binding.ty)?;
-                    let stored = coerce_basic_value_for_slot(cg, field_value, binding.ty)?;
-                    cg.builder
-                        .build_store(slot.ptr, stored)
-                        .map_err(|_| CodegenError::UnsupportedExpression("enum_match"))?;
-                    cg.insert_local(binding.name.clone(), slot);
-                }
+        {
+            let payload_value = load_enum_payload(cg, scrutinee_slot, enum_basic_ty, payload_ty)?;
+            let BasicValueEnum::StructValue(payload_struct) = payload_value else {
+                return Err(CodegenError::UnsupportedExpression("enum_match"));
+            };
+            for binding in &arm.struct_bindings {
+                let field_value = cg
+                    .builder
+                    .build_extract_value(
+                        payload_struct,
+                        binding.field_index as u32,
+                        &format!("enum_match_{}", binding.name),
+                    )
+                    .map_err(|_| CodegenError::UnsupportedExpression("enum_match"))?;
+                let slot = allocate_local_slot(cg, &binding.name, binding.ty)?;
+                let stored = coerce_basic_value_for_slot(cg, field_value, binding.ty)?;
+                cg.builder
+                    .build_store(slot.ptr, stored)
+                    .map_err(|_| CodegenError::UnsupportedExpression("enum_match"))?;
+                cg.insert_local(binding.name.clone(), slot);
             }
         }
         let arm_value = lower_expr(cg, &arm.body)?;
@@ -1445,7 +1440,9 @@ fn lower_force_unwrap<'ctx, 'm>(
         .map_err(|_| CodegenError::UnsupportedExpression("force_unwrap"))?;
     let some_block = cg.context.append_basic_block(function, "force_unwrap_some");
     let null_block = cg.context.append_basic_block(function, "force_unwrap_null");
-    let merge_block = cg.context.append_basic_block(function, "force_unwrap_merge");
+    let merge_block = cg
+        .context
+        .append_basic_block(function, "force_unwrap_merge");
     cg.builder
         .build_conditional_branch(ok, some_block, null_block)
         .map_err(|_| CodegenError::UnsupportedExpression("force_unwrap"))?;
@@ -1985,25 +1982,24 @@ fn lower_call<'ctx, 'm>(
     let mut lowered_args = Vec::with_capacity(args.len());
     for (idx, arg) in args.iter().enumerate() {
         let mut lowered = lower_expr(cg, arg)?;
-        if let Some(param_ty) = param_tys.get(idx) {
-            if let (BasicValueEnum::IntValue(int_val), BasicTypeEnum::IntType(target_int_ty)) =
+        if let Some(param_ty) = param_tys.get(idx)
+            && let (BasicValueEnum::IntValue(int_val), BasicTypeEnum::IntType(target_int_ty)) =
                 (lowered, *param_ty)
-            {
-                let from_w = int_val.get_type().get_bit_width();
-                let to_w = target_int_ty.get_bit_width();
-                if from_w != to_w {
-                    lowered = if from_w > to_w {
-                        cg.builder
-                            .build_int_truncate(int_val, target_int_ty, "arg_trunc")
-                            .map_err(|_| CodegenError::UnsupportedExpression("call"))?
-                            .as_basic_value_enum()
-                    } else {
-                        cg.builder
-                            .build_int_z_extend(int_val, target_int_ty, "arg_zext")
-                            .map_err(|_| CodegenError::UnsupportedExpression("call"))?
-                            .as_basic_value_enum()
-                    };
-                }
+        {
+            let from_w = int_val.get_type().get_bit_width();
+            let to_w = target_int_ty.get_bit_width();
+            if from_w != to_w {
+                lowered = if from_w > to_w {
+                    cg.builder
+                        .build_int_truncate(int_val, target_int_ty, "arg_trunc")
+                        .map_err(|_| CodegenError::UnsupportedExpression("call"))?
+                        .as_basic_value_enum()
+                } else {
+                    cg.builder
+                        .build_int_z_extend(int_val, target_int_ty, "arg_zext")
+                        .map_err(|_| CodegenError::UnsupportedExpression("call"))?
+                        .as_basic_value_enum()
+                };
             }
         }
         lowered_args.push(BasicMetadataValueEnum::from(lowered));

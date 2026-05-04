@@ -784,7 +784,7 @@ fn render_ir_pretty(module: &CheckedModule) -> String {
 
     out.push_str("## Value Types\n");
     let mut values: Vec<_> = module.value_types.iter().collect();
-    values.sort_by(|(a, _), (b, _)| a.cmp(b));
+    values.sort_by_key(|(name, _)| name.as_str());
     for (name, ty) in values {
         out.push_str(&format!("- {name}: ty#{}\n", ty.0));
     }
@@ -1009,16 +1009,21 @@ fn find_static_decl_name_span(source: &str, name: &str) -> Option<Span> {
 }
 
 fn span_from_line(source: &str, line_number: usize, column: usize, len: usize) -> Span {
-    let mut start = 0usize;
-    let mut line = 1usize;
-    for part in source.split_inclusive('\n') {
-        if line == line_number {
-            break;
+    let mut offset = 0usize;
+    for (idx, part) in source.split_inclusive('\n').enumerate() {
+        let current_line = idx + 1;
+        if current_line == line_number {
+            let start = offset + column.saturating_sub(1);
+            return Span {
+                start,
+                end: start + len.max(1),
+                line: line_number,
+                column,
+            };
         }
-        start += part.len();
-        line += 1;
+        offset += part.len();
     }
-    let start = start + column.saturating_sub(1);
+    let start = offset + column.saturating_sub(1);
     Span {
         start,
         end: start + len.max(1),

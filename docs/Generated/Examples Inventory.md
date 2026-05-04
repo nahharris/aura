@@ -2,7 +2,7 @@
 title: Examples Inventory
 kind: generated
 generated_by: cargo xtask docs sync
-generated_at: 2026-05-03T18:53:52.5470381Z
+generated_at: 2026-05-04T01:25:06.708827Z
 ---
 
 # Examples Inventory

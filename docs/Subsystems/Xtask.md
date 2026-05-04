@@ -13,7 +13,7 @@ related_contracts:
   []
 related_notes:
   - "Architecture/Build And Dev Workflow"
-last_reviewed: 2026-04-18
+last_reviewed: 2026-05-05
 
 # Xtask
 
@@ -23,9 +23,17 @@ Centralize automation for the workspace, including dev commands, LLVM toolchain 
 
 ## Command Families
 
-- `dev`
-- `llvm`
-- `docs`
+- `dev` — includes `fmt-check` and `ci` for CI parity with GitHub Actions
+- `llvm` — includes `ci` (doctor + clippy + test) after `llvm setup`
+- `docs` — `docs sync` / `docs check` walk the repo for inventories; paths like `.opencode/` are skipped so local agent tooling does not affect generated vault tables or CI.
+
+## LLVM toolchain
+
+After extraction, `toolchains/llvm/<major>` is a link to the versioned install. On Unix the link target is **canonical (absolute)** so `bin/llvm-config` resolves correctly (relative targets would be interpreted from the link’s parent directory and could miss the install).
+
+On Linux, `cargo xtask llvm …` prepends `<prefix>/lib` to `LD_LIBRARY_PATH` when spawning `cargo` so `llvm-sys` build scripts can execute `llvm-config` and load `libLLVM.so` (matching the CI workflow’s `GITHUB_ENV` step).
+
+The official x86_64 Linux LLVM 18 prebuilt targets Ubuntu 18.04 and expects **`libtinfo.so.5`**. Ubuntu 24.04+ runners no longer ship that soname via apt; CI installs Ubuntu 22.04’s `libtinfo5` package from the archive (see `.github/workflows/ci.yml`).
 
 ## Related
 

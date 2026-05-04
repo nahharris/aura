@@ -11,8 +11,7 @@ use aura_typecheck::checked_ir::{CheckedDecl, CheckedExpr};
 use aura_typecheck::types::{FuncParam, Ty, TyInterner};
 use aura_typecheck::{
     CheckContext, CheckOptions, CheckedModule, ImportBinding, MethodImportBinding,
-    TypeImportBinding,
-    check_module_with_context,
+    TypeImportBinding, check_module_with_context,
 };
 
 use super::discover::find_project_root;
@@ -372,9 +371,9 @@ impl ProjectCompiler {
                     ty: ty.clone(),
                 },
             };
-            if matches!(ty, TypeRef::Macro { .. }) {
-                macro_exports.push(binding);
-            } else if matches!(ty, TypeRef::Func { .. }) && decl.is_extern {
+            if matches!(ty, TypeRef::Macro { .. })
+                || (matches!(ty, TypeRef::Func { .. }) && decl.is_extern)
+            {
                 macro_exports.push(binding);
             } else {
                 value_exports.push(binding);
@@ -596,7 +595,9 @@ impl ProjectCompiler {
                             });
                             found = true;
                         }
-                        context.imported_methods.extend(method_exports.iter().cloned());
+                        context
+                            .imported_methods
+                            .extend(method_exports.iter().cloned());
                         if !found {
                             return Err(ProjectCompileError::Resolve {
                                 path: Some(importer_path.to_path_buf()),
@@ -1505,10 +1506,7 @@ mod tests {
             &dependency_root.join("src").join("io.aura"),
             "def answer() -> Int { 42 }",
         );
-        create_file(
-            &dependency_root.join("src").join("lib.aura"),
-            "def x = 1;",
-        );
+        create_file(&dependency_root.join("src").join("lib.aura"), "def x = 1;");
 
         create_file(
             &root.join("project.auon"),

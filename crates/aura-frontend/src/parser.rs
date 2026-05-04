@@ -1263,11 +1263,7 @@ where
     fn parse_catch_expr(&mut self) -> Result<Expr, ParseError> {
         let mark = self.mark();
         self.expect_ident_exact("catch")?;
-        self.expect_simple(
-            &TokenKind::LParen,
-            "expected '(' after catch",
-            vec!["("],
-        )?;
+        self.expect_simple(&TokenKind::LParen, "expected '(' after catch", vec!["("])?;
         let expr = self.parse_expr()?;
         self.expect_simple(
             &TokenKind::RParen,
@@ -3365,7 +3361,8 @@ mod tests {
     #[test]
     fn reject_malformed_interface_member_syntax() {
         let src = "def Broken = interface(read Func[(), String])";
-        let err = Parser::parse_source(src).expect_err("interface member syntax should require ':'");
+        let err =
+            Parser::parse_source(src).expect_err("interface member syntax should require ':'");
         assert!(err.message.contains("expected"));
     }
 

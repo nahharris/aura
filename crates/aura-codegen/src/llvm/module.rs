@@ -29,6 +29,27 @@ use super::{
     function::{declare_function, declare_function_with_name, declare_global_stub},
 };
 
+/// Value functions that still mention `Ty::GenericParam` in their lowered function type are
+/// generic templates; LLVM lowering uses concrete monomorphizations (emitted under mangled
+/// names) instead of the template itself.
+#[cfg(feature = "llvm-backend")]
+fn is_generic_value_template_decl(
+    types: &aura_typecheck::TyInterner,
+    decl: &aura_typecheck::checked_ir::CheckedDecl,
+) -> bool {
+    if decl.is_extern {
+        return false;
+    }
+    let Some(ty) = types.get(decl.ty) else {
+        return false;
+    };
+    let Ty::Func { params, ret } = ty else {
+        return false;
+    };
+    let mentions_generic = |tid: TyId| matches!(types.get(tid), Some(Ty::GenericParam(_)));
+    params.iter().any(|p| mentions_generic(p.ty)) || mentions_generic(*ret)
+}
+
 #[cfg(feature = "llvm-backend")]
 fn bind_function_params<'ctx, 'm>(
     cg: &CodegenContext<'ctx, 'm>,
@@ -93,9 +114,7 @@ fn ensure_native_main_stub<'ctx, 'm>(cg: &CodegenContext<'ctx, 'm>) -> Result<()
 }
 
 #[cfg(feature = "llvm-backend")]
-fn find_main_decl<'m>(
-    checked: &'m CheckedModule,
-) -> Option<&'m aura_typecheck::checked_ir::CheckedDecl> {
+fn find_main_decl(checked: &CheckedModule) -> Option<&aura_typecheck::checked_ir::CheckedDecl> {
     checked.ir.declarations.iter().find(|d| d.name == "main")
 }
 
@@ -167,7 +186,10 @@ pub fn emit_module_stub(
         .iter()
         .filter_map(|decl| {
             let ty = checked.types.get(decl.ty)?;
-            if matches!(ty, Ty::Func { .. }) && !decl.is_extern {
+            if matches!(ty, Ty::Func { .. })
+                && !decl.is_extern
+                && !is_generic_value_template_decl(&checked.types, decl)
+            {
                 return Some(decl.link_name.clone());
             }
             None
@@ -183,7 +205,9 @@ pub fn emit_module_stub(
         };
 
         if matches!(ty, Ty::Func { .. }) {
-            declare_function(&cg, decl)?;
+            if !is_generic_value_template_decl(&checked.types, decl) {
+                declare_function(&cg, decl)?;
+            }
         } else {
             declare_global_stub(&cg, decl)?;
         }
@@ -209,6 +233,15 @@ pub fn emit_module_stub(
         let lowered = lower_expr(&cg, &decl.value)?;
 
         if function.get_type().get_return_type().is_some() {
+            let Ty::Func { ret, .. } = cg
+                .checked
+                .types
+                .get(decl.ty)
+                .ok_or(CodegenError::InvalidTypeId(decl.ty.0))?
+            else {
+                return Err(CodegenError::InvalidFunctionType(decl.name.clone()));
+            };
+            let lowered = super::expr::coerce_basic_value_for_slot(&cg, lowered, *ret)?;
             cg.builder.build_return(Some(&lowered)).map_err(|_| {
                 CodegenError::UnsupportedExpression(classify_expr_kind(&decl.value))
             })?;
@@ -252,7 +285,10 @@ pub fn emit_object_file_with_options(
         .iter()
         .filter_map(|decl| {
             let ty = checked.types.get(decl.ty)?;
-            if matches!(ty, Ty::Func { .. }) && !decl.is_extern {
+            if matches!(ty, Ty::Func { .. })
+                && !decl.is_extern
+                && !is_generic_value_template_decl(&checked.types, decl)
+            {
                 return Some(decl.link_name.clone());
             }
             None
@@ -268,7 +304,9 @@ pub fn emit_object_file_with_options(
         };
 
         if matches!(ty, Ty::Func { .. }) {
-            declare_function(&cg, decl)?;
+            if !is_generic_value_template_decl(&checked.types, decl) {
+                declare_function(&cg, decl)?;
+            }
         } else {
             declare_global_stub(&cg, decl)?;
         }
@@ -294,6 +332,15 @@ pub fn emit_object_file_with_options(
         let lowered = lower_expr(&cg, &decl.value)?;
 
         if function.get_type().get_return_type().is_some() {
+            let Ty::Func { ret, .. } = cg
+                .checked
+                .types
+                .get(decl.ty)
+                .ok_or(CodegenError::InvalidTypeId(decl.ty.0))?
+            else {
+                return Err(CodegenError::InvalidFunctionType(decl.name.clone()));
+            };
+            let lowered = super::expr::coerce_basic_value_for_slot(&cg, lowered, *ret)?;
             cg.builder.build_return(Some(&lowered)).map_err(|_| {
                 CodegenError::UnsupportedExpression(classify_expr_kind(&decl.value))
             })?;

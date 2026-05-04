@@ -23,6 +23,8 @@ Agents should treat `docs/` as a maintained second-brain surface, not as optiona
   - `examples`
   - `tool`
 
+Repositories under `tool/` are often **Git submodules** with their **own CI** in those repos. Aura’s GitHub workflow checks out submodules only so Cargo `path` dependencies resolve; it does not replace per-repo automation there.
+
 Key entry files:
 
 - `crates/aura-frontend/src/token.rs` — token model
@@ -59,6 +61,8 @@ cargo xtask dev build
 cargo xtask dev test
 cargo xtask dev lint
 cargo xtask dev fmt
+cargo xtask dev fmt-check
+cargo xtask dev ci
 cargo xtask dev qa
 cargo xtask docs sync
 cargo xtask docs check
@@ -67,6 +71,8 @@ cargo xtask docs check
 Preferred command runner aliases (defined in `.cargo/config.toml`):
 
 ```bash
+cargo ci
+cargo fmt-check
 cargo qa
 cargo lint
 cargo test-all
@@ -76,6 +82,12 @@ cargo fmt-all
 cargo docs-sync
 cargo docs-check
 ```
+
+### CI parity before ending a session
+
+Before wrapping up non-trivial work (especially codegen, xtask, `docs/` generated inventories, or LLVM paths), run **`cargo xtask dev ci`** (or **`cargo ci`**) so local results match [GitHub Actions](https://github.com/nahharris/aura/actions/workflows/ci.yml): rustfmt check and `docs check` (Linux runners), workspace clippy once plus tests on Linux and Windows, then LLVM doctor, clippy, and tests (Linux and Windows).
+
+Doc-only or inventory edits still use `cargo xtask docs sync` when you change what should be generated; `dev ci` includes `docs check` so a single command catches stale generated notes before you stop.
 
 ## Xtask Usage
 
@@ -90,6 +102,7 @@ Common commands:
 ```bash
 cargo xtask llvm setup
 cargo xtask llvm doctor
+cargo xtask llvm ci
 cargo xtask llvm check
 cargo xtask llvm build
 cargo xtask llvm test

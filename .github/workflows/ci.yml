@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: 0
+
+# `tool/*` Git submodules are Cargo path dependencies. Checkout fetches them so the
+# workspace can compile; crate-specific fmt/clippy/test policy belongs in each
+# submodule repository’s own CI, not duplicated here beyond what Aura already
+# exercises through `cargo test` / `cargo clippy` on this repo.
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask dev fmt-check
+
+  workspace:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            run_lint: true
+          - os: windows-latest
+            run_lint: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - if: matrix.run_lint
+        run: cargo xtask dev lint
+      - run: cargo xtask dev test
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask docs check
+
+  llvm:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install LLVM prebuilt dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxml2 zlib1g libzstd1 wget ca-certificates
+          # LLVM.org x86_64 Linux tarballs target Ubuntu 18.04 and link libtinfo.so.5. Ubuntu 24.04+
+          # images dropped ncurses5 packages; install Jammy's libtinfo5 .deb (same ABI family as tinfo6).
+          wget -q "http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb"
+          sudo apt-get install -y ./libtinfo5_6.3-2ubuntu0.1_amd64.deb
+      - uses: Swatinem/rust-cache@v2
+      # Cache only the downloaded tarball. Caching the extracted `toolchains/llvm`
+      # tree can restore broken `toolchains/llvm/18` symlinks across runners.
+      - uses: actions/cache@v4
+        with:
+          path: toolchains/cache
+          key: llvm-18.1.8-${{ runner.os }}-${{ hashFiles('xtask/src/main.rs') }}
+      - run: cargo xtask llvm setup
+      - name: Prefer bundled LLVM shared libraries at runtime (Linux)
+        if: runner.os == 'Linux'
+        run: echo "LD_LIBRARY_PATH=${{ github.workspace }}/toolchains/llvm/18/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+      - run: cargo xtask llvm clippy
+      - run: cargo xtask llvm test
