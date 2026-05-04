@@ -23,6 +23,8 @@ Agents should treat `docs/` as a maintained second-brain surface, not as optiona
   - `examples`
   - `tool`
 
+Repositories under `tool/` are often **Git submodules** with their **own CI** in those repos. Aura’s GitHub workflow checks out submodules only so Cargo `path` dependencies resolve; it does not replace per-repo automation there.
+
 Key entry files:
 
 - `crates/aura-frontend/src/token.rs` — token model

@@ -15,6 +15,11 @@ permissions:
 env:
   CARGO_INCREMENTAL: 0
 
+# `tool/*` Git submodules are Cargo path dependencies. Checkout fetches them so the
+# workspace can compile; crate-specific fmt/clippy/test policy belongs in each
+# submodule repository’s own CI, not duplicated here beyond what Aura already
+# exercises through `cargo test` / `cargo clippy` on this repo.
+
 jobs:
   fmt:
     runs-on: ubuntu-latest
